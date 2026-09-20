@@ -37,7 +37,6 @@ CONTENT_DIAGNOSTIC_V2_OWNERS = (
     "audio",
     "video",
     "image",
-    "code",
 )
 _OPERATIONS = {"pdf": "pdf-diagnostics", "text": "text-errors", "archive": "archive-issues"}
 _REASON_FIELDS = {"pdf": "error_type", "text": "error_type", "archive": "reason_code"}
@@ -445,7 +444,6 @@ _V2_EXPECTED_SCHEMAS = {
     "audio": 2,
     "video": 2,
     "image": 6,
-    "code": 9,
 }
 
 _V2_REQUIRED_TABLES = {
@@ -457,7 +455,6 @@ _V2_REQUIRED_TABLES = {
     "audio": ("documents",),
     "video": ("documents", "frames"),
     "image": ("images",),
-    "code": ("files", "file_versions", "diagnostics"),
 }
 
 _V2_REQUIRED_COLUMNS = {
@@ -469,7 +466,6 @@ _V2_REQUIRED_COLUMNS = {
     "audio": {"documents": ("file_key", "path", "status")},
     "video": {"documents": ("file_key", "path", "status"), "frames": ("file_key", "frame_index", "timestamp_ms")},
     "image": {"images": ("file_key", "path", "status")},
-    "code": {"files": ("file_id", "current_path", "status"), "file_versions": ("version_id", "file_id", "analysis_status"), "diagnostics": ("diagnostic_id", "version_id", "code")},
 }
 
 
@@ -767,18 +763,6 @@ def _v2_base_query(owner: str) -> str:
             WHERE i.error_type IS NOT NULL OR i.error_phase IS NOT NULL
                   OR i.status IN ('error','failed','partial','processing')
         """
-    if owner == "code":
-        return """
-            SELECT 'code:diagnostic:' || d.diagnostic_id AS record_id,
-                   CAST(f.file_id AS TEXT) AS file_key, f.current_path AS path,
-                   d.code AS code, d.message AS message, v.analysis_status AS status,
-                   v.valid_from_ns AS updated_ns, 'line' AS locator_kind,
-                   CAST(d.start_line AS TEXT) AS locator_value
-            FROM diagnostics d
-            JOIN file_versions v ON v.version_id=d.version_id
-            JOIN files f ON f.file_id=v.file_id
-            WHERE f.status='current' AND f.current_version_id=v.version_id
-        """
     raise ValueError(f"unsupported v2 owner: {owner}")
 
 
@@ -849,11 +833,6 @@ def _v2_query_owner(
                 item["timestamp_ms"] = int(str(item["locator"]))
             except (TypeError, ValueError):
                 item["timestamp_ms"] = item["locator"]
-        elif owner == "code" and item["locator_kind"] == "line":
-            try:
-                item["start_line"] = int(str(item["locator"]))
-            except (TypeError, ValueError):
-                item["start_line"] = item["locator"]
         items.append(item)
     next_after = None
     if remaining_count > len(items) and items:

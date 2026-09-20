@@ -277,24 +277,18 @@ una fuente al registry no amplía su ámbito ni habilita su `--apply`.
 
 ### Inventario y deduplicación
 
-La ruta integrada observa metadatos de dependencias/cachés antes de decidir por
-archivo; conserva las raíces canónicas protegidas y los directorios VCS. El
-owner de acciones aplica `CorpusAdmissionPolicy` antes de publicar candidatos
-de contenido. Código fuente fuera de los proyectos expresamente interesados
-queda sólo en inventario; documentos/datos en carpetas mixtas siguen disponibles.
-Archive recibe una política por miembro, ligada a su firma de procesamiento,
-después del control CRC/tamaño y antes de parseo, texto/FTS y ZIP anidado. Un
-miembro virtual nunca se convierte en objetivo físico.
+La ruta integrada observa metadatos antes de decidir por archivo; conserva las
+raíces canónicas protegidas y los directorios VCS. La redlist explícita se aplica
+por metadata/ruta antes de hashing, dedupe o extracción; no clasifica autoría,
+procedencia ni utilidad mediante heurísticas. Archive verifica CRC/tamaño antes
+de parsear, extraer texto/FTS o visitar ZIP anidados. Un miembro virtual nunca
+se convierte en objetivo físico.
 
-La admisión y la retención son distintas. Las señales de origen sólo seleccionan
-candidatos: la Papelera de regenerables exige una prueba exacta contra paquetes
-locales conservados o la reproducción de `.pyc` desde una copia privada de su
-fuente, sin ejecutar código. La comprobación vuelve a realizarse después del
-ledger `applying` y antes del backend, tanto individualmente como por lote.
-Credenciales, fixtures, licencias y fuentes de reconstrucción permanecen fuera
-de los efectos, también mediante dedupe y callers directos. No se añade otra
-base: política y resumen acotado usan el manifest/stages Framework y los efectos
-conservan el ledger/KIO/receipt existente. Resume rechaza drift de admisión.
+Los archivos sin extensión pasan por el detector bounded de firmas. Sólo una
+evidencia fuerte permite restaurar una extensión canónica; la incertidumbre, un
+destino existente o un drift conserva el original. Redlist y rename cruzan sus
+fronteras físicas únicamente con root, identidad, no-reemplazo, ledger y
+receipt/recovery válidos.
 
 La identidad física se valida con `FileIdentity` y el codec explícito del owner;
 un recurso virtual conserva su `ResourceRef` y ancla, sin reinterpretarlo como
@@ -329,8 +323,8 @@ debe documentarse esa conciliación como ausente.
 
 ### Rutas de contenido
 
-El registro de rutas compone PDF, DOCX, Office, Archive, Text, Audio, Video,
-Image y Code. Cada ruta declara inputs, límites, progreso, owner y resultado.
+El registro de rutas compone PDF, DOCX, Office, Archive, Text, Audio, Video e
+Image. Cada ruta declara inputs, límites, progreso, owner y resultado.
 Las implementaciones no tienen la misma riqueza: algunos formatos publican
 localizadores estructurales y otros sólo texto o archivo completo. Esa brecha se
 expone como cobertura, no se rellena con localizadores inventados.
@@ -344,11 +338,11 @@ vigentes, y mantiene la observación hasta la actualización de FTS.
 ### Lifecycle durable de `--all` (implementado; aceptación en curso)
 
 `--all` coordina las ocho rutas de contenido bajo un único run Framework:
-`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video` e `image`. Code no
-forma parte de la ingestión integrada; se conserva como ruta explícita
-(`--route code`) para quien la solicite deliberadamente. Con `--all --apply`, la
-ingestión integrada aplica primero la redlist determinista del Corpus y registra
-cada efecto de Papelera antes de dedupe, hashing, validación o extracción.
+`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video` e `image`. Con
+`--all --apply`, la ingestión integrada aplica primero la redlist determinista
+del Corpus y registra cada efecto de Papelera antes de dedupe, hashing,
+validación o extracción. La restauración de extensión posterior sólo usa
+evidencia bounded y rename seguro no-replace.
 
 Los artefactos 0.13 y post-0.13 anteriores conservan su evidencia histórica en
 receipts separados; no se usan aquí para declarar aceptado o instalado el
@@ -434,16 +428,14 @@ declara `safe_replay`. Un adapter debe poder estimar su workload de forma
 bounded y emitir checkpoints cooperativos, sin reservar de antemano todo un
 snapshot que luego filtre candidatos.
 
-La retención por owner no comparte un writer: Code protege `analysis_runs` que
-sean fuente de graph snapshots/generations/heads; Inventory conserva el payload
-de checkpoints, planes y el componente conectado por sucesores; el planner
-común valida reachability bounded, FK/schema y estados incompletos. Es una
-superficie de diagnóstico y no una compactación general.
+La retención por owner no comparte un writer: Inventory conserva el payload de
+checkpoints, planes y el componente conectado por sucesores; el planner común
+valida reachability bounded, FK/schema y estados incompletos. Es una superficie
+de diagnóstico y no una compactación general.
 
 Semantic queda ligado al mismo run, no como una operación posterior sin
-identidad. `--all` coordina las rutas de contenido y no activa Code; Code se
-solicita con una ruta explícita. Una selección explícita puede
-acotar fuentes; no se introducen techos globales implícitos y los límites
+identidad. `--all` coordina las rutas de contenido y una selección explícita
+puede acotar fuentes; no se introducen techos globales implícitos y los límites
 expresados por el usuario siguen siendo acumulativos. Si una fuente, modelo o
 herramienta falta, el stage conserva `unavailable` o `blocked` y la corrida
 queda `partial`/`incomplete`, sin éxito vacío ni skip silencioso.
@@ -457,7 +449,7 @@ hasta completar también esa clasificación. Las observaciones `protected`, `no_
 `metadata_only` siguen consultables con cobertura parcial. FTS y derivados se
 reparan desde representaciones durables válidas; un reintento exige evidencia
 estructurada `retryable` y sólo se intenta una vez por archivo y corrida. Un
-fallo o parcialidad queda en la fase `catalog` y en su evento tipado. Los nueve
+fallo o parcialidad queda en la fase `catalog` y en su evento tipado. Los ocho
 summaries exponen contadores `catalog_*` y `catalog_complete`; `None` conserva
 el estado no observado y no se interpreta como cero trabajo publicado.
 
@@ -474,14 +466,12 @@ no se amplía por inferencia.
 
 Una nueva ejecución `--all` no es una reanudación obligatoria del intento
 anterior. Si queda un pendiente Semantic, valida su manifest/raíz y los heads
-publicados de todos los modelos y Code, registra el intento anterior como
+publicados de todos los modelos, registra el intento anterior como
 fallido y publica un checkpoint nuevo mediante una sustitución atómica que
 preserva el prefijo del journal. Ese checkpoint no promueve generaciones
 `building`, no declara éxito del intento anterior y no copia SQLite. El nuevo
-trabajo usa la petición y los presupuestos actuales. Los enlaces Code obsoletos
-por cambio de versión o avance del head Semantic se desactivan acotadamente
-antes de capturar el baseline; la sincronización ordinaria reconstruye sus
-derivados. La verificación junto al commit es sólo observación, nunca reparación.
+trabajo usa la petición y los presupuestos actuales. La verificación junto al
+commit es sólo observación, nunca reparación.
 
 `--resume-run` explícito conserva productor, manifest, selección y presupuesto
 originales. Raíz ajena, schemas futuros, evidencia alterada o cambios concurrentes
@@ -509,13 +499,13 @@ obtener un snapshot de un owner que cambia continuamente durante la copia.
 
 ### Catálogo, Semantic y Knowledge
 
-El recorrido del catálogo usa paginación por clave con predicados indexables;
-una observación de Code comparte su validación de esquema durante la iteración.
+El recorrido del catálogo usa paginación por clave con predicados indexables y
+comparte su validación de esquema durante la iteración.
 La política de texto v17 cuenta todos los caracteres, incluidos separadores,
 y consulta cancelación entre fragmentos vacíos. Su versión participa tanto en
 el marker de caché como en la identidad de replay y clasificación.
-Los prefijos Code y Video se transfieren como BLOB acotado y se decodifican
-según el encoding real de SQLite, preservando NUL y Unicode. La planificación
+Los prefijos de Video se transfieren como BLOB acotado y se decodifican según el
+encoding real de SQLite, preservando NUL y Unicode. La planificación
 de organización conserva claves y ordinales en una selección TEMP; carga como
 máximo una página de 128 payloads junto con la fila en curso y mantiene la
 transacción, el orden de decisiones, el progreso y el rollback originales.
@@ -562,8 +552,8 @@ Las invalidaciones por item parten de sus chunks antes de buscar jobs; los
 índices de derivaciones por revisión/refresh y receipt de publicación evitan
 recorrer toda la cohorte al publicar cada item durante el staging. No cambian
 el conjunto publicado ni eliminan la validación de ordinals duplicados.
-Knowledge, observación de heads, availability de búsqueda Code y preflight de
-reuse leen v7/v8/v9/v10 sólo con el contrato canónico de la versión observada. Conservan
+Knowledge, observación de heads y preflight de reuse leen v7/v8/v9/v10 sólo con
+el contrato canónico de la versión observada. Conservan
 esa versión en avisos, planes, locators y digests; no la actualizan por lectura ni amplían los
 writers. Salud de estado sigue exigiendo el schema vigente para declarar healthy.
 
@@ -672,7 +662,7 @@ deadline mantienen su error y los cargos de filas observadas. Las comprobaciones
 de testigos conservan su cota y su interpretación, sin convertir coincidencia
 literal en suficiencia de respuesta.
 
-`neocortex.content-diagnostics/v2` federa los nueve owners de contenido mediante
+`neocortex.content-diagnostics/v2` federa los ocho owners de contenido mediante
 cursores ligados a raíz, filtros y snapshots, y conserva estados de ausencia,
 parcialidad, schema futuro, corrupción y bloqueo sin confundirlos con cero
 incidencias. La versión v1 sigue intacta.
@@ -740,51 +730,13 @@ textuales y principals no atestados, pero no habilita todavía autorización MCP
 La sincronización de caches para move/rename usa lock ordering explícito sólo en
 fixtures; `trash` conserva una política de invalidación separada.
 
-### Code como contenido
-
-Los analizadores comparten un mapa de caracteres y bytes UTF-8 con la generación
-de fragmentos. Las conversiones de columnas Unicode usan checkpoints dispersos;
-la asignación de símbolos a fragmentos conserva el desempate por orden original
-mediante intervalos activos. Un manifiesto de sintaxis confirmada reutiliza su
-parseo y los errores conservan sus diagnósticos completos.
-
-Code detecta proyectos y lenguajes, extrae símbolos/relaciones, conserva
-versiones y permite búsqueda/reconstrucción. No ejecuta el código observado ni
-importa herramientas de desarrollo. Pytest, Ruff, Mypy/Pyright y Semgrep se
-ejecutan fuera del runtime.
-
-El ledger de Code usa el esquema v9 y generaciones v2. Cada snapshot y generación
-conserva un manifiesto completo de bloques compartidos: una lectura no recorre
-una cadena de generaciones anteriores. El digest localiza candidatos de caché;
-la publicación compara sus filas antes de reutilizarlos. Las generaciones v1
-conservan sus entradas, membresías y digests originales, y el lector integra
-ambas representaciones. La retención retira bloques sólo cuando ningún manifiesto
-conservado los referencia, manteniendo los localizadores del productor original.
-Esto reduce las escrituras de payload ante cambios pequeños; el recorrido,
-ordenación y validación de la fuente siguen dependiendo del tamaño total.
-
-El hashing canónico de Code usa el serializador nativo para fragmentos cuyo
-tamaño y número de nodos se acotan antes de codificarlos. Los arrays se procesan
-por miembro y los fragmentos grandes conservan el encoder incremental, con los
-mismos bytes y digests. En búsqueda híbrida, símbolos y definiciones comparten
-una selección dentro del mismo snapshot; mantienen señales, pesos, evidencia y
-cargos lógicos separados, sin caché de resultados entre consultas.
-
-Dentro de una publicación, Code conserva evidencia transitoria de las filas de
-los bloques ya calculados, con un presupuesto contabilizado de 16 MiB. La
-finalización vuelve a leer y comparar cada valor y su tipo antes de reutilizar
-el digest, evitando reconstruir y serializar de nuevo esos mismos miembros.
-Una diferencia o falta de evidencia usa el validador completo. La evidencia se
-descarta al salir, también ante cancelación o rollback; los lectores públicos
-conservan su validación completa y no heredan esa reutilización.
-
 ## Persistencia
 
 `STATE_STORE_REGISTRY` es el inventario contractual de owners:
 
 ```text
 inventory, framework, catalog, pdf, docx, office, audio,
-video, image, semantic, code, archive, text
+video, image, semantic, archive, text
 ```
 
 Cada owner controla su schema y migraciones. Los lectores eligen una estrategia
@@ -805,9 +757,9 @@ idempotentes, para no dejar filas `running` huérfanas. El orquestador reutiliza
 `GlobalResourceCoordinator`; no existe un segundo coordinador para el
 presupuesto de `--all`.
 
-La publicación Semantic/Code usa staging y CAS lógico: sólo avanza el epoch
-cuando todos los heads requeridos por el manifest están completos y no hay
-drift. Parcialidad, owner-head drift o una preparación ambigua producen
+La publicación Semantic usa staging y CAS lógico: sólo avanza el epoch cuando
+todos los heads requeridos por el manifest están completos y no hay drift.
+Parcialidad, owner-head drift o una preparación ambigua producen
 `blocked`/`recovery_required`; no se simula una transacción SQLite distribuida.
 Una consulta de estado observa estos datos mediante el owner/publication
 canónicos y no abre una SQLite cercada durante writers.
@@ -977,8 +929,8 @@ no expone los listados de hijos. Cada muestra vuelve a comprobar identidad y
 cgroup; el crédito exige memoria privada legible y una concesión todavía viva.
 Esto no convierte una observación incompleta del árbol o de CPU en completa.
 Las renovaciones conservan su contexto de apertura y cierre al pasar entre
-preparador, trabajador y consumidor. La proyección Code mantiene su reserva
-hasta cerrar, dentro de un contexto propio que las demás rutas no heredan.
+preparador, trabajador y consumidor. Cada ruta mantiene sus reservas hasta
+cerrar, dentro de un contexto propio que las demás rutas no heredan.
 Los techos de memoria explícitos por formato limitan su agregado residente y
 transitorio en ese mismo ledger; se exigen junto al techo global. La configuración
 Framework distingue ausencia (`None`, automático) de un número explícito, también
@@ -1008,8 +960,8 @@ copia una vez desde el owner y se comprueba durante admisión sin reabrir SQLite
 Los hijos reducen su propia prioridad y, sólo en una sesión privada comprobada,
 la de su autogroup. La política deja intactos al caller y a procesos ajenos.
 
-Text, DOCX, Office y Code separan preparación/publicación en el owner del
-análisis en procesos. Text aplica el timeout y límite de memoria dentro del
+Text, DOCX y Office separan preparación/publicación en el owner del análisis en
+procesos. Text aplica el timeout y límite de memoria dentro del
 parser aislado. Archive conserva identidad virtual y presupuesto por
 contenedor al paralelizar extracción; usa supervisores por contenedor y procesos
 para miembros mayores, evitando crear procesos para cada ZIP diminuto. PDF
@@ -1073,11 +1025,7 @@ llamadas legacy sin una generación explícita. `FrameworkRouteState` usa esa
 vista inmutable sólo para candidatos; eventos, ReviewTasks, acciones y lifecycle
 conservan el owner original. La copia vive hasta que terminan todos los
 workers, incluso ante error o cancelación, sin abrir un lector ordinario en el
-origen ni relajar los fences de `SQLiteReadSession`. Code recibe además una
-proyección efímera de sus filas admisibles producida por el owner de inventario.
-Su buffer de memoria está acotado; al crecer se transfiere a un spool anónimo con
-espacio reservado antes de escribir. Se puede recorrer de nuevo sin consultar
-el owner y se cierra después de los workers. La estimación multimodal conserva
+origen ni relajar los fences de `SQLiteReadSession`. La estimación multimodal conserva
 el orden de los selectores MIME y omite sus solapamientos por precedencia,
 aprovechando la unicidad de path/MIME del owner sin acumular todos los paths.
 
@@ -1090,8 +1038,8 @@ manifest y owner heads antes de publicar, y se abstiene fail-closed ante drift.
 
 ## Brechas vigentes
 
-- Knowledge conserva observaciones `best_effort_non_generational` para Code,
-  Framework y los agregados de documentos/imágenes; no equivalen a una publicación
+- Knowledge conserva observaciones `best_effort_non_generational` para Framework
+  y los agregados de documentos/imágenes; no equivalen a una publicación
   generacional de todos esos owners;
 - la proyección de evidencia mantiene `reference_only` si faltan snippet o
   localizador verificado; no inventa estructura ni suficiencia de respuesta;

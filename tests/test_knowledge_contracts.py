@@ -83,11 +83,11 @@ def _context_plan(
 
 def _resource() -> ResourceRef:
     return ResourceRef(
-        resource_id="resource:code:0001",
-        source_kind="code",
-        owner="code",
+        resource_id="resource:pdf:0001",
+        source_kind="pdf",
+        owner="pdf",
         physical_identity=PhysicalIdentityRef("windows_file_id", "aa:bb", 1),
-        current_path=r"C:\Corpus\Área técnica #1\control.py",
+        current_path=r"C:/Corpus/Área técnica #1/control.pdf",
         disposition=ResourceDisposition.CANONICAL,
     )
 
@@ -95,9 +95,9 @@ def _resource() -> ResourceRef:
 def _revision(resource: ResourceRef) -> RevisionRef:
     return RevisionRef(
         resource_id=resource.resource_id,
-        revision_id="code-version:7",
-        producer="code-route",
-        processing_signature="code-v2:fixture",
+        revision_id="pdf-version:7",
+        producer="pdf-route",
+        processing_signature="pdf-v2:fixture",
         generation=7,
         state=RevisionState.CURRENT,
     )
@@ -105,17 +105,17 @@ def _revision(resource: ResourceRef) -> RevisionRef:
 
 def _evidence(revision: RevisionRef) -> EvidenceRef:
     return EvidenceRef(
-        evidence_id="code-version:7:chunk:2",
+        evidence_id="pdf-version:7:page:2",
         resource_id=revision.resource_id,
         revision_id=revision.revision_id,
         method=EvidenceMethod.STRUCTURAL,
         start_line=41,
         end_line=55,
-        section_kind="code_function",
+        section_kind="document",
         section_id="2",
-        symbol="control.validate",
+        symbol=None,
         snippet="def validar_área(): ...",
-        extractor="python-ast",
+        extractor="pdf-fixture",
         extractor_version="3.13",
         generation=7,
     )
@@ -287,7 +287,7 @@ def test_snapshot_identity_excludes_capture_and_connection_local_data_version() 
 
 def test_snapshot_consistency_and_active_models_require_observed_evidence() -> None:
     changed_owner = OwnerSnapshot(
-        owner="code",
+        owner="pdf",
         state=OwnerAvailability.AVAILABLE,
         expected_schema_version=2,
         observed_schema_version=2,
@@ -330,7 +330,7 @@ def test_snapshot_consistency_and_active_models_require_observed_evidence() -> N
         consistency=SnapshotConsistency.SNAPSHOT_CHANGED,
         attempts=2,
     )
-    assert changed.changed_owners == ("code",)
+    assert changed.changed_owners == ("pdf",)
     explicit_identity_change = replace(stable_owner, identity_changed=True)
     explicit_marker = KnowledgeSnapshot.create(
         source_version="0.7.0",
@@ -340,7 +340,7 @@ def test_snapshot_consistency_and_active_models_require_observed_evidence() -> N
         consistency=SnapshotConsistency.SNAPSHOT_CHANGED,
         attempts=2,
     )
-    assert explicit_marker.changed_owners == ("code",)
+    assert explicit_marker.changed_owners == ("pdf",)
     assert explicit_marker.owners[0].to_dict()["identity_changed"] is True
 
     valid = _snapshot()
@@ -364,19 +364,19 @@ def test_context_bundle_validates_citations_and_budget() -> None:
         resource=resource,
         revision=revision,
         evidence=evidence,
-        signals=(RankingSignal("code", "rank", 1.0, 1),),
+        signals=(RankingSignal("pdf", "rank", 1.0, 1),),
         fused_score=1.0,
-        reasons=("exact symbol",),
+        reasons=("exact document evidence",),
     )
     rendered = "[K1] def validar_área(): ..."
     bundle = ContextBundle(
         normalized_query="¿Dónde se valida?",
-        intents=("structural",),
+        intents=("lexical",),
         plan_id="plan:fixture",
         plan=_context_plan(
             plan_id="plan:fixture",
             normalized_query="¿Dónde se valida?",
-            intents=("structural",),
+            intents=("lexical",),
         ),
         snapshot=_snapshot(),
         selected_hits=(hit,),
@@ -529,9 +529,9 @@ def test_context_bundle_validates_and_serializes_typed_graph_references() -> Non
         resource=resource,
         revision=revision,
         evidence=evidence,
-        signals=(RankingSignal("code", "rank", 1.0, 1),),
+        signals=(RankingSignal("pdf", "rank", 1.0, 1),),
         fused_score=1.0,
-        reasons=("exact symbol",),
+        reasons=("exact document evidence",),
     )
     breaker = ContextEntityRef(
         entity_id="entity:breaker:q52",
@@ -542,7 +542,7 @@ def test_context_bundle_validates_and_serializes_typed_graph_references() -> Non
     )
     function = ContextEntityRef(
         entity_id="entity:function:validate",
-        entity_kind="code_symbol",
+        entity_kind="document_section",
         label="control.validate",
         evidence_ids=(evidence.evidence_id,),
         resource_ids=(resource.resource_id,),
@@ -571,12 +571,12 @@ def test_context_bundle_validates_and_serializes_typed_graph_references() -> Non
         )
         return ContextBundle(
             normalized_query="Q52 validation",
-            intents=("structural",),
+            intents=("lexical",),
             plan_id="plan:graph-fixture",
             plan=_context_plan(
                 plan_id="plan:graph-fixture",
                 normalized_query="Q52 validation",
-                intents=("structural",),
+                intents=("lexical",),
             ),
             snapshot=_snapshot(),
             selected_hits=(hit,),
@@ -644,7 +644,7 @@ def test_context_bundle_validates_and_serializes_typed_graph_references() -> Non
 
     other_resource = replace(
         resource,
-        resource_id="resource:code:0002",
+        resource_id="resource:pdf:0002",
         current_path=r"C:\Corpus\other.py",
     )
     other_revision = replace(
@@ -663,13 +663,13 @@ def test_context_bundle_validates_and_serializes_typed_graph_references() -> Non
         resource=other_resource,
         revision=other_revision,
         evidence=other_evidence,
-        signals=(RankingSignal("code", "rank", 0.5, 2),),
+        signals=(RankingSignal("pdf", "rank", 0.5, 2),),
         fused_score=0.5,
-        reasons=("second exact symbol",),
+        reasons=("second exact document evidence",),
     )
     other_entity = ContextEntityRef(
         entity_id="entity:other",
-        entity_kind="code_symbol",
+        entity_kind="document_section",
         label="other.validate",
         evidence_ids=(other_evidence.evidence_id,),
         resource_ids=(other_resource.resource_id,),

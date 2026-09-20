@@ -211,7 +211,7 @@ sobre ese SHA con 6917 pasadas, 68 omitidas y 42 subtests; la calidad estática 
 el piloto instalado de 37 fixtures concilian con el mismo artefacto.
 
 **Resultado objetivo:** una corrida `--all` coordina `pdf`, `docx`, `office`,
-`archive`, `text`, `audio`, `video`, `image` y `code`, integra el stage Semantic
+`archive`, `text`, `audio`, `video` e `image`, integra el stage Semantic
 con la misma identidad durable y puede reanudar sólo el trabajo incompleto,
 conservando cobertura, errores, checkpoints, owner heads y presupuesto entre
 workers.
@@ -225,7 +225,7 @@ workers.
   checkpoint bounded ligado al digest del manifest.
 - Mantener `neocortex.run-budget/v1` como presupuesto de toda la corrida, con
   reservas/consumo por stage, ruta y unidad, items, bytes, deadline absoluto y
-  cancelación durable, incluidos inventario, publicación Semantic y Code.
+  cancelación durable, incluidos inventario y publicación Semantic.
 - Exponer límites opcionales `--run-max-items`, `--run-max-bytes` y
   `--run-time-budget-seconds` en FrameworkConfig y CLI, y proyectarlos sin
   divergencias en API/SDK.
@@ -239,19 +239,18 @@ workers.
   rechaza, nunca se interpreta por inferencia.
 - El adapter estima workload de forma bounded y emite checkpoints cooperativos;
   no reserva todo un snapshot antes de aplicar sus filtros.
-- `--all` coordina las nueve rutas de contenido, incluido Code como contenido
-  no ejecutable. Semantic se integra en el mismo lifecycle, pero el Semantic
-  pesado permanece opt-in; Archive, Code y Video sólo entran como fuentes
-  Semantic cuando se seleccionan explícitamente.
+- `--all` coordina las ocho rutas de contenido. Semantic se integra en el mismo
+  lifecycle, pero el Semantic pesado permanece opt-in; Archive y Video sólo
+  entran como fuentes Semantic cuando se seleccionan explícitamente.
 - Una fuente, modelo o herramienta ausente se registra como `unavailable` o
   `blocked`, conserva la causa y produce `incomplete`; nunca hay skip silencioso
   ni éxito por ausencia.
 - Resume hereda el presupuesto/deadline restante del run origen y valida root,
   política, snapshot, modelo, herramienta, manifest y owner heads. Drift,
   publicación parcial o ambigüedad queda `blocked`/`recovery_required`.
-- Semantic/Code publican por staging/CAS lógico: el epoch sólo avanza cuando
-  todos los heads requeridos están completos. No se simula una transacción
-  SQLite distribuida.
+- Semantic publica por staging/CAS lógico: el epoch sólo avanza cuando todos
+  los heads requeridos están completos. No se simula una transacción SQLite
+  distribuida.
 
 ### Superficies y compatibilidad
 
@@ -267,7 +266,7 @@ workers.
 - **C0 — Contratos:** registro cerrado de rutas, owners, dependencias,
   capacidades y estimadores de workload.
 - **C1 — Positiva:** 20–50 fixtures temporales, con las 28 heterogéneas como
-  base, nueve rutas, stages terminales y manifest completo.
+  base, ocho rutas, stages terminales y manifest completo.
 - **C2 — Replay:** segunda pasada con `new_work=0` para trabajo comprometido,
   sin duplicados ni efectos repetidos.
 - **C3 — Dependencias:** ausencia de Audio/Whisper u otra herramienta devuelve
@@ -275,7 +274,7 @@ workers.
 - **C4 — Presupuesto:** items, bytes, deadline y cancelación se respetan en
   inventario, workers, Semantic y publicación; no se completa después de expirar.
 - **C5 — Recuperación:** interrupciones en preparación, snapshot, worker, PDF,
-  Code, Semantic, publicación y finalización permiten dos resumes idempotentes.
+  Semantic, publicación y finalización permiten dos resumes idempotentes.
 - **C6 — Drift:** root, política, snapshot, capability `not_resumable` y
   owner-head drift se rechazan fail-closed.
 - **C7 — Paridad:** CLI/API/SDK/MCP devuelven los mismos estados, errores,
@@ -298,10 +297,10 @@ La tranche quedó implementada en `main` y promovida a `current` desde
 - inventario/deduplicación v13 con sucesores copy-on-write, digest de contenido,
   heads de plan y rechazo de cache stat-only ante reescrituras ambiguas;
 - catálogo v9 con manifest de generación, source fence, digest, CAS y triggers
-  de inmutabilidad, además de materialización binding-aware para Archive/Code;
-- localizadores y hydration bounded para Audio, Video, Image y Code, Context v2
+  de inmutabilidad, además de materialización binding-aware para Archive;
+- localizadores y hydration bounded para Audio, Video e Image, Context v2
   con entidades, relaciones, contradicciones y telemetría, y v1 explícito;
-- `content-diagnostics/v2` para los nueve owners, cursores ligados a snapshot y
+- `content-diagnostics/v2` para los ocho owners, cursores ligados a snapshot y
   `KnowledgeReadBudget` con deadline, filas, vectores, temporales y cancelación;
 - contrato `neocortex.authenticated-principal/v1`, lectura fenced de grants y
   recovery, sincronización de caches move/rename sólo sobre fixtures y panel GUI
@@ -310,7 +309,7 @@ La tranche quedó implementada en `main` y promovida a `current` desde
 La integración y release quedaron aceptadas con **6959 pasadas, 67 omitidas y
 42 subtests**, calidad estática individual sin errores bloqueantes, build
 reproducible, verificación de manifest/árbol/launcher y smoke/replay instalado
-`RC1=0`/`RC2=0` sobre 23 fixtures temporales y nueve rutas. Semantic 17, R1–R4,
+`RC1=0`/`RC2=0` sobre 23 fixtures temporales y ocho rutas. Semantic 17, R1–R4,
 KIO real, corpus personal y poda permanecen fuera de esta tranche.
 
 ## Preparación federada de `hygiene`

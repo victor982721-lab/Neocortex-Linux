@@ -154,7 +154,6 @@ def register_semantic_arguments(parser: argparse.ArgumentParser) -> None:
             "audio",
             "archive",
             "text",
-            "code",
             "video",
         ),
         help="repeat to select durable text caches for text/all planning or indexing",
@@ -281,12 +280,6 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
     explicit = set(getattr(args, "_explicit_options", ()))
     semantic_actions = len(selected_direct_operations(args, family=DirectOperationFamily.SEMANTIC))
     integrated_all = bool(args.all)
-    code_semantic_search = bool(
-        args.code_search is not None
-        and any(
-            mode in {"semantic", "hybrid"} for mode in tuple(args.code_search_mode or ("hybrid",))
-        )
-    )
     if semantic_actions > 1:
         raise SystemExit("semantic direct actions are mutually exclusive")
     _validate_semantic_values(args)
@@ -311,9 +304,6 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
         "semantic_exact_index_model",
         "semantic_exact_index_scope",
     }
-    code_search_options = (
-        {"semantic_model_cache", "semantic_threads"} if code_semantic_search else set()
-    )
     integrated_all_options = {
         "semantic_source",
         "semantic_text_profile",
@@ -324,7 +314,7 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
         "semantic_time_budget_seconds",
     }
     unsupported_without_semantic_action = optional_names.intersection(explicit) - (
-        code_search_options | (integrated_all_options if integrated_all else set())
+        integrated_all_options if integrated_all else set()
     )
     if not semantic_actions and unsupported_without_semantic_action:
         raise SystemExit("semantic options require one semantic direct action")
@@ -335,11 +325,6 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
     )
     if args.semantic_source is not None and not text_scope:
         raise SystemExit("--semantic-source requires semantic text/all planning or indexing")
-    if integrated_all and args.semantic_source is not None and "code" in args.semantic_source:
-        raise SystemExit(
-            "--semantic-source code requires an explicit --route code; "
-            "it cannot be selected by --all"
-        )
     image_scope = args.semantic_index in {"image", "all"} or args.semantic_plan in {
         "image",
         "all",
@@ -383,7 +368,6 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
         or args.semantic_search is not None
         or args.semantic_image_calibrate is not None
         or args.semantic_classify is not None
-        or code_semantic_search
         or integrated_all
     )
     if {"semantic_model_cache", "semantic_threads"}.intersection(explicit) and not model_actions:

@@ -53,7 +53,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
 
             registry = builtin_route_registry()
             if tuple(registry) != (
-                "pdf", "docx", "office", "archive", "text", "audio", "video", "image", "code"
+                "pdf", "docx", "office", "archive", "text", "audio", "video", "image"
             ):
                 raise SystemExit(f"unexpected registry: {tuple(registry)!r}")
             forbidden = {
@@ -70,8 +70,6 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "neocortex.capabilities.formats.text.text_route",
                 "neocortex.capabilities.formats.audio.route",
                 "neocortex.capabilities.formats.video.route",
-                "neocortex.code.code_route",
-                "neocortex.code.ingestion.code_analyzers",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:

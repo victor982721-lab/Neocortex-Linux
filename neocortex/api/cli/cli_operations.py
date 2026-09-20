@@ -48,7 +48,6 @@ class DirectOperationFamily(Enum):
     AUDIO = auto()
     VIDEO = auto()
     ARCHIVE = auto()
-    CODE = auto()
     KNOWLEDGE = auto()
     CURATION = auto()
     CONTENT_DIAGNOSTICS = auto()
@@ -103,7 +102,6 @@ _OFFICE = DirectOperationFamily.OFFICE
 _AUDIO = DirectOperationFamily.AUDIO
 _VIDEO = DirectOperationFamily.VIDEO
 _ARCHIVE = DirectOperationFamily.ARCHIVE
-_CODE = DirectOperationFamily.CODE
 _KNOWLEDGE = DirectOperationFamily.KNOWLEDGE
 _CURATION = DirectOperationFamily.CURATION
 _CONTENT_DIAGNOSTICS = DirectOperationFamily.CONTENT_DIAGNOSTICS
@@ -332,16 +330,6 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
         "run_video_doctor",
         _VIDEO,
         module_name=".cli_video",
-    ),
-    DirectOperation("code_status", "run_code_status", _CODE, module_name=".cli_code"),
-    DirectOperation("code_search", "run_code_search", _CODE, _VALUE, module_name=".cli_code"),
-    DirectOperation("code_projects", "run_code_projects", _CODE, module_name=".cli_code"),
-    DirectOperation(
-        "code_reconstruct",
-        "run_code_reconstruct",
-        _CODE,
-        _VALUE,
-        module_name=".cli_code",
     ),
     DirectOperation(
         "knowledge_status",

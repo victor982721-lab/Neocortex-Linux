@@ -420,8 +420,6 @@ def _bundle_evidence_grounding(
         for namespace, value in hit.evidence.identifiers:
             if namespace.casefold() in {
                 "planned_duplicate_of",
-                "code_relation_source_resource",
-                "code_relation_target_resource",
             }:
                 grounded_resources.add(value)
     resource_ids = {

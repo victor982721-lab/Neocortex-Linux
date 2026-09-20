@@ -109,7 +109,6 @@ def _snapshot(
             OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
             OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
             OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-            OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
             OwnerSnapshot(
                 "catalog",
                 (OwnerAvailability.AVAILABLE if available else OwnerAvailability.ABSENT),
@@ -718,7 +717,6 @@ def test_catalog_materialization_preserves_exact_identity_and_provenance(
     ("source_kind", "file_key", "volume_id", "file_id"),
     (
         ("archive", "archive:container!/member.txt", "not-a-volume", "not-a-file"),
-        ("code", "code:42", "not-a-volume", "not-a-file"),
     ),
 )
 def test_catalog_materializer_keeps_owner_virtual_identities_out_of_physical_namespace(

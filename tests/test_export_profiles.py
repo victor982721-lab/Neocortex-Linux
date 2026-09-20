@@ -72,7 +72,7 @@ def test_declared_profiles_validate_their_own_documents_and_hashes(
     assert verified.source_commit == commit
     assert verified.tree_hash == _git(source, "rev-parse", "HEAD^{tree}")
     assert set(verified.required_paths) == set(verified.allowed_paths)
-    assert len(SOURCE_ONLY_DOCUMENTS) == 30
+    assert len(SOURCE_ONLY_DOCUMENTS) == 29
     assert all((destination / path).is_file() for path in documentation_paths(profile))
     if profile == "sanitized":
         assert not any((destination / path).exists() for path in SOURCE_ONLY_DOCUMENTS)

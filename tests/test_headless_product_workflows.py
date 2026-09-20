@@ -242,7 +242,6 @@ def test_installed_entrypoints_and_fresh_status_are_headless(product_lab: _Produ
     assert module_version.stdout.startswith("Neocortex ")
     help_result = lab.cli("--help")
     _assert_completed(help_result)
-    assert "--code-project-root" in help_result.stdout
     resources = lab.python_json(
         "import json,sys\n"
         "before=set(sys.modules)\n"
@@ -268,85 +267,6 @@ def test_installed_entrypoints_and_fresh_status_are_headless(product_lab: _Produ
     assert not lab.state.exists(), "a read must not create or migrate absent state"
 
 
-@pytest.mark.capability("base")
-def test_real_text_code_inventory_duplicate_and_incremental_workflow(
-    product_lab: _ProductLab,
-) -> None:
-    lab = product_lab
-    originals = lab.copy_group("base")
-    assert len(originals) == 20
-    lab.hide_system_tools()  # Optional document/OCR tools are not prerequisites here.
-    options = (
-        "--text-max-count",
-        "25",
-        "--code-max-count",
-        "25",
-        "--code-project-root",
-        str(lab.corpus / "code"),
-    )
-    first = lab.process("text,code", *options)
-    _progress(first)
-    assert _summary(first, "run_id=")["files"] == "20"
-    # All 20 authored base fixtures have a supported text MIME (including the
-    # CSV and the four code files, which Code also indexes as content).  The
-    # previous 19 expectation silently dropped one supported file.
-    assert _summary(first, "route=text ")["processed"] == "20"
-    assert _summary(first, "code_candidates=")["code_processed"] == "4"
-    assert _summary(first, "duplicate_groups=")["duplicate_groups"] == "1"
-    assert _summary(first, "action_mode=")["action_mode"] == "dry-run"
-    _terminal_status(lab, {"text", "code"})
-
-    replay = lab.process("text,code", *options)
-    assert _summary(replay, "route=text ")["processed"] == "0"
-    assert _summary(replay, "route=text ")["cache_hits"] == "20"
-    assert _summary(replay, "code_candidates=")["code_processed"] == "0"
-    assert _summary(replay, "code_candidates=")["code_cache_hits"] == "4"
-    assert lab.query(
-        "framework.sqlite3",
-        "SELECT COUNT(*) FROM file_actions WHERE apply_requested<>0 OR status NOT IN ('planned','skipped')",
-    ) == [[0]]
-    assert lab.query("code.sqlite3", "SELECT COUNT(*) FROM files WHERE status='current'") == [[4]]
-    assert lab.query(
-        "code.sqlite3", "SELECT COUNT(*) FROM symbols WHERE name='calibrate_relay'"
-    ) == [[1]]
-    hits = lab.query(
-        "text.sqlite3",
-        "SELECT path FROM document_fts WHERE document_fts MATCH ?",
-        ("NEOCORTEX_UNICODE",),
-    )
-    assert {Path(row[0]).relative_to(lab.corpus).as_posix() for row in hits} == {
-        "text/medición_ñ_測定.txt"
-    }
-    members = lab.query(
-        "dedup.sqlite3",
-        "SELECT path FROM planned_duplicate_members WHERE group_id IN "
-        "(SELECT group_id FROM planned_duplicate_groups WHERE scan_id="
-        "(SELECT MAX(scan_id) FROM duplicate_plan_summaries))",
-    )
-    assert {Path(row[0]).relative_to(lab.corpus).as_posix() for row in members} == {
-        "text/duplicate-a.txt",
-        "text/duplicate-b.txt",
-    }
-    assert _hashes(lab.corpus) == originals
-    assert not any(
-        (lab.state / f"{route}.sqlite3").exists() for route in ("audio", "video", "pdf", "image")
-    )
-
-    changed = lab.corpus / "code" / "relay.py"
-    changed.write_text(
-        changed.read_text(encoding="utf-8") + "\nCALIBRATION_REVISION = 2\n", encoding="utf-8"
-    )
-    changed_bytes = _hashes(lab.corpus)
-    update = lab.process("text,code", *options)
-    assert _summary(update, "code_candidates=")["code_processed"] == "1"
-    assert _summary(update, "code_candidates=")["code_cache_hits"] == "3"
-    assert _summary(update, "route=text ")["processed"] == "1"
-    replay = lab.process("text,code", *options)
-    assert _summary(replay, "code_candidates=")["code_cache_hits"] == "4"
-    assert _summary(replay, "route=text ")["cache_hits"] == "20"
-    assert lab.query("code.sqlite3", "SELECT COUNT(*) FROM file_versions") == [[5]]
-    assert _hashes(lab.corpus) == changed_bytes
-    _terminal_status(lab, {"text", "code"})
 
 
 @pytest.mark.capability("base")
@@ -641,8 +561,6 @@ raise SystemExit(exit_code)
         str(lab.corpus),
         "--state-directory",
         str(lab.state),
-        "--code-project-root",
-        str(lab.corpus / "code"),
         "--no-document-catalog",
         "--strict-exit-codes",
         "--audio-local-models-only",
@@ -671,7 +589,6 @@ raise SystemExit(exit_code)
         "--audio-max-count",
         "--video-max-count",
         "--image-max-count",
-        "--code-max-count",
     ):
         options.extend((argument, "25"))
     result = lab.execute(["-c", script, str(audit_path), *options])
@@ -703,7 +620,7 @@ raise SystemExit(exit_code)
     run = status_payload["runs"][0]
     assert run["status"] == "failed"
     routes = {route["route_name"]: route for route in run["routes"]}
-    assert set(routes) == (set(registered) - {"code"}), "--all excludes the opt-in Code route"
+    assert set(routes) == set(registered)
     assert routes["audio"]["status"] == "failed"
     # The current public degradation contract names the unavailable optional
     # capability explicitly; older releases surfaced WhisperRuntimeError.
@@ -720,21 +637,6 @@ raise SystemExit(exit_code)
         "text.sqlite3",
         "SELECT COUNT(*) FROM document_fts WHERE document_fts MATCH 'NEOCORTEX_UNICODE'",
     ) == [[1]]
-    search = lab.cli(
-        "--state-directory",
-        str(lab.state),
-        "--code-search",
-        "calibrate_relay",
-        "--code-search-mode",
-        "symbol",
-        "--code-json",
-    )
-    _assert_completed(search)
-    hits = [json.loads(line) for line in search.stdout.splitlines()]
-    assert any(
-        hit["symbol"] == "relay.calibrate_relay" and hit["analysis_status"] == "complete"
-        for hit in hits
-    )
     assert lab.query(
         "framework.sqlite3",
         "SELECT COUNT(*) FROM file_actions WHERE apply_requested<>0 "

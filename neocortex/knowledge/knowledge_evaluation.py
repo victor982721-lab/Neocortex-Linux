@@ -16,7 +16,6 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,14 +40,11 @@ _REQUIRED_CASE_NAMES = (
     "exact_identifier",
     "lexical",
     "semantic_paraphrase",
-    "relevant_hit_chunk_2_of_3",
     "multiple_evidence_same_resource",
     "two_sources_formats_same_answer",
-    "code_and_documentation",
     "current_vs_superseded",
     "exact_duplicate",
     "contradiction",
-    "available_multihop",
     "no_answer",
     "incomplete_by_limit",
     "snapshot_changes",
@@ -582,11 +578,6 @@ class GoldenCase:
             "semantic" not in self.required_plan_steps
         ):
             raise ValueError("semantic case must require semantic planning")
-        if self.category == "relevant_hit_chunk_2_of_3" and not any(
-            item.locator.section_index == 2 and item.locator.section_count == 3
-            for item in expected
-        ):
-            raise ValueError("chunk case must expect section 2 of 3")
         if self.category == "multiple_evidence_same_resource":
             counts = Counter(item.resource_id for item in expected)
             if not counts or max(counts.values()) < 2:
@@ -597,10 +588,6 @@ class GoldenCase:
             or not self.claims
         ):
             raise ValueError("two-source case needs two formats and one claim")
-        if self.category == "code_and_documentation":
-            kinds = {item.source_kind for item in expected}
-            if "code" not in kinds or not kinds.difference({"code"}):
-                raise ValueError("code/documentation case needs both source kinds")
         if self.category == "current_vs_superseded" and (
             not any(
                 item.revision_state is EvaluationRevisionState.CURRENT
@@ -621,12 +608,6 @@ class GoldenCase:
             len(self.claims) < 2 or not self.contradictions
         ):
             raise ValueError("contradiction case needs claims and relation")
-        if self.category == "available_multihop":
-            if len(self.relation_hops) < 2:
-                raise ValueError("multihop case needs at least two hops")
-            for left, right in pairwise(self.relation_hops):
-                if left.to_resource_id != right.from_resource_id:
-                    raise ValueError("multihop relation chain is disconnected")
         if self.category == "no_answer" and (
             self.relevant_evidence
             or self.expected_retrieved_ids
@@ -1394,8 +1375,6 @@ def _locator_from_evidence(value: object) -> EvidenceLocator:
         return EvidenceLocator("lines", f"{value.start_line}-{value.end_line}")
     if value.start_ms is not None:
         return EvidenceLocator("timestamp_ms", f"{value.start_ms}-{value.end_ms}")
-    if value.section_kind == "code_relation" and value.section_id is not None:
-        return EvidenceLocator("relation", value.section_id)
     if value.section_kind == "evaluation_locator_v1" and value.section_id is not None:
         try:
             payload: object = json.loads(value.section_id)
@@ -1521,10 +1500,6 @@ def _candidate_contract(
         generation=None,
         state=_revision_state(candidate.revision_state),
     )
-    relation_hop = next(
-        (hop for hop in case.relation_hops if hop.evidence_id == candidate.evidence_id),
-        None,
-    )
     page: int | None = None
     start_line: int | None = None
     end_line: int | None = None
@@ -1533,27 +1508,7 @@ def _candidate_contract(
     section_kind: str | None = None
     section_id: str | None = None
     evidence_method = EvidenceMethod.EXTRACTED
-    if relation_hop is not None:
-        if relation_hop.from_resource_id != candidate.resource_id:
-            raise ValueError("relation hop source must match candidate resource")
-        relation_prefix, separator, relation_kind = relation_hop.relation.partition(":")
-        family = relation_prefix.removeprefix("code_")
-        source_table = {
-            "reference": "code_references",
-            "dependency": "dependencies",
-        }.get(family)
-        if (
-            separator != ":"
-            or not relation_kind
-            or source_table is None
-            or candidate.locator.kind != "relation"
-            or not candidate.locator.value.startswith(f"{source_table}:")
-        ):
-            raise ValueError("relation hop is not a supported code relation")
-        section_kind = "code_relation"
-        section_id = candidate.locator.value
-        evidence_method = EvidenceMethod.STRUCTURAL
-    elif candidate.locator.kind == "page":
+    if candidate.locator.kind == "page":
         page = int(candidate.locator.value)
     elif candidate.locator.kind == "lines":
         start, end = candidate.locator.value.split("-", maxsplit=1)
@@ -1578,28 +1533,6 @@ def _candidate_contract(
     identifiers: list[tuple[str, str]] = []
     if claim is not None:
         identifiers.append((f"claim:{claim.topic}", claim.value))
-    if relation_hop is not None:
-        relation_prefix, _separator, relation_kind = relation_hop.relation.partition(
-            ":"
-        )
-        family = relation_prefix.removeprefix("code_")
-        identifiers.extend(
-            (
-                ("code_relation_family", family),
-                ("code_relation_id", candidate.locator.value),
-                ("code_relation_kind", relation_kind),
-                ("code_relation_name", relation_hop.relation),
-                ("code_relation_source_resource", relation_hop.from_resource_id),
-                ("code_relation_target_resource", relation_hop.to_resource_id),
-                ("code_relation_resolved", "true"),
-                ("code_relation_confirmed", "true"),
-                ("code_relation_confidence", "1.0"),
-                (
-                    "code_relation_provenance",
-                    "knowledge-evaluation-runner-v1",
-                ),
-            )
-        )
     evidence = EvidenceRef(
         evidence_id=candidate.evidence_id,
         resource_id=resource.resource_id,
@@ -1749,7 +1682,7 @@ def _run_case(case: GoldenCase) -> ScenarioObservation:
             and not (
                 ranking.channel == "exact"
                 and any(
-                    candidate.source_kind in {"inventory", "code"}
+                    candidate.source_kind == "inventory"
                     for candidate in ranking.candidates
                 )
             ),
@@ -1926,9 +1859,9 @@ def run_golden_suite(
     """Execute planner, fusion, context and applicable service seams per case."""
 
     if require_all_categories and (
-        len(suite.cases) != 17 or suite.covered_categories != REQUIRED_GOLDEN_CATEGORIES
+        len(suite.cases) != 14 or suite.covered_categories != REQUIRED_GOLDEN_CATEGORIES
     ):
-        raise ValueError("golden suite must contain exactly the 17 required cases")
+        raise ValueError("golden suite must contain exactly the 14 required cases")
     return GoldenRun(suite, tuple(_run_case(case) for case in suite.cases))
 
 

@@ -74,34 +74,9 @@ SERIAL_PATTERN = re.compile(
     r"[A-Z0-9][A-Z0-9._/-]*(?<![._/-])(?![A-Z0-9._/-])",
     re.IGNORECASE,
 )
-SYMBOL_PATTERN = re.compile(
-    r"\b[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)+\b"
-)
 HASH_PATTERN = re.compile(r"\b[0-9a-fA-F]{16,64}\b")
 NUMBERED_IDENTIFIER_PATTERN = re.compile(
     r"\b[A-Za-z][A-Za-z0-9_.]*(?:[-_/][A-Za-z0-9_.]+)*[-_/][0-9][A-Za-z0-9_.-]*\b"
-)
-STRUCTURAL_WORDS = frozenset(
-    {
-        "función",
-        "function",
-        "clase",
-        "class",
-        "módulo",
-        "module",
-        "símbolo",
-        "symbol",
-        "definición",
-        "definition",
-        "referencia",
-        "referencias",
-        "reference",
-        "references",
-        "importa",
-        "imports",
-        "llama",
-        "calls",
-    }
 )
 RELATIONAL_WORDS = frozenset(
     {
@@ -235,8 +210,7 @@ def _quoted_file_surfaces(
 def _is_full_file_name_candidate(value: str, leader: re.Match[str] | None) -> bool:
     first_word = value.split(maxsplit=1)[0].casefold()
     cue_words = (
-        STRUCTURAL_WORDS
-        | RELATIONAL_WORDS
+        RELATIONAL_WORDS
         | TEMPORAL_WORDS
         | frozenset({"hash", "identifier", "identificador", "s/n", "serial", "sn"})
     )
@@ -311,11 +285,10 @@ def _pattern_candidates(
 ) -> tuple[list[_Candidate], tuple[re.Match[str], ...]]:
     candidates: list[_Candidate] = []
     temporal_matches: list[re.Match[str]] = []
-    for priority, pattern, is_symbol, masks_temporal_year in (
-        (2, SERIAL_PATTERN, False, True),
-        (3, SYMBOL_PATTERN, True, False),
-        (4, HASH_PATTERN, False, True),
-        (5, NUMBERED_IDENTIFIER_PATTERN, False, True),
+    for priority, pattern, masks_temporal_year in (
+        (2, SERIAL_PATTERN, True),
+        (4, HASH_PATTERN, True),
+        (5, NUMBERED_IDENTIFIER_PATTERN, True),
     ):
         for match in pattern.finditer(text):
             candidates.append(
@@ -324,7 +297,7 @@ def _pattern_candidates(
                     match.end(),
                     priority,
                     match.group(0).strip(),
-                    is_symbol,
+                    False,
                 )
             )
             if masks_temporal_year:
@@ -335,8 +308,7 @@ def _pattern_candidates(
 def _accepted_candidates(candidates: list[_Candidate]) -> tuple[tuple[str, ...], bool]:
     values: list[str] = []
     accepted_spans: list[tuple[int, int]] = []
-    symbol_present = False
-    for start, end, _, value, is_symbol in sorted(
+    for start, end, _, value, _is_symbol in sorted(
         candidates,
         key=lambda item: (item[0], item[2], -item[1]),
     ):
@@ -348,8 +320,7 @@ def _accepted_candidates(candidates: list[_Candidate]) -> tuple[tuple[str, ...],
         if value not in values:
             values.append(value)
         accepted_spans.append((start, end))
-        symbol_present = symbol_present or is_symbol
-    return tuple(values), symbol_present
+    return tuple(values), False
 
 
 def extract_exact_terms(
@@ -365,13 +336,13 @@ def extract_exact_terms(
     )
     pattern_candidates, temporal_matches = _pattern_candidates(non_name_text)
     candidates.extend(pattern_candidates)
-    values, symbol_present = _accepted_candidates(candidates)
+    values, _ = _accepted_candidates(candidates)
     temporal_text = _masked_match_text(non_name_text, temporal_matches)
     return (
         values,
         bool(path_matches),
         bool(file_names),
-        symbol_present,
+        False,
         non_name_text,
         temporal_text,
     )
@@ -382,8 +353,6 @@ __all__ = (
     "NUMBERED_IDENTIFIER_PATTERN",
     "RELATIONAL_WORDS",
     "SERIAL_PATTERN",
-    "STRUCTURAL_WORDS",
-    "SYMBOL_PATTERN",
     "TEMPORAL_WORDS",
     "TEMPORAL_YEAR_WORDS",
     "extract_exact_terms",

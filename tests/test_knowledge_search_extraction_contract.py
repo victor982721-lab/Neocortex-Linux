@@ -43,7 +43,7 @@ from neocortex.knowledge.knowledge_search import (
 
 PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
 CONTRACT_MODULE = "neocortex.knowledge.knowledge_search_contracts"
-RESULT_JSON_SHA256 = "38120699E8E7AE58B0F23416DAB0EC74FDB032E4C94B616E6B94F480980EADA0"
+RESULT_JSON_SHA256 = "CD7A47BBAF64E87B2BA26E5D7A4EF065F569BA6FB8FA7627052FA0B9EFC44F22"
 
 
 def _snapshot() -> KnowledgeSnapshot:
@@ -53,7 +53,6 @@ def _snapshot() -> KnowledgeSnapshot:
         "office": 1,
         "audio": 1,
         "semantic": 6,
-        "code": 2,
         "catalog": 6,
         "inventory": 7,
     }

@@ -16,7 +16,7 @@ MAX_HYDRATION_REFERENCES = 20
 MAX_HYDRATION_CHARACTERS = 32768
 HYDRATION_DEADLINE_SECONDS = 10.0
 _HYDRATABLE_OWNERS = frozenset(
-    {"text", "pdf", "docx", "office", "archive", "audio", "video", "image", "code"}
+    {"text", "pdf", "docx", "office", "archive", "audio", "video", "image"}
 )
 
 

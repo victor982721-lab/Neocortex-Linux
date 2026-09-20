@@ -2,9 +2,9 @@
 
 The adapter is deliberately a leaf: it returns neutral evidence records and
 does not import the search/fusion layer.  Catalog generations are truly pinned
-to :class:`KnowledgeSnapshot` publication heads.  Inventory and code are not
-generational owners; their reads are constrained to snapshot observations and
-reported as partial rather than being presented as an as-of snapshot.
+to :class:`KnowledgeSnapshot` publication heads. Inventory reads are
+constrained to snapshot observations and reported as partial rather than being
+presented as an as-of snapshot.
 
 No function in this module initializes, migrates, attaches or writes a
 database.  Missing and incompatible state is reported without creating files.
@@ -29,8 +29,6 @@ from neocortex.platform.policy import (
     sqlite_path_collation,
 )
 
-from neocortex.code.ingestion.code_detection import LANGUAGE_EXTENSIONS
-from neocortex.code.code_schema import readonly_code_database
 from neocortex.documents.document_resource_binding import (
     ResourceBindingError,
     parse_resource_binding,
@@ -69,7 +67,7 @@ MAX_EXACT_SQLITE_STEPS = 100_000_000
 DEFAULT_EXACT_SQLITE_STEPS = 5_000_000
 SQLITE_PROGRESS_INTERVAL = 1_000
 HEAD_BATCH_SIZE = 200
-EXACT_OWNER_NAMES = ("inventory", "code", "catalog")
+EXACT_OWNER_NAMES = ("inventory", "catalog")
 _EXACT_INVENTORY_SQLITE_POLICY = SQLiteConnectionPolicy(
     label="exact inventory",
     timeout_seconds=60.0,
@@ -95,7 +93,6 @@ class ExactLookupKind(StrEnum):
     IDENTIFIER = "identifier"
     SERIAL = "serial"
     HASH = "hash"
-    SYMBOL = "symbol"
 
 
 class ExactLookupStatus(StrEnum):
@@ -452,15 +449,6 @@ _SERIAL_TERM = re.compile(
     re.IGNORECASE,
 )
 _HEX_TERM = re.compile(r"^[0-9a-fA-F]{16,64}$")
-_QUALIFIED_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)+$")
-_BARE_CODE_TOKEN = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-_NUMBERED_UNDERSCORE_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9.]*_[0-9][A-Za-z0-9_.-]*$")
-_CODE_EXTENSIONS = frozenset(
-    extension.removeprefix(".").casefold() for extension in LANGUAGE_EXTENSIONS
-)
-_CODE_LANGUAGES = frozenset(language.casefold() for language in LANGUAGE_EXTENSIONS.values())
-_CODE_EXACT_FORMATS = frozenset(_CODE_EXTENSIONS | _CODE_LANGUAGES)
-_CATALOG_EXACT_SOURCE_KINDS = frozenset({"audio", "docx", "office", "pdf", "pptx", "xlsx"})
 _CATALOG_EXACT_FORMATS = frozenset(
     {
         "aac",
@@ -493,7 +481,6 @@ _OFFICE_EXACT_FORMATS = frozenset(
 )
 _SOURCE_EXTENSION_ALIASES: Mapping[str, frozenset[str]] = {
     "audio": _AUDIO_EXACT_FORMATS,
-    "code": _CODE_EXTENSIONS,
     "docx": frozenset({"docx"}),
     "image": _IMAGE_EXACT_FORMATS,
     "image_ocr": _IMAGE_EXACT_FORMATS,
@@ -514,35 +501,6 @@ _CATALOG_SOURCE_ALIASES: Mapping[str, frozenset[str]] = {
 }
 _FILE_EXTENSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+_-]{0,15}$")
 _URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
-_EXPLICIT_CODE_WORDS = frozenset(
-    {
-        "class",
-        "clase",
-        "code",
-        "codigo",
-        "código",
-        "definicion",
-        "definición",
-        "definition",
-        "function",
-        "funcion",
-        "función",
-        "method",
-        "metodo",
-        "método",
-        "module",
-        "modulo",
-        "módulo",
-        "symbol",
-        "symbols",
-        "simbolo",
-        "símbolo",
-        "simbolos",
-        "símbolos",
-    }
-)
-
-
 def _serial_body(value: str) -> str | None:
     candidate = value.strip()
     for _ in range(2):
@@ -589,64 +547,11 @@ def _looks_like_file_name(value: str) -> bool:
     )
 
 
-def _is_bare_code_symbol(value: str) -> bool:
-    if _BARE_CODE_TOKEN.fullmatch(value) is None:
-        return False
-    if _NUMBERED_UNDERSCORE_IDENTIFIER.fullmatch(value) is not None:
-        return False
-    core = value.strip("_")
-    if not core:
-        return False
-    snake_case = "_" in value and any(character.isalpha() for character in core)
-    camel_case = any(character.isupper() for character in value[1:]) and any(
-        character.islower() for character in value
-    )
-    return snake_case or camel_case
-
-
-def _masked_exact_term_text(plan: KnowledgePlan) -> str:
-    characters = list(plan.normalized_query)
-    for term in sorted(plan.exact_terms, key=len, reverse=True):
-        start = 0
-        while True:
-            index = plan.normalized_query.find(term, start)
-            if index < 0:
-                break
-            characters[index : index + len(term)] = " " * len(term)
-            start = index + len(term)
-    return "".join(characters)
-
-
-def _plan_demonstrates_code(plan: KnowledgePlan) -> bool:
-    return "structural" in plan.intents or any(
-        step.channel == "structural_code" for step in plan.steps
-    )
-
-
-def _plan_has_explicit_code_evidence(plan: KnowledgePlan) -> bool:
-    sources = {value.casefold() for value in plan.source_kinds}
-    formats = {value.casefold().removeprefix(".") for value in plan.formats}
-    if "code" in sources or formats.intersection(_CODE_EXACT_FORMATS):
-        return True
-    words = {
-        match.group(0).casefold()
-        for match in re.finditer(r"[^\W\d_]+", plan.normalized_query, re.UNICODE)
-    }
-    return bool(words.intersection(_EXPLICIT_CODE_WORDS))
-
-
 def _expanded_format_extensions(formats: Sequence[str]) -> frozenset[str]:
     extensions: set[str] = set()
     for value in formats:
         key = value.casefold().removeprefix(".")
-        language_extensions = {
-            extension.removeprefix(".").casefold()
-            for extension, language in LANGUAGE_EXTENSIONS.items()
-            if language.casefold() == key
-        }
-        if language_extensions:
-            extensions.update(language_extensions)
-        elif key in _SOURCE_EXTENSION_ALIASES:
+        if key in _SOURCE_EXTENSION_ALIASES:
             extensions.update(_SOURCE_EXTENSION_ALIASES[key])
         else:
             extensions.add(key)
@@ -682,18 +587,6 @@ def _inventory_path_scope(
         )
     format_scope = _expanded_format_extensions(formats) if formats else None
     return _combine_extension_scopes(source_scope, format_scope)
-
-
-def _code_path_scope(
-    source_kinds: Sequence[str],
-    formats: Sequence[str],
-) -> tuple[str, ...] | None:
-    if source_kinds and "code" not in source_kinds:
-        return ()
-    if not source_kinds and not formats:
-        return None
-    format_scope = _expanded_format_extensions(formats) if formats else None
-    return _combine_extension_scopes(_CODE_EXTENSIONS, format_scope)
 
 
 def _catalog_row_scopes(
@@ -778,8 +671,6 @@ def _plan_exact_owner_scope(plan: KnowledgePlan) -> tuple[str, ...]:
     if not plan.source_kinds and not plan.formats:
         return EXACT_OWNER_NAMES
     selected = ["inventory"]
-    if _code_path_scope(plan.source_kinds, plan.formats) != ():
-        selected.append("code")
     catalog_sources, catalog_formats = _catalog_row_scopes(
         plan.source_kinds,
         plan.formats,
@@ -799,14 +690,12 @@ def classify_plan_exact_terms(plan: KnowledgePlan) -> tuple[ExactLookupTerm, ...
 
     result: list[ExactLookupTerm] = []
     seen: set[tuple[ExactLookupKind, str, str | None]] = set()
-    code_context = _plan_demonstrates_code(plan)
-    explicit_code_evidence = _plan_has_explicit_code_evidence(plan)
     for surface in plan.exact_terms:
         value = surface.strip()
         if _looks_like_path(value):
             kind = ExactLookupKind.PATH
             canonical = value
-        elif _looks_like_file_name(value) and not explicit_code_evidence:
+        elif _looks_like_file_name(value):
             kind = ExactLookupKind.NAME
             canonical = value
         elif _serial_body(value) is not None:
@@ -815,19 +704,10 @@ def classify_plan_exact_terms(plan: KnowledgePlan) -> tuple[ExactLookupTerm, ...
         elif _HEX_TERM.fullmatch(value):
             kind = ExactLookupKind.HASH
             canonical = value.casefold()
-        elif _QUALIFIED_SYMBOL.fullmatch(value):
-            kind = ExactLookupKind.SYMBOL
-            canonical = value
-        elif _looks_like_file_name(value):
-            kind = ExactLookupKind.NAME
-            canonical = value
-        elif code_context and _is_bare_code_symbol(value):
-            kind = ExactLookupKind.SYMBOL
-            canonical = value
         else:
             kind = ExactLookupKind.IDENTIFIER
             canonical = value
-        key_value = canonical if kind is ExactLookupKind.SYMBOL else canonical.casefold()
+        key_value = canonical.casefold()
         key = (kind, key_value, None)
         if key in seen:
             continue
@@ -839,16 +719,6 @@ def classify_plan_exact_terms(plan: KnowledgePlan) -> tuple[ExactLookupTerm, ...
                 surface=(surface if surface != canonical else None),
             )
         )
-    if code_context:
-        for match in _BARE_CODE_TOKEN.finditer(_masked_exact_term_text(plan)):
-            value = match.group(0)
-            if not _is_bare_code_symbol(value):
-                continue
-            key = (ExactLookupKind.SYMBOL, value, None)
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append(ExactLookupTerm(ExactLookupKind.SYMBOL, value))
     return tuple(result)
 
 
@@ -1106,10 +976,6 @@ def _inventory_identity(volume: object, file_id: object) -> FileIdentity:
     return FileIdentity(values[0], values[1])
 
 
-def _code_identity(volume: object, file_id: object) -> FileIdentity:
-    return FileIdentity(int(str(volume), 16), int(str(file_id), 16))
-
-
 def _canonical_decimal(value: object) -> int:
     text = str(value)
     if text != "0" and (not text or text[0] == "0" or not text.isdecimal()):
@@ -1134,12 +1000,11 @@ def _catalog_resource(
 ) -> tuple[ResourceRef, tuple[str, ...], Mapping[str, object] | None]:
     """Materialize a catalog row through its owner binding when available.
 
-    Archive members and unbound Code rows are logical owner references.  Their
-    denormalized ``volume_id``/``file_id`` columns are retained for legacy
-    reporting but are not identity evidence.  A physical resource is accepted
-    only when the catalog stored and validated an explicit resource binding;
-    this prevents a name/radix/path coincidence from creating an inventory
-    join.
+    Archive members are logical owner references. Their denormalized
+    ``volume_id``/``file_id`` columns are retained for legacy reporting but
+    are not identity evidence. A physical resource is accepted only when the
+    catalog stored and validated an explicit resource binding; this prevents a
+    name/radix/path coincidence from creating an inventory join.
     """
 
     source_kind = str(row["source_kind"])
@@ -1156,7 +1021,7 @@ def _catalog_resource(
             raise ValueError("catalog resource binding does not match its row")
         binding = parsed
 
-    if source_kind in {"archive", "code"}:
+    if source_kind == "archive":
         if binding is None:
             return (
                 ResourceRef(
@@ -1206,37 +1071,6 @@ def _catalog_resource(
         path=path,
     )
     return resource, warnings, binding
-
-
-def _code_revision(
-    row: sqlite3.Row,
-    resource_id: str,
-) -> RevisionRef:
-    payload = {
-        "source_kind": "code",
-        "source_identity": f"{row['volume_id']}:{row['physical_file_id']}",
-        "source_revision": {
-            "version_id": int(row["version_id"]),
-            "size": int(row["size"]),
-            "mtime_ns": int(row["mtime_ns"]),
-            "birthtime_ns": int(row["birthtime_ns"]),
-            "raw_content_xxh3_128": row["raw_xxh3_128"],
-        },
-    }
-    identity = fingerprint_text(canonical_json(payload))
-    state = (
-        RevisionState.CURRENT
-        if str(row["analysis_status"]) in {"complete", "text_only"}
-        else RevisionState.PARTIAL
-    )
-    return RevisionRef(
-        resource_id,
-        f"revision:code:{identity.xxh3_128}",
-        f"{row['analyzer_id']}:{row['analyzer_version']}",
-        str(row["processing_signature"]),
-        None,
-        state,
-    )
 
 
 def _catalog_quality_warnings(row: sqlite3.Row) -> tuple[str, ...]:
@@ -1694,499 +1528,8 @@ def _lookup_inventory(
 # endregion [04]
 
 
-# region [05] Code v2 adapter (best-effort, non-generational)
+# region [05] Catalog v6 generational adapter
 
-
-_CODE_KINDS = frozenset(
-    {
-        ExactLookupKind.PATH,
-        ExactLookupKind.NAME,
-        ExactLookupKind.HASH,
-        ExactLookupKind.SYMBOL,
-    }
-)
-_CODE_WATERMARK_NAMES = (
-    "current_files",
-    "latest_version_id",
-    "latest_analysis_run_id",
-)
-_CODE_HASH_ALGORITHMS = frozenset(
-    {None, "xxh3_128", "raw_xxh3_128", "xxh3_128_raw_v1", HASH_ALGORITHM_128}
-)
-
-
-def _code_current_vector(
-    connection: sqlite3.Connection,
-    control: _QueryControl,
-) -> tuple[dict[str, int], int]:
-    rows, steps = control.query(
-        connection,
-        """SELECT
-        (SELECT COUNT(*) FROM files WHERE status='current') AS current_files,
-        (SELECT COALESCE(MAX(version_id),0) FROM file_versions) AS latest_version_id,
-        (SELECT COALESCE(MAX(analysis_run_id),0) FROM analysis_runs)
-            AS latest_analysis_run_id
-        LIMIT 1""",
-    )
-    row = rows[0]
-    return (
-        {
-            "current_files": int(row["current_files"]),
-            "latest_version_id": int(row["latest_version_id"]),
-            "latest_analysis_run_id": int(row["latest_analysis_run_id"]),
-        },
-        steps,
-    )
-
-
-_CODE_SELECT = """SELECT v.version_id,f.volume_id,f.physical_file_id,
-f.current_path,v.path_observed,v.size,v.mtime_ns,v.birthtime_ns,
-v.raw_xxh3_128,v.processing_signature,v.analyzer_id,v.analyzer_version,
-v.parser_kind,v.analysis_status"""
-
-
-def _code_term_rows(
-    connection: sqlite3.Connection,
-    control: _QueryControl,
-    term: ExactLookupTerm,
-    latest_version_id: int,
-    requested: int,
-    path_scope: tuple[str, ...] | None,
-) -> tuple[tuple[sqlite3.Row, ...], int, bool]:
-    select = _CODE_SELECT
-    join = ""
-    if term.kind is ExactLookupKind.SYMBOL:
-        select += ",s.symbol_id,s.kind AS symbol_kind,s.name,s.qualified_name,"
-        select += "s.signature,s.confirmed,s.start_line,s.end_line"
-        join = " JOIN symbols s ON s.version_id=v.version_id"
-        predicate = "(s.name=? OR s.qualified_name=?)"
-        term_parameters: tuple[object, ...] = (term.value, term.value)
-        order = "s.qualified_name,s.symbol_id"
-    elif term.kind is ExactLookupKind.PATH:
-        predicate = f"f.current_path=? COLLATE {_PATH_COLLATION}"
-        term_parameters = (term.value,)
-        order = "f.current_path COLLATE NOCASE,v.version_id"
-    elif term.kind is ExactLookupKind.NAME:
-        predicate = _basename_predicate("f.current_path")
-        term_parameters = (term.value, term.value, term.value, term.value)
-        order = "f.current_path COLLATE NOCASE,v.version_id"
-    else:
-        predicate = "v.raw_xxh3_128=? COLLATE NOCASE"
-        term_parameters = (term.value,)
-        order = "f.current_path COLLATE NOCASE,v.version_id"
-    scope_clause, scope_parameters = _path_scope_clause(
-        "f.current_path",
-        path_scope,
-    )
-    limit = _query_limit(control, requested)
-    rows, steps = control.query(
-        connection,
-        f"""{select} FROM file_versions v
-        JOIN files f ON f.current_version_id=v.version_id{join}
-        WHERE f.status='current' AND v.invalidated_ns IS NULL
-        AND v.version_id<=? AND {predicate}{scope_clause}
-        ORDER BY {order} LIMIT ?""",
-        (latest_version_id, *term_parameters, *scope_parameters, limit),
-    )
-    return rows, steps, len(rows) == limit
-
-
-def _code_row_match(
-    row: sqlite3.Row,
-    term: ExactLookupTerm,
-    rank: int,
-) -> ExactEvidenceMatch:
-    identity = _code_identity(row["volume_id"], row["physical_file_id"])
-    source_identity = f"{row['volume_id']}:{row['physical_file_id']}"
-    resource, identity_warnings = _physical_resource(
-        source_kind="code",
-        owner="code",
-        source_identity=source_identity,
-        identity=identity,
-        birthtime_ns=row["birthtime_ns"],
-        path=str(row["current_path"]),
-    )
-    revision = _code_revision(row, resource.resource_id)
-    version_id = int(row["version_id"])
-    identifiers: list[tuple[str, str]] = [("code_version_id", str(version_id))]
-    start_line: int | None = None
-    end_line: int | None = None
-    symbol: str | None = None
-    section_kind: str
-    section_id: str
-    snippet: str | None = None
-    if term.kind is ExactLookupKind.SYMBOL:
-        qualified = str(row["qualified_name"])
-        identifiers.append(("symbol", qualified))
-        start_line = int(row["start_line"])
-        end_line = int(row["end_line"])
-        symbol = qualified
-        section_kind = "code_symbol"
-        section_id = str(row["symbol_id"])
-        snippet = str(row["signature"] or qualified)[:4_096]
-        reason = "current structured code symbol matched exactly"
-    elif term.kind is ExactLookupKind.HASH:
-        observed_digest = str(row["raw_xxh3_128"]).casefold()
-        identifiers.append(("raw_xxh3_128", observed_digest))
-        section_kind = "raw_content_fingerprint"
-        section_id = observed_digest
-        reason = "current code raw-content fingerprint matched exactly"
-    elif term.kind is ExactLookupKind.NAME:
-        observed_path = str(row["current_path"])
-        identifiers.append(("file_name", observed_path.replace("\\", "/").rsplit("/", 1)[-1]))
-        section_kind = "current_path"
-        section_id = observed_path
-        reason = "current structured code file name matched exactly"
-    else:
-        observed_path = str(row["current_path"])
-        identifiers.append(("path", observed_path))
-        section_kind = "current_path"
-        section_id = observed_path
-        reason = "current structured code path matched exactly"
-    symbol_unconfirmed = bool(term.kind is ExactLookupKind.SYMBOL and int(row["confirmed"]) != 1)
-    if symbol_unconfirmed:
-        revision = replace(revision, state=RevisionState.PARTIAL)
-        reason = "unconfirmed structured code symbol matched exactly"
-    evidence = EvidenceRef(
-        _stable_exact_evidence_id(
-            owner="code",
-            resource_id=resource.resource_id,
-            revision_id=revision.revision_id,
-            section_kind=section_kind,
-            section_id=section_id,
-            identifiers=identifiers,
-            extractor=str(row["analyzer_id"]),
-        ),
-        resource.resource_id,
-        revision.revision_id,
-        EvidenceMethod.STRUCTURAL,
-        start_line=start_line,
-        end_line=end_line,
-        symbol=symbol,
-        section_kind=section_kind,
-        section_id=section_id,
-        snippet=snippet,
-        extractor=str(row["analyzer_id"]),
-        extractor_version=str(row["analyzer_version"]),
-        identifiers=tuple(identifiers),
-    )
-    warnings = {
-        *identity_warnings,
-        "code_snapshot_visibility_best_effort_non_generational",
-        *_non_ascii_case_warning(term),
-    }
-    if term.kind is ExactLookupKind.HASH:
-        warnings.add("digest_equality_is_not_byte_comparison")
-    if symbol_unconfirmed:
-        warnings.add("code_symbol_unconfirmed")
-    return ExactEvidenceMatch(
-        _ranking_name("code", term),
-        term,
-        resource,
-        revision,
-        evidence,
-        rank,
-        reason,
-        model_signature=str(row["processing_signature"]),
-        warnings=tuple(sorted(warnings)),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _CodeTermOutcome:
-    matches: tuple[ExactEvidenceMatch, ...]
-    report: ExactOwnerReport
-    consumed_preflight: bool
-
-
-def _code_expected_vector(owner: OwnerSnapshot) -> dict[str, int] | None:
-    expected: dict[str, int] = {}
-    for name in _CODE_WATERMARK_NAMES:
-        value = _watermark_int(owner, name)
-        if value is None:
-            return None
-        expected[name] = value
-    return expected
-
-
-def _code_missing_watermark_reports(
-    terms: Sequence[ExactLookupTerm],
-) -> list[ExactOwnerReport]:
-    return [
-        _report(
-            "code",
-            term,
-            ExactLookupStatus.PARTIAL,
-            executed=False,
-            available=True,
-            reason="code_snapshot_watermark_missing",
-        )
-        for term in terms
-    ]
-
-
-def _code_changed_reports(
-    terms: Sequence[ExactLookupTerm],
-    preflight_steps: int,
-) -> list[ExactOwnerReport]:
-    return [
-        _report(
-            "code",
-            term,
-            ExactLookupStatus.PARTIAL,
-            executed=True,
-            available=True,
-            sqlite_steps=preflight_steps,
-            reason="code_changed_after_snapshot",
-        )
-        for term in terms
-    ]
-
-
-def _code_hash_is_supported(term: ExactLookupTerm) -> bool:
-    return term.kind is not ExactLookupKind.HASH or (
-        len(term.value) == 32 and term.algorithm in _CODE_HASH_ALGORITHMS
-    )
-
-
-def _code_decode_rows(
-    rows: Sequence[sqlite3.Row],
-    term: ExactLookupTerm,
-    control: _QueryControl,
-) -> tuple[list[ExactEvidenceMatch], int]:
-    matches: list[ExactEvidenceMatch] = []
-    invalid = 0
-    for row in rows:
-        control.checkpoint()
-        try:
-            matches.append(_code_row_match(row, term, len(matches) + 1))
-        except (FileIdentityError, TypeError, ValueError):
-            invalid += 1
-    return matches, invalid
-
-
-def _code_report_warnings(
-    term: ExactLookupTerm,
-    *,
-    symbol_unconfirmed: bool,
-) -> tuple[str, ...]:
-    warnings = ["code_exact_is_best_effort_non_generational"]
-    if term.kind is ExactLookupKind.NAME:
-        warnings.append("code_has_no_basename_index")
-    if symbol_unconfirmed:
-        warnings.append("code_symbol_unconfirmed")
-    return tuple(warnings)
-
-
-def _code_report_reason(
-    *,
-    truncated: bool,
-    invalid: int,
-    symbol_unconfirmed: bool,
-) -> str:
-    if truncated:
-        return "exact_result_limit_reached"
-    if invalid:
-        return "code_identity_invalid"
-    if symbol_unconfirmed:
-        return "code_symbol_unconfirmed"
-    return "code_owner_non_generational"
-
-
-def _code_ranked_outcome(
-    rows: Sequence[sqlite3.Row],
-    term: ExactLookupTerm,
-    control: _QueryControl,
-    per_term_limit: int,
-    steps: int,
-    preflight_steps: int,
-    query_truncated: bool,
-) -> _CodeTermOutcome:
-    decoded, invalid = _code_decode_rows(rows, term, control)
-    all_ranked = _rank_matches(decoded)
-    ranked = tuple(all_ranked[:per_term_limit])
-    omitted = max(0, len(all_ranked) - len(ranked))
-    truncated = query_truncated or omitted > 0
-    symbol_unconfirmed = any("code_symbol_unconfirmed" in match.warnings for match in ranked)
-    report = _report(
-        "code",
-        term,
-        ExactLookupStatus.PARTIAL,
-        executed=True,
-        available=True,
-        returned=len(ranked),
-        rows_observed=len(rows),
-        sqlite_steps=steps + preflight_steps,
-        truncated=truncated,
-        omitted_matches=omitted,
-        reason=_code_report_reason(
-            truncated=truncated,
-            invalid=invalid,
-            symbol_unconfirmed=symbol_unconfirmed,
-        ),
-        warnings=_code_report_warnings(
-            term,
-            symbol_unconfirmed=symbol_unconfirmed,
-        ),
-    )
-    return _CodeTermOutcome(ranked, report, True)
-
-
-def _code_term_outcome(
-    connection: sqlite3.Connection,
-    term: ExactLookupTerm,
-    control: _QueryControl,
-    latest_version_id: int,
-    per_term_limit: int,
-    path_scope: tuple[str, ...] | None,
-    preflight_steps: int,
-) -> _CodeTermOutcome:
-    if not _code_hash_is_supported(term):
-        return _CodeTermOutcome(
-            (),
-            _report(
-                "code",
-                term,
-                ExactLookupStatus.UNSUPPORTED,
-                executed=False,
-                available=True,
-                reason="code_hash_algorithm_unsupported",
-            ),
-            False,
-        )
-    try:
-        rows, steps, truncated = _code_term_rows(
-            connection,
-            control,
-            term,
-            latest_version_id,
-            per_term_limit + 1,
-            path_scope,
-        )
-    except _WorkBudgetExceeded:
-        return _CodeTermOutcome(
-            (),
-            _report(
-                "code",
-                term,
-                ExactLookupStatus.PARTIAL,
-                executed=True,
-                available=True,
-                truncated=True,
-                reason="exact_work_budget_exhausted",
-            ),
-            False,
-        )
-    return _code_ranked_outcome(
-        rows,
-        term,
-        control,
-        per_term_limit,
-        steps,
-        preflight_steps,
-        truncated,
-    )
-
-
-def _read_code_transaction(
-    connection: sqlite3.Connection,
-    expected: Mapping[str, int],
-    terms: Sequence[ExactLookupTerm],
-    control: _QueryControl,
-    per_term_limit: int,
-    path_scope: tuple[str, ...] | None,
-    matches: list[ExactEvidenceMatch],
-    reports: list[ExactOwnerReport],
-) -> None:
-    connection.execute("BEGIN")
-    current, preflight_steps = _code_current_vector(connection, control)
-    if any(current[name] != expected[name] for name in current):
-        reports.extend(_code_changed_reports(terms, preflight_steps))
-        connection.execute("ROLLBACK")
-        return
-    latest_version_id = current["latest_version_id"]
-    for term in terms:
-        outcome = _code_term_outcome(
-            connection,
-            term,
-            control,
-            latest_version_id,
-            per_term_limit,
-            path_scope,
-            preflight_steps,
-        )
-        matches.extend(outcome.matches)
-        reports.append(outcome.report)
-        if outcome.consumed_preflight:
-            preflight_steps = 0
-    connection.execute("ROLLBACK")
-
-
-def _code_failure_reports(
-    terms: Sequence[ExactLookupTerm],
-    completed_reports: int,
-    exc: BaseException,
-) -> list[ExactOwnerReport]:
-    exhausted = isinstance(exc, _WorkBudgetExceeded)
-    reason = (
-        "exact_work_budget_exhausted" if exhausted else f"owner_read_failed:{type(exc).__name__}"
-    )
-    return [
-        _report(
-            "code",
-            term,
-            ExactLookupStatus.PARTIAL,
-            executed=True,
-            available=True,
-            truncated=exhausted,
-            reason=reason,
-        )
-        for term in terms[completed_reports:]
-    ]
-
-
-def _lookup_code(
-    path: Path,
-    owner: OwnerSnapshot,
-    terms: Sequence[ExactLookupTerm],
-    control: _QueryControl,
-    per_term_limit: int,
-    path_scope: tuple[str, ...] | None,
-) -> tuple[list[ExactEvidenceMatch], list[ExactOwnerReport]]:
-    matches: list[ExactEvidenceMatch] = []
-    reports: list[ExactOwnerReport] = []
-    expected = _code_expected_vector(owner)
-    if expected is None:
-        return matches, _code_missing_watermark_reports(terms)
-    try:
-        with readonly_code_database(path) as connection:
-            _read_code_transaction(
-                connection,
-                expected,
-                terms,
-                control,
-                per_term_limit,
-                path_scope,
-                matches,
-                reports,
-            )
-    except (sqlite3.Error, RuntimeError, OSError) as exc:
-        if control.cancellation_failure is exc:
-            raise
-        reports.extend(
-            _code_failure_reports(
-                terms,
-                len(reports),
-                exc,
-            )
-        )
-    return matches, reports
-
-
-# endregion [05]
-
-
-# region [06] Catalog v6 generational adapter
 
 
 _CATALOG_KINDS = frozenset({ExactLookupKind.PATH, ExactLookupKind.NAME, ExactLookupKind.IDENTIFIER})
@@ -2842,7 +2185,6 @@ def _lookup_catalog(
 
 _OWNER_KINDS: tuple[tuple[str, frozenset[ExactLookupKind]], ...] = (
     ("inventory", _INVENTORY_KINDS),
-    ("code", _CODE_KINDS),
     ("catalog", _CATALOG_KINDS),
 )
 
@@ -2869,7 +2211,6 @@ def _unavailable_reports(
 @dataclass(frozen=True, slots=True)
 class _ExactLookupScopes:
     inventory_path: tuple[str, ...] | None
-    code_path: tuple[str, ...] | None
     catalog_source: tuple[str, ...] | None
     catalog_path: tuple[str, ...] | None
 
@@ -2886,14 +2227,12 @@ class _ExactLookupContext:
 
 def _exact_lookup_scopes(request: ExactLookupRequest) -> _ExactLookupScopes:
     inventory_path = _inventory_path_scope(request.source_kinds, request.formats)
-    code_path = _code_path_scope(request.source_kinds, request.formats)
     catalog_source, catalog_path = _catalog_row_scopes(
         request.source_kinds,
         request.formats,
     )
     return _ExactLookupScopes(
         inventory_path,
-        code_path,
         catalog_source,
         catalog_path,
     )
@@ -2968,15 +2307,6 @@ def _read_exact_owner(
             context.control,
             context.request.limit,
             context.scopes.inventory_path,
-        )
-    if owner_name == "code":
-        return _lookup_code(
-            context.paths.code,
-            owner,
-            terms,
-            context.control,
-            context.request.limit,
-            context.scopes.code_path,
         )
     return _lookup_catalog(
         context.paths.catalog,

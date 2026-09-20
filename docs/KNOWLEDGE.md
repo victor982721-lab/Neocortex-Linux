@@ -6,7 +6,7 @@
 ## Propósito
 
 Knowledge ofrece una vista local y trazable sobre inventario, extractores,
-catálogo, Semantic y Code. No crea una segunda indexación ni genera una respuesta
+catálogo y Semantic. No crea una segunda indexación ni genera una respuesta
 con un LLM. Su producto es evidencia y contexto citado con cobertura explícita.
 
 ```text
@@ -58,7 +58,7 @@ pendiente sólo bloquea lectores cuyos owners intersectan el cambio.
 
 ## Rankings y evidencia
 
-Los canales de identidad, ruta, metadatos, FTS, Semantic y Code mantienen
+Los canales de identidad, ruta, metadatos, FTS y Semantic mantienen
 scores independientes. Semantic sólo aporta evidencia cuando existe un head,
 modelo y espacio vectorial compatibles. Discovery puede proponer candidatos,
 pero un título o ruta no crea evidencia corporal.
@@ -116,13 +116,12 @@ La fusión preserva:
 ## Localizadores
 
 Knowledge puede transportar páginas, partes OOXML, celdas, slides, segmentos de
-audio/video, miembros ZIP, símbolos/rangos de código o archivo completo sólo
-cuando el owner los publicó. El manifest de una capacidad no sustituye una
-materialización; la precisión no demostrada se omite.
+audio/video, miembros ZIP o archivo completo sólo cuando el owner los publicó.
+El manifest de una capacidad no sustituye una materialización; la precisión no
+demostrada se omite.
 
 Los ZIP anidados conservan la cadena de miembros. Audio y Video usan
-`start_ms/end_ms` cuando el resultado procede de un segmento. Code conserva
-proyecto, archivo, símbolo y rango cuando el analizador los conoce.
+`start_ms/end_ms` cuando el resultado procede de un segmento.
 
 ## Contexto para agentes
 
@@ -158,7 +157,7 @@ read-only paginada de propuestas sin conceder autoridad y la evidencia acepta
 IDs estables con snapshot esperado. No deben parsear la salida humana. Los
 detalles de argumentos están en [CLI.md](CLI.md).
 
-`content-diagnostics/v2` federa los nueve owners de contenido con cursores
+`content-diagnostics/v2` federa los ocho owners de contenido con cursores
 ligados a raíz, filtros y snapshots; `content_diagnostics` v1 permanece legible.
 
 `operational_query` y las preguntas operacionales de `ask` consultan directamente

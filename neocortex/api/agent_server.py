@@ -36,7 +36,6 @@ from .curation_verification_api import (
     curation_verify_payload,
 )
 from .read_contract import (
-    CodeSearchOutput,
     ContextOutput,
     EvidenceOutput,
     AssetHealthOutput,
@@ -53,7 +52,6 @@ from .read_contract import (
     validate_read_payload,
 )
 from .read_api import (
-    code_search_payload,
     context_payload,
     evidence_payload,
     asset_health_payload,
@@ -140,7 +138,6 @@ _ContentDiagnosticV2Owner = Literal[
     "audio",
     "video",
     "image",
-    "code",
 ]
 _Query = Annotated[
     str,
@@ -190,25 +187,6 @@ _Cursor = Annotated[
 ]
 _Characters = Annotated[int, _pydantic_field(ge=1, le=1_000_000)]
 _SearchMode = Literal["evidence", "discovery"]
-_CodeMode = Literal[
-    "literal",
-    "fts",
-    "path",
-    "language",
-    "symbol",
-    "definition",
-    "reference",
-    "import",
-    "dependency",
-    "call",
-    "signature",
-    "diagnostic",
-    "complexity",
-    "semantic",
-    "hybrid",
-]
-
-
 if BaseModel is not None:
 
     class _MCPReadOutput(BaseModel):
@@ -303,9 +281,6 @@ if BaseModel is not None:
 
     class MCPNegotiatedEvidenceOutput(RootModel[MCPEvidenceV2Output | MCPEvidenceOutput]):
         model_config = ConfigDict(json_schema_extra={"type": "object"})
-
-    class MCPCodeSearchOutput(_MCPReadOutput):
-        kind: Literal["neocortex_scoped_code_search"]
 
     class MCPLineageOutput(_MCPReadOutput):
         kind: Literal["neocortex_scoped_derivation_lineage"]
@@ -916,7 +891,6 @@ else:  # pragma: no cover - minimal install fallback
     MCPNegotiatedContextOutput = cast(Any, ContextOutput)  # type: ignore[misc]
     MCPEvidenceOutput = cast(Any, EvidenceOutput)  # type: ignore[misc]
     MCPNegotiatedEvidenceOutput = cast(Any, EvidenceOutput)  # type: ignore[misc]
-    MCPCodeSearchOutput = cast(Any, CodeSearchOutput)  # type: ignore[misc]
     MCPLineageOutput = cast(Any, LineageOutput)  # type: ignore[misc]
     MCPAssetHealthOutput = cast(Any, AssetHealthOutput)  # type: ignore[misc]
     MCPLifecycleStatusOutput = cast(Any, dict[str, object])  # type: ignore[misc]
@@ -1241,7 +1215,6 @@ def _structured_content_diagnostics_v2_payload(
         "audio",
         "video",
         "image",
-        "code",
     ] = "all",
     *,
     limit: int = 20,
@@ -1463,7 +1436,6 @@ def create_server() -> Any:
             "audio",
             "video",
             "image",
-            "code",
         ] = "all",
         limit: Annotated[int, _pydantic_field(ge=1, le=1_000)] = 20,
         cursor: Annotated[str | None, _pydantic_field(min_length=1, max_length=8_192)] = None,
@@ -1684,27 +1656,6 @@ def create_server() -> Any:
                 max_characters=max_characters,
             ),
             ReadOperation.EVIDENCE,
-            scope=scope,
-            query=query.strip(),
-            limit=limit,
-        )  # type: ignore[return-value]
-
-    @server.tool(
-        name="inspect_code",
-        title="Inspect published NeoCortex Code evidence",
-        description="Search fixed published Code state; source files are never opened or changed.",
-        annotations=read_only,
-        structured_output=True,
-    )
-    def inspect_code(
-        query: _Query,
-        scope: _Scope = "personal",
-        limit: _Limit = 10,
-        mode: _CodeMode = "hybrid",
-    ) -> MCPCodeSearchOutput:
-        return _structured_read_payload(
-            lambda: code_search_payload(query, scope, limit=limit, modes=(mode,)),
-            ReadOperation.INSPECT_CODE,
             scope=scope,
             query=query.strip(),
             limit=limit,

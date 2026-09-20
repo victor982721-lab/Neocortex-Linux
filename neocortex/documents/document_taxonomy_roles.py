@@ -59,24 +59,6 @@ def document_role_assessment(
     path = scopes.get("path", "")
     header = f"{scopes.get('title', '')} {scopes.get('opening', '')[:400]}"
     headings = (scopes.get("title", "").strip(), scopes.get("opening", "")[:400].strip())
-    if signals.source_kind == "code":
-        metadata = signals.metadata
-        evidence = ["source_kind:code"]
-        for field in ("language", "artifact_kind"):
-            match = re.search(rf"(?:^|\s){field}=([^\s]+)", metadata)
-            if match is not None:
-                evidence.append(f"metadata:{field}={match.group(1)}")
-        role = ScoredLabel("codigo", 1.0, tuple(evidence))
-        return RoleAssessment(
-            kinds=(role,),
-            contradictions=tuple(
-                f"role_vs_mention:{item.label}"
-                for item in kinds
-                if item.label != role.label
-            ),
-            outside_role=role.label,
-            outside_evidence=role.evidence,
-        )
     # A mentioned report, standard, or incident does not change the role of a
     # timestamped command transcript. Filename alone is deliberately insufficient.
     timestamp_lines = re.findall(

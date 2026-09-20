@@ -213,14 +213,10 @@ def resolved_physical_identity(
     if birthtime_ns is None or birthtime_ns < UNAVAILABLE_BIRTHTIME_NS:
         return None
     try:
-        if resolved.source_kind == "code":
-            volume, file_id = resolved.source_identity.split(":", 1)
-            identity = file_identity_type(int(volume, 16), int(file_id, 16))
-        else:
-            identity = file_identity_type.decode(
-                resolved.source_identity,
-                encoding=file_identity_encoding,
-            )
+        identity = file_identity_type.decode(
+            resolved.source_identity,
+            encoding=file_identity_encoding,
+        )
     except identity_errors:
         return None
     return f"{identity.volume_id}:{identity.file_id}:{birthtime_ns}"

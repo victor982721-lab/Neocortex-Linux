@@ -361,21 +361,6 @@ def _validate_source_schema(
                 exact=True,
             ),
         )
-    if source_kind == "code":
-        from neocortex.code import code_schema
-
-        def validate_code(connection: sqlite3.Connection) -> None:
-            if code_schema._read_version(connection) != code_schema.CODE_SCHEMA_VERSION:
-                raise SemanticPlanBlocked("code schema is not current")
-            code_schema.validate_code_schema(connection)
-            code_schema._validate_migration_history(connection)
-
-        return _require_current_schema(
-            connection,
-            label="code",
-            expected_version=code_schema.CODE_SCHEMA_VERSION,
-            validator=validate_code,
-        )
     if source_kind == IMAGE_SOURCE_KIND:
         from neocortex.capabilities.formats.image import state as image_state
 

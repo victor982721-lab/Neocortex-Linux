@@ -193,7 +193,6 @@ def _validated_payload(request: ReadRequest, value: object) -> dict[str, object]
                     ReadOperation.SEARCH,
                     ReadOperation.CONTEXT,
                     ReadOperation.REVIEW,
-                    ReadOperation.INSPECT_CODE,
                 }
                 else None
             ),

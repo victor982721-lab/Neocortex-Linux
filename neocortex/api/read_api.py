@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,7 +25,6 @@ from neocortex.api.read_contract import (
 )
 
 from neocortex.api.read_api_port import (
-    CodeSearchQuery,
     KnowledgeCompleteness,
     KnowledgeExitCode,
     KnowledgeQuery,
@@ -33,13 +32,11 @@ from neocortex.api.read_api_port import (
     OwnerAvailability,
     RetrievalMode,
     SnapshotConsistency,
-    available_search_modes,
     default_state_directory,
     inspect_knowledge_asset_health,
     inspect_derivation_lineage,
     knowledge_context_exit_code,
     knowledge_search_exit_code,
-    search_code,
     validate_knowledge_asset_resource_id,
 )
 from neocortex.knowledge.knowledge_read_budget import (
@@ -1259,71 +1256,6 @@ def evidence_payload(
     )
 
 
-def code_search_payload(
-    query: str,
-    scope: str | ReadScope = ReadScope.PERSONAL,
-    *,
-    limit: int = 10,
-    modes: Sequence[str] = ("hybrid",),
-    request_id: str | None = None,
-) -> dict[str, object]:
-    """Inspect published Code state under fixed roots without touching sources."""
-
-    normalized = _validate_query(query)
-    selected = _scope(scope)
-    bindings = scope_bindings(selected)
-    bounded_limit = _validate_limit(limit)
-    normalized_modes = tuple(dict.fromkeys(modes))
-    allowed_modes = frozenset(available_search_modes())
-    if not normalized_modes or any(mode not in allowed_modes for mode in normalized_modes):
-        raise ValueError("code search modes contain an unsupported value")
-    entries: list[dict[str, object]] = []
-    for binding in bindings:
-        try:
-            hits = search_code(
-                binding.state_directory / "code.sqlite3",
-                CodeSearchQuery(
-                    text=normalized,
-                    modes=normalized_modes,
-                    limit=bounded_limit,
-                ),
-            )
-            entries.append(
-                {
-                    "scope": binding.scope.value,
-                    "state_directory": str(binding.state_directory),
-                    "status": "ok" if hits else "no_results",
-                    "exit_code": int(
-                        KnowledgeExitCode.SUCCESS if hits else KnowledgeExitCode.NO_RESULTS
-                    ),
-                    "hits": [asdict(hit) for hit in hits],
-                }
-            )
-        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
-            entries.append(_error_entry(binding, exc))
-    return _finalize_read_payload(
-        {
-            "schema": READ_API_SCHEMA,
-            "kind": "neocortex_scoped_code_search",
-            "read_only": True,
-            "scope_requested": selected.value,
-            "federation_policy": FEDERATION_POLICY,
-            "query": normalized,
-            "modes": list(normalized_modes),
-            "limit_per_scope": bounded_limit,
-            "exit_code": federated_exit_code(entries),
-            "scopes": entries,
-        },
-        ReadOperation.INSPECT_CODE,
-        selected,
-        bindings,
-        request_id=request_id,
-        query=normalized,
-        limit=bounded_limit,
-    )
-
-
-
 def lineage_payload(
     identifier: str,
     scope: str | ReadScope = ReadScope.ALL,
@@ -1381,7 +1313,6 @@ __all__ = (
     "ReadScope",
     "ScopeBinding",
     "asset_health_payload",
-    "code_search_payload",
     "context_payload",
     "evidence_payload",
     "federated_exit_code",

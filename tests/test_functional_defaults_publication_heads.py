@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 import neocortex.semantic.semantic_publication_heads as publication_heads
-from neocortex.code.code_state import CodeState
 from neocortex.semantic.semantic_generation_repository import (
     finalize_embedding_generation,
     prepare_embedding_generation,
@@ -92,25 +91,18 @@ def test_missing_databases_are_an_explicit_empty_baseline_without_creation(
 ) -> None:
     state = tmp_path / "state"
 
-    observed = observe_integrated_owner_heads(state, include_code=True)
+    observed = observe_integrated_owner_heads(state)
 
-    assert tuple(head.owner for head in observed) == ("semantic", "code")
+    assert tuple(head.owner for head in observed) == ("semantic",)
     assert all(head.revision == 0 for head in observed)
     assert not (state / "semantic.sqlite3").exists()
-    assert not (state / "code.sqlite3").exists()
     assert observe_semantic_generation_heads(state) == ()
 
     state.mkdir()
     initialize_semantic_state(state / "semantic.sqlite3")
-    empty_database = observe_integrated_owner_heads(state, include_code=True)
+    empty_database = observe_integrated_owner_heads(state)
     assert empty_database[0] == observed[0]
-    assert empty_database[1] == observed[1]
     assert empty_database[0].schema_version == SEMANTIC_SCHEMA_VERSION
-
-    with CodeState(state / "code.sqlite3"):
-        pass
-    empty_code_database = observe_integrated_owner_heads(state, include_code=True)
-    assert empty_code_database[1] == observed[1]
 
 
 def test_all_published_text_and_image_heads_are_observed_not_just_max_generation(
@@ -188,30 +180,6 @@ def test_changing_a_non_maximum_model_head_changes_the_aggregate_digest(
     )
 
 
-def test_empty_code_graph_owner_is_observed_through_its_published_graph_head(
-    tmp_path: Path,
-) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    initialize_semantic_state(state / "semantic.sqlite3")
-    code_database = state / "code.sqlite3"
-    with CodeState(code_database) as code:
-        store = code.graph_generation_store
-        store.create_input_snapshot("fixture:snapshot", 0, (), created_ns=1)
-        store.start_generation("fixture:snapshot", "fixture:generation", created_ns=2)
-        store.complete_generation("fixture:generation", completed_ns=3)
-        store.compare_and_swap_head(
-            "default",
-            expected_revision=0,
-            expected_generation_id=None,
-            generation_id="fixture:generation",
-        )
-
-    semantic, observed_code = observe_integrated_owner_heads(state, include_code=True)
-    assert semantic.revision == 0
-    assert observed_code.owner == "code"
-    assert observed_code.revision == 1
-    assert observed_code.digest_sha256
 
 
 def test_building_head_and_future_schema_fail_closed_with_typed_errors(
@@ -322,44 +290,6 @@ def test_sql_validation_interruption_preserves_cancellation_not_schema_error(
         observe_integrated_owner_heads(
             state,
             cancellation_check=cancel_inside_validation,
-        )
-    assert calls >= 1
-    assert not isinstance(raised.value, PublicationHeadsSchemaError)
-
-
-def test_code_sql_validation_interruption_preserves_cancellation_not_schema_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    initialize_semantic_state(state / "semantic.sqlite3")
-    with CodeState(state / "code.sqlite3"):
-        pass
-    original_validate = publication_heads.validate_code_schema
-    entered_validation = False
-    calls = 0
-
-    def cancel_inside_code_validation() -> bool:
-        nonlocal calls
-        calls += 1
-        return entered_validation
-
-    def validate_inside_wrapper(connection: sqlite3.Connection) -> None:
-        nonlocal entered_validation
-        entered_validation = True
-        original_validate(connection)
-
-    monkeypatch.setattr(
-        publication_heads,
-        "validate_code_schema",
-        validate_inside_wrapper,
-    )
-    with pytest.raises(PublicationHeadsError) as raised:
-        observe_integrated_owner_heads(
-            state,
-            include_code=True,
-            cancellation_check=cancel_inside_code_validation,
         )
     assert calls >= 1
     assert not isinstance(raised.value, PublicationHeadsSchemaError)

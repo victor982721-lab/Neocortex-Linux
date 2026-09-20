@@ -106,7 +106,6 @@ PRIVATE_MONKEYPATCH_SEAMS = (
     "_lexical_rankings",
     "_semantic_rankings",
     "_exact_rankings",
-    "_code_ranking",
     "_catalog_ranking",
     "_apply_plan_filters",
     "_apply_inventory_dispositions",
@@ -121,7 +120,6 @@ def _available_snapshot() -> KnowledgeSnapshot:
         "office": 1,
         "audio": 1,
         "semantic": 6,
-        "code": 2,
         "catalog": 6,
         "inventory": 7,
     }
@@ -272,7 +270,6 @@ def test_full_plan_topology_dispatches_through_facade_seams_in_stable_order(
         ("lexical", "owner_fts", 9, True),
         ("semantic", "semantic_text", 9, True),
         ("semantic", "semantic_image", 9, True),
-        ("structural_code", "code_structural", 9, True),
         ("catalog", "catalog_metadata", 9, True),
         ("relational", "verified_relations", 9, True),
         ("temporal", "published_history", 9, True),
@@ -346,20 +343,6 @@ def test_full_plan_topology_dispatches_through_facade_seams_in_stable_order(
         calls.append("exact")
         return {}, [_complete_report("exact_coverage", "exact")], 0, False, ()
 
-    def code(
-        received_paths: KnowledgeStatePaths,
-        received_plan: KnowledgePlan,
-        received_snapshot: KnowledgeSnapshot,
-        **_kwargs: object,
-    ) -> tuple[tuple[KnowledgeCandidate, ...], RankingExecution]:
-        assert (received_paths, received_plan, received_snapshot) == (
-            paths,
-            plan,
-            snapshot,
-        )
-        calls.append("code")
-        return (), _complete_report("code_structural", "structural_code")
-
     def catalog(
         received_paths: KnowledgeStatePaths,
         received_plan: KnowledgePlan,
@@ -415,7 +398,6 @@ def test_full_plan_topology_dispatches_through_facade_seams_in_stable_order(
     monkeypatch.setattr(knowledge_search, "_lexical_rankings", lexical)
     monkeypatch.setattr(knowledge_search, "_semantic_rankings", semantic)
     monkeypatch.setattr(knowledge_search, "_exact_rankings", exact)
-    monkeypatch.setattr(knowledge_search, "_code_ranking", code)
     monkeypatch.setattr(knowledge_search, "_catalog_ranking", catalog)
     monkeypatch.setattr(knowledge_search, "_apply_plan_filters", apply_filters)
     monkeypatch.setattr(knowledge_search, "_apply_inventory_dispositions", inventory)
@@ -434,7 +416,6 @@ def test_full_plan_topology_dispatches_through_facade_seams_in_stable_order(
         "lexical",
         "semantic",
         "exact",
-        "code",
         "catalog",
         "filters",
         "inventory",
@@ -448,7 +429,6 @@ def test_full_plan_topology_dispatches_through_facade_seams_in_stable_order(
         "semantic_text",
         "semantic_image",
         "exact_coverage",
-        "code_structural",
         "catalog_metadata",
         "verified_relations",
         "published_history",
@@ -743,37 +723,6 @@ def test_inventory_cleanup_preserves_primary_through_rollback_and_close_failures
     ]
 
 
-def test_code_metadata_cleanup_preserves_primary_error_when_close_also_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    primary = RuntimeError("code metadata read failed")
-    secondary = RuntimeError("code connection close failed")
-    events: list[str] = []
-
-    class Connection:
-        def execute(self, _statement: str, _parameters: object) -> None:
-            events.append("execute")
-            raise primary
-
-        def close(self) -> None:
-            events.append("close")
-            raise secondary
-
-    monkeypatch.setattr(
-        knowledge_search,
-        "connect_code_state",
-        lambda *_args, **_kwargs: Connection(),
-    )
-
-    with pytest.raises(BaseException) as raised:
-        knowledge_search._code_version_metadata(
-            tmp_path / "code.sqlite3",
-            (1,),
-        )
-
-    assert events == ["execute", "close"]
-    assert raised.value is primary
 
 
 # endregion [02]

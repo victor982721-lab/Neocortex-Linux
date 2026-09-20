@@ -95,7 +95,6 @@ def test_shared_client_rejects_ambiguous_nested_keys(monkeypatch: pytest.MonkeyP
         (ReadOperation.SEARCH, "search_payload", ("fixture",), "_service"),
         (ReadOperation.CONTEXT, "context_payload", ("fixture",), "_service"),
         (ReadOperation.EVIDENCE, "evidence_payload", ("fixture", "citation-1"), "_service"),
-        (ReadOperation.INSPECT_CODE, "code_search_payload", ("fixture",), "search_code"),
         (ReadOperation.LINEAGE, "lineage_payload", ("fixture",), "inspect_derivation_lineage"),
         (
             ReadOperation.ASSET_HEALTH,

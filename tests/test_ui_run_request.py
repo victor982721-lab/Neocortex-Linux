@@ -50,7 +50,6 @@ class UiRunRequestTests(unittest.TestCase):
             self.assertIn("--apply", arguments)
             selected = arguments[arguments.index("--route") + 1]
             self.assertEqual(selected, ",".join(ROUTE_ORDER))
-            self.assertIn("code", selected.split(","))
             self.assertEqual(
                 normalize_route_selection(selected, BUILTIN_ROUTE_ORDER),
                 ROUTE_ORDER,
@@ -95,7 +94,6 @@ class UiRunRequestTests(unittest.TestCase):
             selected = arguments[arguments.index("--route") + 1]
             self.assertEqual(selected, ",".join(ROUTE_ORDER))
             self.assertNotEqual(selected, "all")
-            self.assertIn("code", selected.split(","))
             self.assertIn("--route-only", arguments)
 
     def test_route_only_rejects_apply_before_starting_a_worker(self) -> None:
@@ -136,7 +134,7 @@ class UiRunRequestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             request = RunRequest(
                 Path(directory),
-                ("code", "pdf"),
+                ("pdf",),
                 profile="full",
             ).validated()
             arguments = request.cli_arguments()
@@ -145,10 +143,6 @@ class UiRunRequestTests(unittest.TestCase):
         self.assertEqual(request.deadline_seconds, float(FULL_DEADLINE_SECONDS))
         self.assertEqual(
             arguments[arguments.index("--pdf-max-count") + 1],
-            str(FULL_MAX_ITEMS),
-        )
-        self.assertEqual(
-            arguments[arguments.index("--code-max-count") + 1],
             str(FULL_MAX_ITEMS),
         )
 

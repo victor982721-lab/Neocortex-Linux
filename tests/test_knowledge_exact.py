@@ -20,7 +20,6 @@ import pytest
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, PARTIAL_ALGORITHM
 from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.knowledge import knowledge_exact as knowledge_exact_module
-from neocortex.code.code_schema import initialize_code_state
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.documents.document_resource_binding import build_resource_binding
 from neocortex.foundation.file_identity import FileIdentity
@@ -91,21 +90,6 @@ def _inventory_owner() -> OwnerSnapshot:
         watermarks=(
             LogicalWatermark("published_roots", "1"),
             LogicalWatermark("latest_checkpoint_updated_ns", "3"),
-        ),
-    )
-
-
-def _code_owner() -> OwnerSnapshot:
-    return OwnerSnapshot(
-        "code",
-        OwnerAvailability.AVAILABLE,
-        2,
-        2,
-        watermarks=(
-            LogicalWatermark("current_files", "1"),
-            LogicalWatermark("latest_version_id", "1"),
-            LogicalWatermark("latest_analysis_run_id", "1"),
-            LogicalWatermark("visibility", "best_effort_non_generational"),
         ),
     )
 
@@ -182,65 +166,6 @@ def _create_inventory(path: Path) -> str:
     return full_digest
 
 
-def _insert_code_version(connection: sqlite3.Connection) -> None:
-    text = "def validate(value: int) -> int:\n    return value\n"
-    raw = text.encode("utf-8")
-    connection.execute(
-        """INSERT INTO analysis_runs(
-        analysis_run_id,framework_run_id,scan_id,processing_signature,status,
-        started_ns,completed_ns,candidates,processed,cache_hits,errors,summary_json)
-        VALUES(1,1,1,'code-fixture','completed',1,2,1,1,0,0,'{}')"""
-    )
-    connection.execute(
-        """INSERT INTO files(
-        file_id,volume_id,physical_file_id,current_path,current_version_id,status,
-        first_seen_run_id,last_seen_run_id)
-        VALUES(1,'1','2','C:/src/control.py',NULL,'current',1,1)"""
-    )
-    connection.execute(
-        """INSERT INTO file_versions(
-        version_id,file_id,path_observed,size,mtime_ns,birthtime_ns,
-        raw_xxh3_128,raw_xxh3_64_guard,text_xxh3_128,text_xxh3_64_guard,
-        normalized_xxh3_128,token_xxh3_128,structure_xxh3_128,encoding,
-        language,artifact_kind,generated,vendored,classification_confidence,
-        classification_evidence_json,analysis_status,processing_signature,
-        analyzer_id,analyzer_version,parser_kind,text_zlib,text_chars,
-        text_truncated,provenance_json,first_observed_run_id,last_observed_run_id,
-        valid_from_ns)
-        VALUES(1,1,'C:/src/control.py',?,20,10,?,?,?,?,?,?,?,'utf-8',
-        'python','source',0,0,1.0,'["fixture"]','complete','code-fixture',
-        'python-ast','1','python-ast',?,?,0,'{}',1,1,1)""",
-        (
-            len(raw),
-            "aa" * 16,
-            "bb" * 8,
-            "cc" * 16,
-            "dd" * 8,
-            "ee" * 16,
-            "ff" * 16,
-            "12" * 16,
-            sqlite3.Binary(zlib.compress(raw)),
-            len(text),
-        ),
-    )
-    connection.execute("UPDATE files SET current_version_id=1 WHERE file_id=1")
-    connection.execute(
-        """INSERT INTO symbols(
-        symbol_id,version_id,parent_symbol_id,kind,name,qualified_name,signature,
-        visibility,docstring,confirmed,complexity,start_line,start_column,
-        end_line,end_column,start_byte,end_byte,metadata_json)
-        VALUES(1,1,NULL,'function','validate','control.validate',
-        'validate(value: int) -> int','public',NULL,1,1,1,0,2,16,0,48,'{}')"""
-    )
-
-
-def _create_code(path: Path) -> None:
-    initialize_code_state(path)
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute("PRAGMA foreign_keys=ON")
-        _insert_code_version(connection)
-
-
 def _insert_catalog_document(
     connection: sqlite3.Connection,
     *,
@@ -306,67 +231,7 @@ def _create_catalog(path: Path) -> None:
         )
 
 
-def test_catalog_exact_materializer_keeps_archive_and_unbound_code_virtual(
-    tmp_path: Path,
-) -> None:
-    archive_key = "archive:container!/member.txt"
-    archive_binding = build_resource_binding(
-        source_kind="archive",
-        file_key=archive_key,
-        path="/fixture/container.zip!/member.txt",
-        identity=None,
-        birthtime_ns=-1,
-        size=12,
-        mtime_ns=1,
-        representation_kind="archive_member",
-        archive_member={
-            "container_key": "container-key",
-            "container_path": "/fixture/container.zip",
-            "member_chain": "member.txt",
-        },
-    )
-    base = {
-        "generation_id": 1,
-        "path": "/fixture/container.zip!/member.txt",
-        "volume_id": "not-a-volume",
-        "file_id": "not-a-file",
-        "birthtime_ns": -1,
-        "size": 12,
-        "mtime_ns": 1,
-        "source_status": "indexed",
-        "processing_signature": "fixture-v1",
-        "classifier_signature": "classifier-v1",
-        "confidence": 0.9,
-        "uncertainty": "baja",
-        "standard_references_json": "[]",
-        "catalog_status": "classified",
-        "updated_ns": 1,
-        "last_seen_catalog_run_id": 1,
-    }
-    for source_kind, file_key, binding, path in (
-        ("archive", archive_key, json.dumps(archive_binding), "/fixture/container.zip!/member.txt"),
-        ("code", "code:42", None, "/fixture/module.py"),
-    ):
-        row = {
-            **base,
-            "source_kind": source_kind,
-            "file_key": file_key,
-            "path": path,
-            "resource_binding_json": binding,
-        }
-        match = knowledge_exact_module._catalog_row_match(
-            row,
-            ExactLookupTerm(ExactLookupKind.PATH, path),
-            1,
-        )
-        assert match.resource.resource_id == f"resource:{source_kind}:{file_key}"
-        assert match.resource.physical_identity is None
-        assert "physical_identity_unresolved" in match.warnings
-        if source_kind == "archive":
-            assert dict(match.evidence.identifiers)["member_chain"] == "member.txt"
-
-
-LOOKUP_ORCHESTRATION_FIXTURE = (
+OOKUP_ORCHESTRATION_FIXTURE = (
     Path(__file__).parent / "fixtures" / "knowledge_exact" / "lookup_exact_orchestration_v1.json"
 )
 
@@ -375,13 +240,9 @@ def _state_file_bytes(state: Path) -> dict[str, bytes]:
     return {path.name: path.read_bytes() for path in sorted(state.iterdir()) if path.is_file()}
 
 
-def test_private_code_lookup_signature_is_frozen() -> None:
-    assert str(inspect.signature(knowledge_exact_module._lookup_code)) == (
-        "(path: 'Path', owner: 'OwnerSnapshot', "
-        "terms: 'Sequence[ExactLookupTerm]', control: '_QueryControl', "
-        "per_term_limit: 'int', path_scope: 'tuple[str, ...] | None') -> "
-        "'tuple[list[ExactEvidenceMatch], list[ExactOwnerReport]]'"
-    )
+LOOKUP_ORCHESTRATION_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "knowledge_exact" / "lookup_exact_orchestration_v1.json"
+)
 
 
 def test_lookup_exact_orchestration_preserves_primary_state_bytes(
@@ -390,14 +251,12 @@ def test_lookup_exact_orchestration_preserves_primary_state_bytes(
     state = tmp_path / "state"
     state.mkdir()
     full_digest = _create_inventory(state / "dedup.sqlite3")
-    _create_code(state / "code.sqlite3")
     _create_catalog(state / "document_catalog.sqlite3")
     paths = KnowledgeStatePaths.from_directory(state)
     terms = (
         ExactLookupTerm(ExactLookupKind.PATH, "C:/docs/proteccion.pdf"),
         ExactLookupTerm(ExactLookupKind.NAME, "A%_# report.pdf"),
         ExactLookupTerm(ExactLookupKind.HASH, full_digest),
-        ExactLookupTerm(ExactLookupKind.SYMBOL, "control.validate"),
         ExactLookupTerm(ExactLookupKind.IDENTIFIER, "IEC-61850"),
         ExactLookupTerm(ExactLookupKind.SERIAL, "SN-2048"),
     )
@@ -406,12 +265,12 @@ def test_lookup_exact_orchestration_preserves_primary_state_bytes(
 
     result = lookup_exact(
         paths,
-        _snapshot(_catalog_owner(), _inventory_owner(), _code_owner()),
+        _snapshot(_catalog_owner(), _inventory_owner()),
         ExactLookupRequest(
             terms,
             limit=10,
             max_observed_rows=100,
-            owner_scope=("catalog", "inventory", "code"),
+            owner_scope=("catalog", "inventory"),
         ),
         clock_ns=lambda: next(clock_values),
     )
@@ -497,7 +356,6 @@ def test_lookup_exact_orchestration_preserves_primary_state_bytes(
     )
     after = _state_file_bytes(state)
     database_names = {
-        "code.sqlite3",
         "dedup.sqlite3",
         "document_catalog.sqlite3",
     }
@@ -529,7 +387,7 @@ def test_plan_exact_terms_are_typed_and_serial_variants_are_deduplicated() -> No
     assert [(term.kind, term.value) for term in terms] == [
         (ExactLookupKind.PATH, r"C:\Corpus\report-2026.pdf"),
         (ExactLookupKind.SERIAL, "SN-2048"),
-        (ExactLookupKind.SYMBOL, "control.validate"),
+        (ExactLookupKind.NAME, "control.validate"),
     ]
 
 
@@ -562,26 +420,13 @@ def test_exact_path_typing_covers_drive_posix_and_relative_paths(surface: str) -
         "A%_# report.custom9",
     ),
 )
-def test_arbitrary_reasonable_extensions_are_names_without_code_evidence(
+def test_arbitrary_reasonable_extensions_are_names(
     surface: str,
 ) -> None:
     base = plan_knowledge_query(KnowledgeQuery("lookup"))
     plan = _legacy_plan_with_exact_terms(base, (surface,))
 
     assert classify_plan_exact_terms(plan)[0].kind is ExactLookupKind.NAME
-
-
-def test_code_context_types_bare_camel_and_snake_case_as_symbols() -> None:
-    base = plan_knowledge_query(KnowledgeQuery("definition KnowledgeSnapshot calculate_breaker"))
-    plan = _legacy_plan_with_exact_terms(
-        base,
-        ("KnowledgeSnapshot", "calculate_breaker"),
-    )
-
-    assert [(term.kind, term.value) for term in classify_plan_exact_terms(plan)] == [
-        (ExactLookupKind.SYMBOL, "KnowledgeSnapshot"),
-        (ExactLookupKind.SYMBOL, "calculate_breaker"),
-    ]
 
 
 @pytest.mark.parametrize(
@@ -593,21 +438,19 @@ def test_code_context_types_bare_camel_and_snake_case_as_symbols() -> None:
         "serial_port.open",
     ),
 )
-def test_serial_prefix_words_require_a_full_serial_boundary(surface: str) -> None:
+def test_serial_prefix_words_require_a_full_identifier_boundary(surface: str) -> None:
     base = plan_knowledge_query(KnowledgeQuery("symbol lookup"))
     plan = _legacy_plan_with_exact_terms(base, (surface,))
 
-    assert classify_plan_exact_terms(plan)[0].kind is ExactLookupKind.SYMBOL
+    assert classify_plan_exact_terms(plan)[0].kind is ExactLookupKind.NAME
 
 
 @pytest.mark.parametrize(
     ("source_kinds", "formats", "expected_owners"),
     (
-        ((), (), {"inventory", "code", "catalog"}),
-        (("code",), (), {"inventory", "code"}),
+        ((), (), {"inventory", "catalog"}),
         (("pdf",), (), {"inventory", "catalog"}),
         (("office",), (), {"inventory", "catalog"}),
-        ((), ("ps1",), {"inventory", "code"}),
         ((), ("opus",), {"inventory", "catalog"}),
         ((), ("webp",), {"inventory"}),
     ),
@@ -624,7 +467,6 @@ def test_plan_source_and_format_filters_scope_exact_owners_before_lookup(
     plan = _legacy_plan_with_exact_terms(base, ("C:/docs/a.pdf",))
     snapshot = _snapshot(
         _absent_owner("inventory", 7),
-        _absent_owner("code", 2),
         _absent_owner("catalog", 6),
     )
 
@@ -648,7 +490,6 @@ def test_catalog_lookup_uses_captured_generation_and_exact_json_element(
     snapshot = _snapshot(
         _catalog_owner(),
         _absent_owner("inventory", 7),
-        _absent_owner("code", 2),
     )
     paths = KnowledgeStatePaths.from_directory(state)
 
@@ -990,8 +831,7 @@ def test_inventory_path_name_and_full_hash_are_constrained_but_partial(
         KnowledgeStatePaths.from_directory(state),
         _snapshot(
             _inventory_owner(),
-            _absent_owner("code", 2),
-            _absent_owner("catalog", 6),
+                _absent_owner("catalog", 6),
         ),
         ExactLookupRequest(
             (
@@ -1288,261 +1128,6 @@ def test_preflight_row_and_nonmultiple_vm_budgets_fail_partial_not_by_assertion(
     assert row_bounded.reports[0].reason == "exact_work_budget_exhausted"
     assert step_bounded.truncated
     assert step_bounded.sqlite_steps <= 1_500
-
-
-def test_global_budget_is_shared_in_fixed_owner_order(tmp_path: Path) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    _create_inventory(state / "dedup.sqlite3")
-    _create_code(state / "code.sqlite3")
-    paths = KnowledgeStatePaths.from_directory(state)
-    snapshot = _snapshot(_code_owner(), _inventory_owner())
-    term = ExactLookupTerm(ExactLookupKind.PATH, "C:/docs/A%_# report.pdf")
-    requests = (
-        ExactLookupRequest(
-            (term,),
-            limit=1,
-            max_observed_rows=1,
-            owner_scope=("code", "inventory"),
-        ),
-        ExactLookupRequest(
-            (term,),
-            limit=1,
-            max_sqlite_steps=knowledge_exact_module.SQLITE_PROGRESS_INTERVAL,
-            owner_scope=("code", "inventory"),
-        ),
-    )
-
-    for request in requests:
-        result = lookup_exact(paths, snapshot, request)
-        code_report = next(report for report in result.reports if report.owner == "code")
-
-        assert code_report.executed is False
-        assert code_report.truncated is True
-        assert code_report.reason == "exact_global_work_budget_exhausted"
-        assert [timing.owner for timing in result.owner_timings] == [
-            "inventory",
-            "code",
-        ]
-        assert result.owner_timings[-1].executed is False
-        assert result.rows_observed <= request.max_observed_rows
-        assert result.sqlite_steps <= request.max_sqlite_steps
-
-
-def test_code_exact_path_hash_and_symbol_need_no_fts_chunks(tmp_path: Path) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    _create_code(state / "code.sqlite3")
-    snapshot = _snapshot(
-        _code_owner(),
-        _absent_owner("inventory", 7),
-        _absent_owner("catalog", 6),
-    )
-    result = lookup_exact(
-        KnowledgeStatePaths.from_directory(state),
-        snapshot,
-        ExactLookupRequest(
-            (
-                ExactLookupTerm(ExactLookupKind.PATH, "C:/src/control.py"),
-                ExactLookupTerm(ExactLookupKind.NAME, "control.py"),
-                ExactLookupTerm(ExactLookupKind.HASH, "aa" * 16),
-                ExactLookupTerm(ExactLookupKind.SYMBOL, "control.validate"),
-            ),
-            limit=10,
-        ),
-    )
-    prefix = lookup_exact(
-        KnowledgeStatePaths.from_directory(state),
-        snapshot,
-        ExactLookupRequest(
-            (
-                ExactLookupTerm(
-                    ExactLookupKind.SYMBOL,
-                    "control.validate_extra",
-                ),
-            ),
-            limit=5,
-        ),
-    )
-
-    code_matches = [match for match in result.matches if match.resource.owner == "code"]
-    assert len(code_matches) == 4
-    assert {match.resource.resource_id for match in code_matches} == {"resource:file:1:2:10"}
-    symbol = next(match for match in code_matches if match.term.kind is ExactLookupKind.SYMBOL)
-    assert symbol.evidence.symbol == "control.validate"
-    assert symbol.evidence.start_line == 1
-    assert all(
-        report.status is ExactLookupStatus.PARTIAL
-        for report in result.reports
-        if report.owner == "code"
-    )
-    assert prefix.matches == ()
-    assert prefix.reports[0].reason == "code_owner_non_generational"
-
-
-def test_code_exact_reads_committed_wal_without_mutating_owner_bytes(
-    tmp_path: Path,
-) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    code = state / "code.sqlite3"
-    initialize_code_state(code)
-    writer = sqlite3.connect(code)
-    try:
-        writer.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
-        writer.execute("PRAGMA foreign_keys=ON")
-        _insert_code_version(writer)
-        writer.commit()
-    finally:
-        writer.close()
-
-    wal = Path(f"{code}-wal")
-    primary_before = code.read_bytes()
-    wal_before = wal.read_bytes()
-    assert wal_before
-
-    result = lookup_exact(
-        KnowledgeStatePaths.from_directory(state),
-        _snapshot(_code_owner()),
-        ExactLookupRequest(
-            (ExactLookupTerm(ExactLookupKind.SYMBOL, "control.validate"),),
-            owner_scope=("code",),
-        ),
-    )
-
-    assert [match.evidence.symbol for match in result.matches] == ["control.validate"]
-    assert code.read_bytes() == primary_before
-    assert wal.read_bytes() == wal_before
-
-
-def test_unconfirmed_code_symbol_is_explicitly_partial(tmp_path: Path) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    code = state / "code.sqlite3"
-    _create_code(code)
-    with closing(sqlite3.connect(code)) as connection, connection:
-        connection.execute("UPDATE symbols SET confirmed=0 WHERE symbol_id=1")
-
-    result = lookup_exact(
-        KnowledgeStatePaths.from_directory(state),
-        _snapshot(_code_owner()),
-        ExactLookupRequest(
-            (ExactLookupTerm(ExactLookupKind.SYMBOL, "control.validate"),),
-            owner_scope=("code",),
-        ),
-    )
-
-    assert len(result.matches) == 1
-    assert result.matches[0].revision.state is RevisionState.PARTIAL
-    assert "code_symbol_unconfirmed" in result.matches[0].warnings
-    assert result.reports[0].reason == "code_symbol_unconfirmed"
-    assert "code_symbol_unconfirmed" in result.reports[0].warnings
-
-
-def test_code_format_predicate_precedes_limit(tmp_path: Path) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    code = state / "code.sqlite3"
-    _create_code(code)
-    with closing(sqlite3.connect(code)) as connection, connection:
-        connection.execute("UPDATE files SET current_path='C:/src/A.js' WHERE file_id=1")
-        connection.execute(
-            "UPDATE file_versions SET path_observed='C:/src/A.js' WHERE version_id=1"
-        )
-        connection.execute(
-            """INSERT INTO files(
-            file_id,volume_id,physical_file_id,current_path,current_version_id,
-            status,first_seen_run_id,last_seen_run_id)
-            VALUES(2,'3','4','C:/src/Z.py',NULL,'current',1,1)"""
-        )
-        connection.execute(
-            """INSERT INTO file_versions(
-            version_id,file_id,path_observed,size,mtime_ns,birthtime_ns,
-            raw_xxh3_128,raw_xxh3_64_guard,text_xxh3_128,text_xxh3_64_guard,
-            normalized_xxh3_128,token_xxh3_128,structure_xxh3_128,encoding,
-            language,artifact_kind,generated,vendored,classification_confidence,
-            classification_evidence_json,analysis_status,processing_signature,
-            analyzer_id,analyzer_version,parser_kind,text_zlib,text_chars,
-            text_truncated,provenance_json,first_observed_run_id,last_observed_run_id,
-            valid_from_ns,invalidated_ns)
-            SELECT 2,2,'C:/src/Z.py',size,mtime_ns,birthtime_ns,
-            raw_xxh3_128,raw_xxh3_64_guard,text_xxh3_128,text_xxh3_64_guard,
-            normalized_xxh3_128,token_xxh3_128,structure_xxh3_128,encoding,
-            'python',artifact_kind,generated,vendored,classification_confidence,
-            classification_evidence_json,analysis_status,processing_signature,
-            analyzer_id,analyzer_version,parser_kind,text_zlib,text_chars,
-            text_truncated,provenance_json,first_observed_run_id,last_observed_run_id,
-            valid_from_ns,invalidated_ns FROM file_versions WHERE version_id=1"""
-        )
-        connection.execute("UPDATE files SET current_version_id=2 WHERE file_id=2")
-    owner = replace(
-        _code_owner(),
-        watermarks=(
-            LogicalWatermark("current_files", "2"),
-            LogicalWatermark("latest_version_id", "2"),
-            LogicalWatermark("latest_analysis_run_id", "1"),
-            LogicalWatermark("visibility", "best_effort_non_generational"),
-        ),
-    )
-
-    result = lookup_exact(
-        KnowledgeStatePaths.from_directory(state),
-        _snapshot(owner),
-        ExactLookupRequest(
-            (ExactLookupTerm(ExactLookupKind.HASH, "aa" * 16),),
-            limit=1,
-            owner_scope=("code",),
-            formats=("python",),
-        ),
-    )
-
-    assert [match.resource.current_path for match in result.matches] == ["C:/src/Z.py"]
-
-
-def test_code_watermark_change_after_snapshot_abstains(tmp_path: Path) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    code = state / "code.sqlite3"
-    _create_code(code)
-    with closing(sqlite3.connect(code)) as connection, connection:
-        connection.execute(
-            """INSERT INTO analysis_runs(
-            analysis_run_id,framework_run_id,scan_id,processing_signature,status,
-            started_ns,completed_ns,candidates,processed,cache_hits,errors,
-            summary_json)
-            VALUES(2,2,2,'new-run','completed',3,4,0,0,0,0,'{}')"""
-        )
-
-    result = lookup_exact(
-        KnowledgeStatePaths.from_directory(state),
-        _snapshot(_code_owner()),
-        ExactLookupRequest(
-            (ExactLookupTerm(ExactLookupKind.SYMBOL, "control.validate"),),
-            limit=5,
-        ),
-    )
-
-    assert result.matches == ()
-    assert result.reports[0].status is ExactLookupStatus.PARTIAL
-    assert result.reports[0].reason == "code_changed_after_snapshot"
-
-
-def test_missing_available_owner_does_not_create_state(tmp_path: Path) -> None:
-    state = tmp_path / "missing-state"
-    result = lookup_exact(
-        KnowledgeStatePaths.from_directory(state),
-        _snapshot(_code_owner()),
-        ExactLookupRequest(
-            (ExactLookupTerm(ExactLookupKind.SYMBOL, "control.validate"),),
-            limit=5,
-        ),
-    )
-
-    assert result.matches == ()
-    assert result.reports[0].status is ExactLookupStatus.PARTIAL
-    assert result.reports[0].reason is not None
-    assert result.reports[0].reason.startswith("owner_read_failed:")
-    assert not state.exists()
 
 
 def test_cancellation_propagates_before_owner_read(tmp_path: Path) -> None:

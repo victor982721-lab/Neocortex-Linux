@@ -76,11 +76,11 @@ TEXT_SOURCE_KINDS = (
     "audio",
     "archive",
     "text",
-    "code",
     "video",
 )
 IMAGE_SOURCE_KIND = "image"
 VIDEO_SOURCE_KIND = "video"
+SEMANTIC_SOURCE_KINDS = frozenset((*TEXT_SOURCE_KINDS, IMAGE_SOURCE_KIND))
 # Physical Semantic source names are projected from the canonical content
 # manifest.  ``image_ocr`` is a channel inside the image owner, not a second
 # SQLite database, so only catalog-owned source kinds enter this map.
@@ -88,6 +88,7 @@ SOURCE_DATABASE_NAMES = {
     source_kind: capability.state_database
     for capability in CONTENT_CAPABILITIES
     for source_kind in capability.catalog_source_kinds
+    if source_kind in SEMANTIC_SOURCE_KINDS
 }
 
 
@@ -134,7 +135,6 @@ def _video_source_head(state_directory: Path) -> "SemanticSourceHead":
 
 SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v3"
 IMAGE_SOURCE_ADAPTER_VERSION = "semantic-image-source-v4-no-nudenet"
-CODE_SOURCE_ADAPTER_VERSION = "semantic-code-source-v1"
 SEMANTIC_TITLE_SECTION_KIND = "semantic_metadata_title"
 SEMANTIC_TITLE_POLICY = "semantic-content-aware-title-v3"
 SEMANTIC_TEXT_ENUMERATION_PROTOCOL = "bounded-v1"
@@ -1209,94 +1209,6 @@ def _iter_text(
                 )
 
 
-def _iter_code(
-    path: Path,
-    connection: sqlite3.Connection | None = None,
-) -> Iterator[TextSourceRecord]:
-    """Stream current bounded code chunks with structural provenance."""
-
-    with _borrow_or_open_database(path, connection) as connection:
-        rows = connection.execute(
-            """SELECT f.volume_id,f.physical_file_id,f.current_path AS path,
-            f.last_seen_run_id AS source_last_seen_run_id,
-            v.version_id,v.size,v.mtime_ns,v.birthtime_ns,v.raw_xxh3_128,
-            v.first_observed_run_id,v.last_observed_run_id,
-            v.text_xxh3_128,v.text_chars,v.processing_signature,v.analysis_status,
-            v.language,v.artifact_kind,v.analyzer_id,v.analyzer_version,v.parser_kind,
-            c.chunk_index,c.kind AS chunk_kind,c.start_line,c.end_line,c.text,
-            s.qualified_name AS symbol
-            FROM files f JOIN file_versions v ON v.version_id=f.current_version_id
-            JOIN code_chunks c ON c.version_id=v.version_id
-            LEFT JOIN symbols s ON s.symbol_id=c.symbol_id
-            WHERE f.status='current' AND v.invalidated_ns IS NULL
-            AND v.analysis_status IN ('complete','partial','text_only')
-            ORDER BY v.version_id,c.chunk_index"""
-        )
-        current_version_id: int | None = None
-        current_item: SemanticItem | None = None
-        for row in rows:
-            version_id = int(row["version_id"])
-            if version_id != current_version_id:
-                source_identity = f"{row['volume_id']}:{row['physical_file_id']}"
-                text_digest = str(row["text_xxh3_128"] or "unavailable")
-                descriptor = fingerprint_text(
-                    f"{CODE_SOURCE_ADAPTER_VERSION}\0{source_identity}\0"
-                    f"{text_digest}\0{int(row['text_chars'])}\0"
-                    f"{row['processing_signature']}"
-                )
-                current_item = SemanticItem(
-                    item_id=_item_id("code", source_identity),
-                    source_kind="code",
-                    source_identity=source_identity,
-                    identity_version=(
-                        f"{CODE_SOURCE_ADAPTER_VERSION}|{row['processing_signature']}|"
-                        f"{row['analyzer_id']}:{row['analyzer_version']}"
-                    ),
-                    fingerprint=descriptor,
-                    path=str(row["path"]),
-                    source_revision={
-                        "version_id": version_id,
-                        "size": int(row["size"]),
-                        "mtime_ns": int(row["mtime_ns"]),
-                        "birthtime_ns": int(row["birthtime_ns"]),
-                        "processing_signature": str(row["processing_signature"]),
-                        "last_seen_run_id": int(row["source_last_seen_run_id"]),
-                        "first_observed_run_id": int(row["first_observed_run_id"]),
-                        "last_observed_run_id": int(row["last_observed_run_id"]),
-                        "raw_content_xxh3_128": row["raw_xxh3_128"],
-                    },
-                    provenance={
-                        "adapter": CODE_SOURCE_ADAPTER_VERSION,
-                        "processing_signature": str(row["processing_signature"]),
-                        "analysis_status": str(row["analysis_status"]),
-                        "language": row["language"],
-                        "artifact_kind": str(row["artifact_kind"]),
-                        "analyzer_id": str(row["analyzer_id"]),
-                        "analyzer_version": str(row["analyzer_version"]),
-                        "parser_kind": str(row["parser_kind"]),
-                        "fingerprint_basis": "durable-code-text-descriptor",
-                    },
-                )
-                current_version_id = version_id
-            assert current_item is not None
-            yield TextSourceRecord(
-                current_item,
-                TextSection(
-                    section_kind=f"code_{row['chunk_kind']}",
-                    section_id=str(int(row["chunk_index"])),
-                    text=str(row["text"]),
-                    provenance={
-                        "adapter": CODE_SOURCE_ADAPTER_VERSION,
-                        "version_id": version_id,
-                        "language": row["language"],
-                        "symbol": row["symbol"],
-                        "start_line": int(row["start_line"]),
-                        "end_line": int(row["end_line"]),
-                    },
-                ),
-            )
-
-
 def _source_head_query(
     connection: sqlite3.Connection,
     source_kind: str,
@@ -1395,21 +1307,6 @@ def _source_head_query(
             {revision_projection} FROM documents d {joins}
             WHERE d.status='complete' AND d.text_zlib IS NOT NULL AND d.text_chars>0
             ORDER BY d.file_key""",
-            (),
-        )
-    if source_kind == "code":
-        return (
-            """SELECT f.volume_id,f.physical_file_id,f.current_path,
-            v.version_id,v.size,v.mtime_ns,v.birthtime_ns,v.raw_xxh3_128,
-            v.text_xxh3_128,v.text_chars,v.processing_signature,v.analysis_status,
-            v.language,v.artifact_kind,v.analyzer_id,v.analyzer_version,v.parser_kind,
-            c.chunk_index,c.kind,c.start_line,c.end_line,length(c.text),s.qualified_name
-            FROM files f JOIN file_versions v ON v.version_id=f.current_version_id
-            JOIN code_chunks c ON c.version_id=v.version_id
-            LEFT JOIN symbols s ON s.symbol_id=c.symbol_id
-            WHERE f.status='current' AND v.invalidated_ns IS NULL
-            AND v.analysis_status IN ('complete','partial','text_only')
-            ORDER BY v.version_id,c.chunk_index""",
             (),
         )
     raise ValueError(f"unsupported semantic text source: {source_kind}")
@@ -1587,8 +1484,6 @@ def iter_text_source_records(
         yield from _iter_archive(database, connection)
     elif source_kind == "text":
         yield from _iter_text(database, connection)
-    elif source_kind == "code":
-        yield from _iter_code(database, connection)
     else:
         yield from _iter_office(database, source_kind, connection)
 
@@ -1896,7 +1791,7 @@ def semantic_source_heads(
             def builder():
                 return _text_source_head(state_directory, source_kind)
         contract = [SEMANTIC_SOURCE_HEAD_PROTOCOL, SOURCE_ADAPTER_VERSION,
-                    IMAGE_SOURCE_ADAPTER_VERSION, CODE_SOURCE_ADAPTER_VERSION]
+                    IMAGE_SOURCE_ADAPTER_VERSION]
         return cached_source_head(source_kind, paths, contract, builder, SemanticSourceHead)
 
     return tuple(project(source_kind) for source_kind in selected)

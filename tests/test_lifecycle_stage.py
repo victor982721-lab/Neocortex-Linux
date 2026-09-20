@@ -32,7 +32,6 @@ from neocortex.runtime.orchestration.route_registry import builtin_route_registr
 from neocortex.runtime.orchestration.orchestrator import build_normal_inventory_boundary
 from neocortex.runtime.orchestration.run_manifest import RunManifest
 from neocortex.runtime.orchestration.run_status import list_run_status
-from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
 
 
 def _manifest(
@@ -41,11 +40,6 @@ def _manifest(
     *,
     selected_routes: tuple[str, ...] = ("text",),
 ) -> dict[str, object]:
-    config = FrameworkConfig()
-    policy = CorpusAdmissionPolicy(
-        interested_roots=config.code_project_roots,
-        code_scope=config.code_candidate_scope,
-    )
     return RunManifest(
         run_id=run_id,
         run_kind="initial",
@@ -53,10 +47,7 @@ def _manifest(
         root_identity=(1, 2, -1),
         selected_routes=selected_routes,
         route_capabilities=dict.fromkeys(selected_routes, "safe_replay"),
-        configuration={
-            "corpus_admission": policy.to_dict(),
-            "corpus_admission_signature": policy.signature,
-        },
+        configuration={},
     ).event_payload()
 
 
@@ -183,13 +174,13 @@ def test_initial_route_input_sources_survive_recovery(tmp_path: Path) -> None:
         state.publish_initial_routing_snapshot(run_id, 1, 0, 1, "full", 0)
         state.begin_route_runs(
             run_id,
-            ("code",),
-            route_input_sources={"code": "inventory_snapshot"},
+            ("text",),
+            route_input_sources={"text": "route_candidates"},
         )
         state.mark_abandoned_runs()
         recovery = state.run_recovery_plan(run_id)
-        assert recovery["route_input_sources"] == {"code": "inventory_snapshot"}
-        assert recovery["non_replayable"] == []
+        assert recovery["route_input_sources"] == {"text": "route_candidates"}
+        assert recovery["non_replayable"] == ["text"]
 
 
 def test_begin_operational_run_rejects_live_source(tmp_path: Path) -> None:
@@ -384,7 +375,7 @@ def test_integrated_semantic_publication_gate_is_durable_and_fail_closed(tmp_pat
     transaction = _begin_integrated_publication(
         args,
         run_id,
-        selected_sources=("pdf", "code"),
+        selected_sources=("pdf", "text"),
         image_available=False,
     )
     assert transaction is not None
@@ -392,7 +383,7 @@ def test_integrated_semantic_publication_gate_is_durable_and_fail_closed(tmp_pat
     transaction.commit(transaction.prepared.owner_heads)
     view = read_state_publication_state(state_directory)
     assert view.status == "complete"
-    assert view.epoch.owners == ("semantic", "code")
+    assert view.epoch.owners == ("semantic",)
 
 
 def test_integrated_semantic_commits_authenticated_publication_head(

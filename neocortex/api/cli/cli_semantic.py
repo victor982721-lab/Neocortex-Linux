@@ -176,10 +176,7 @@ def _selected_semantic_text_sources(args: argparse.Namespace) -> tuple[str, ...]
 
     if args.semantic_source is not None:
         return tuple(dict.fromkeys(args.semantic_source))
-    source_kinds = tuple(
-        source for source in TEXT_SOURCE_KINDS
-        if not (getattr(args, "all", False) and source == "code")
-    )
+    source_kinds = tuple(TEXT_SOURCE_KINDS)
     return tuple(
         source_kind
         for source_kind in source_kinds
@@ -220,7 +217,6 @@ class _SemanticIndexExecution:
     progress: ProgressCallback | None
     result_sink: Callable[[str, object], None] | None
     results: list[tuple[str, SemanticIndexResult]] = field(default_factory=list)
-    code_link_statuses: list[tuple[int, str, int, int]] = field(default_factory=list)
     scope_timings: list[tuple[str, int]] = field(default_factory=list)
     unavailable_scopes: dict[str, str] = field(default_factory=dict)
 
@@ -599,7 +595,7 @@ def run_semantic_plan(args: argparse.Namespace) -> int:
         return _semantic_failure(
             "semantic-plan",
             FileNotFoundError(
-                "no durable PDF, DOCX, Office, audio or code text cache is available"
+                "no durable PDF, DOCX, Office, audio, archive or text cache is available"
             ),
             offline=False,
         )
@@ -836,16 +832,10 @@ def _validate_integrated_publication_token(args: argparse.Namespace) -> None:
         raise StatePublicationRecoveryRequired(view.reason or view.status)
 
 
-def _observe_integrated_heads(
-    state_directory: Path, *, include_code: bool, work_budget=None,
-    repair_stale_code_links: bool = False,
-):
-    from neocortex.code.search.code_semantic_links import CodeSemanticLinkError
+def _observe_integrated_heads(state_directory: Path, *, work_budget=None):
     from neocortex.semantic.semantic_publication_heads import (
         PublicationHeadsError,
-        PublicationHeadsRepairRequired,
         observe_integrated_owner_heads,
-        observe_semantic_generation_heads,
     )
 
     try:
@@ -855,30 +845,13 @@ def _observe_integrated_heads(
 
         def observe():
             return observe_integrated_owner_heads(
-                state_directory, include_code=include_code,
-                deadline_monotonic=deadline, cancellation_check=cancellation,
-            )
-
-        try:
-            return observe()
-        except PublicationHeadsRepairRequired:
-            if not include_code or not repair_stale_code_links:
-                raise
-            # Code extraction can invalidate old links before Semantic starts,
-            # not only when a previous run was interrupted. Reconcile that
-            # derived projection before capturing the new prepare baseline.
-            from neocortex.code.search.code_semantic_links import deactivate_stale_code_embedding_links
-
-            published_heads = observe_semantic_generation_heads(
-                state_directory, deadline_monotonic=deadline,
+                state_directory,
+                deadline_monotonic=deadline,
                 cancellation_check=cancellation,
             )
-            deactivate_stale_code_embedding_links(
-                state_directory, published_heads=published_heads,
-                deadline_monotonic=deadline, cancellation_check=cancellation,
-            )
-            return observe()
-    except (PublicationHeadsError, CodeSemanticLinkError) as exc:
+
+        return observe()
+    except PublicationHeadsError as exc:
         raise StatePublicationRecoveryRequired(str(exc)) from exc
 
 
@@ -1044,7 +1017,7 @@ def _execute_semantic_text_index(
         return
     if not execution.selected_sources:
         raise FileNotFoundError(
-            "no durable PDF, DOCX, Office, audio or code text cache is available"
+            "no durable PDF, DOCX, Office, audio, archive or text cache is available"
         )
     started = time.perf_counter_ns()
     try:
@@ -1064,9 +1037,6 @@ def _execute_semantic_text_index(
     finally:
         execution.scope_timings.append(("text", time.perf_counter_ns() - started))
     _record_semantic_index_result(execution, "text", result)
-    code_link_status = _current_semantic_code_link_status(args.state_directory, result)
-    if code_link_status is not None:
-        execution.code_link_statuses.append(code_link_status)
 
 
 def _execute_semantic_image_index(
@@ -1104,28 +1074,6 @@ def _record_semantic_index_result(
     execution.results.append((scope, result))
     if execution.result_sink is not None:
         execution.result_sink(scope, result)
-
-
-def _current_semantic_code_link_status(
-    state_directory: Path,
-    result: SemanticIndexResult,
-) -> tuple[int, str, int, int] | None:
-    if "code" not in result.sources or not result.complete:
-        return None
-    from neocortex.code.search.code_semantic_links import current_code_embedding_link_counts
-
-    summary = result.generations[0].summary
-    active_links, current_links = current_code_embedding_link_counts(
-        state_directory,
-        generation_id=summary.generation_id,
-        model_signature=summary.model_signature,
-    )
-    return (
-        summary.generation_id,
-        summary.model_signature,
-        active_links,
-        current_links,
-    )
 
 
 def _semantic_index_failure(
@@ -1185,10 +1133,6 @@ def _complete_semantic_index_execution(
             incomplete_is_error=incomplete_is_error,
         )
         failed = failed or scope_failed
-    _print_semantic_code_link_statuses(
-        execution.code_link_statuses,
-        print_output=print_output,
-    )
     return 2 if failed else 0
 
 
@@ -1200,28 +1144,6 @@ def _semantic_index_result_failed(
     if not incomplete_is_error and result.truncated and result.errors == 0 and result.stale == 0:
         return False
     return not result.complete
-
-
-def _print_semantic_code_link_statuses(
-    statuses: list[tuple[int, str, int, int]],
-    *,
-    print_output: bool,
-) -> None:
-    if not print_output:
-        return
-    for (
-        generation_id,
-        model_signature,
-        active_links,
-        current_links,
-    ) in statuses:
-        print(
-            f"SEMANTIC_CODE_LINKS generation={generation_id} "
-            f"model={model_signature} active={active_links} "
-            f"current={current_links} stale={active_links - current_links} "
-            "authority=retrieval_evidence_only "
-            "calibration=uncalibrated_similarity"
-        )
 
 
 def _publication_observation(state_directory: Path) -> dict[str, object]:
@@ -1443,7 +1365,7 @@ def _semantic_resume_args(
     return effective
 
 
-_INTEGRATED_PUBLICATION_OWNER_ORDER = ("semantic", "code")
+_INTEGRATED_PUBLICATION_OWNER_ORDER = ("semantic",)
 
 
 def _stored_publication_owners(
@@ -1480,8 +1402,6 @@ def _integrated_publication_owners(
         owners = {"semantic"}
     else:
         owners = set(_stored_publication_owners(raw, label="Semantic publication owners"))
-    if "code" in selected_sources:
-        owners.add("code")
     return tuple(owner for owner in _INTEGRATED_PUBLICATION_OWNER_ORDER if owner in owners)
 
 
@@ -1547,7 +1467,7 @@ def _read_pending_integrated_metadata(
         raise StatePublicationRecoveryRequired("pending publication is not an integrated Semantic run")
     if pending.epoch != view.epoch.epoch:
         raise StatePublicationRecoveryRequired("pending publication epoch is detached")
-    allowed_owners = {"semantic", "code"}
+    allowed_owners = {"semantic"}
     if not pending.owners or any(owner not in allowed_owners for owner in pending.owners):
         raise StatePublicationRecoveryRequired("pending publication owner scope is unavailable")
     previous_owners = set(view.epoch.owners)
@@ -1617,83 +1537,21 @@ def _read_pending_integrated_metadata(
     )
 
 
-def _integrated_checkpoint_needs_code(
-    metadata: _PendingIntegratedMetadata,
-    args: argparse.Namespace,
-) -> bool:
-    """Keep legacy integrated publication ownership coherent during recovery.
-
-    A healthy ``--all`` no longer selects the Code route or its Semantic cache,
-    but an interrupted publication checkpoint may still have been created with
-    the historical ``semantic+code`` owner set.  Observing that owner head is
-    recovery bookkeeping, not Code analysis; preserve it so the publication
-    CAS cannot silently drop a prior owner.
-    """
-
-    if "code" in metadata.pending_owners or "code" in metadata.previous_owners:
-        return True
-    current_sources = getattr(args, "semantic_source", None)
-    if bool(getattr(args, "all", False)) and current_sources is None:
-        return True
-    return isinstance(current_sources, (list, tuple)) and "code" in current_sources
-
-
-def _is_publication_head_repair_required(error: BaseException) -> bool:
-    """Recognize only the typed stale-Code-projection repair boundary."""
-
-    from neocortex.semantic.semantic_publication_heads import PublicationHeadsRepairRequired
-
-    return isinstance(error, PublicationHeadsRepairRequired) or isinstance(
-        error.__cause__, PublicationHeadsRepairRequired
-    )
-
-
 def _observe_fresh_integrated_heads(
     state_directory: Path,
     *,
-    include_code: bool,
     controls: _IntegratedStartReadBudget,
 ) -> tuple[StateOwnerHead, ...]:
-    """Observe heads once, with one typed stale-Code repair opportunity."""
-
-    from neocortex.code.search.code_semantic_links import deactivate_stale_code_embedding_links
+    """Observe the Semantic head once through the bounded read fence."""
     from neocortex.semantic.semantic_publication_heads import (
         observe_integrated_owner_heads,
-        observe_semantic_generation_heads,
     )
-
-    def observe_once() -> tuple[StateOwnerHead, ...]:
-        return observe_integrated_owner_heads(
-            state_directory,
-            include_code=include_code,
-            snapshot_budget=controls.snapshot_budget(),
-            deadline_monotonic=controls.deadline,
-            cancellation_check=controls._snapshot_checkpoint,
-        )
-
-    try:
-        return observe_once()
-    except BaseException as exc:
-        if not include_code or not _is_publication_head_repair_required(exc):
-            raise
-        controls.check()
-        published_heads = observe_semantic_generation_heads(
-            state_directory,
-            snapshot_budget=controls.snapshot_budget(),
-            deadline_monotonic=controls.deadline,
-            cancellation_check=controls._snapshot_checkpoint,
-        )
-        controls.check()
-        # This is deliberately one repair attempt. A second typed failure from
-        # the final observer remains blocked and is not turned into a loop.
-        deactivate_stale_code_embedding_links(
-            state_directory,
-            published_heads=published_heads,
-            deadline_monotonic=controls.deadline,
-            cancellation_check=controls._snapshot_checkpoint,
-        )
-        controls.check()
-        return observe_once()
+    return observe_integrated_owner_heads(
+        state_directory,
+        snapshot_budget=controls.snapshot_budget(),
+        deadline_monotonic=controls.deadline,
+        cancellation_check=controls._snapshot_checkpoint,
+    )
 
 
 def _fresh_integrated_checkpoint(
@@ -1715,12 +1573,12 @@ def _fresh_integrated_checkpoint(
     controls.check()
     initial_view = read_state_publication_state(args.state_directory)
     if initial_view.status in {"absent", "complete"}:
-        if "semantic" in initial_view.epoch.owners and set(initial_view.epoch.owners) <= {"semantic", "code"}:
+        if initial_view.epoch.owners == ("semantic",):
             args._semantic_publication_owners = initial_view.epoch.owners
         controls.apply_elapsed_to_explicit_caps(args)
         return
-    # This path can now write a lock, the publication journal, Framework
-    # metadata, or a stale Code projection before the normal orchestrator.
+    # This path can now write a lock, the publication journal, or Framework
+    # metadata before the normal orchestrator.
     from neocortex.integrations.inventory.inventory_boundary import state_sqlite_mutation_paths
 
     _validate_semantic_state_write(
@@ -1728,7 +1586,6 @@ def _fresh_integrated_checkpoint(
         database=True,
         extra_paths=(
             *state_sqlite_mutation_paths(args.state_directory / "framework.sqlite3"),
-            *state_sqlite_mutation_paths(args.state_directory / "code.sqlite3"),
             args.state_directory / "state-publication.lock",
             args.state_directory / "state-publication-journal.jsonl",
             args.state_directory / "state-epoch.json",
@@ -1741,10 +1598,10 @@ def _fresh_integrated_checkpoint(
         if (
             current_view.status == "complete"
             and "semantic" in current_owners
-            and set(current_owners) <= {"semantic", "code"}
+            and current_owners == ("semantic",)
         ):
-            # A later healthy --all must not forget Code merely because it
-            # currently has no Semantic input candidates.
+            # Preserve the published Semantic owner even when the current run
+            # has no input candidates.
             args._semantic_publication_owners = current_owners
         metadata = _read_pending_integrated_metadata(args, controls)
         if metadata is None:
@@ -1759,17 +1616,12 @@ def _fresh_integrated_checkpoint(
         if pre_checkpoint_hook is not None:
             pre_checkpoint_hook(args, metadata, controls)
             controls.check()
-        include_code = _integrated_checkpoint_needs_code(metadata, args)
         initial_heads = _observe_fresh_integrated_heads(
             args.state_directory,
-            include_code=include_code,
             controls=controls,
         )
         controls.check()
-        args._semantic_publication_owners = (
-            "semantic",
-            "code",
-        ) if include_code else ("semantic",)
+        args._semantic_publication_owners = ("semantic",)
 
         from neocortex.persistence.state_publication import restart_state_publication_checkpoint
 
@@ -1781,7 +1633,6 @@ def _fresh_integrated_checkpoint(
 
             return observe_integrated_owner_heads(
                 args.state_directory,
-                include_code=include_code,
                 snapshot_budget=controls.snapshot_budget(),
                 deadline_monotonic=controls.deadline,
                 cancellation_check=controls._snapshot_checkpoint,
@@ -1842,7 +1693,6 @@ def prepare_integrated_semantic_start(
         clock=clock,
         metadata_timeout_seconds=metadata_timeout_seconds,
     )
-    from neocortex.code.search.code_semantic_links import CodeSemanticLinkError
     from neocortex.semantic.semantic_publication_heads import PublicationHeadsError
 
     try:
@@ -1852,7 +1702,7 @@ def prepare_integrated_semantic_start(
             print_output=print_output,
             pre_checkpoint_hook=pre_checkpoint_hook,
         )
-    except (PublicationHeadsError, CodeSemanticLinkError) as exc:
+    except PublicationHeadsError as exc:
         raise StatePublicationRecoveryRequired(str(exc)) from exc
     return 0
 
@@ -1952,7 +1802,7 @@ def _pending_integrated_source_run(state_directory: Path) -> int | None:
             state_directory,
             event_id=pending.event_id,
             operation="framework-all-semantic",
-            owners=publication_owners or (("semantic", "code") if "code" in sources else ("semantic",)),
+            owners=publication_owners or ("semantic",),
             idempotency_key=publication_idempotency_key(
                 "framework-all-semantic", run_id, tuple(sources), images
             ),
@@ -2177,9 +2027,7 @@ def _recover_pending_integrated_publication(state_directory: Path) -> bool:
         raise StatePublicationRecoveryRequired("another publication is pending")
     prepared = pending[0]
     if prepared.owner_heads:
-        observed = _observe_integrated_heads(
-            state_directory, include_code="code" in prepared.owners
-        )
+        observed = _observe_integrated_heads(state_directory)
         if canonical_owner_heads(observed) != canonical_owner_heads(prepared.owner_heads):
             raise StatePublicationRecoveryRequired("owner-head drift")
         abort_state_publication(
@@ -2244,8 +2092,6 @@ def _integrated_stage_details(
         "recovery_required": recovery_required,
     }
     publication_owners = getattr(args, "_semantic_publication_owners", None)
-    if publication_owners is None and "code" in selected_sources:
-        publication_owners = ("semantic", "code")
     if publication_owners is not None:
         details["publication_owners"] = list(
             _stored_publication_owners(
@@ -2294,7 +2140,7 @@ def _begin_integrated_publication(
     selected_sources: tuple[str, ...],
     image_available: bool,
 ):
-    """Prepare the logical Semantic/Code publication gate for an ``--all`` run."""
+    """Prepare the logical Semantic publication gate for an ``--all`` run."""
 
     from neocortex.persistence.framework_state_writer import FrameworkState
     from neocortex.persistence.state_publication import (
@@ -2343,9 +2189,8 @@ def _begin_integrated_publication(
     if view.status not in {"absent", "complete"}:
         raise StatePublicationRecoveryRequired("state publication is not ready")
     baseline_heads = _observe_integrated_heads(
-        args.state_directory, include_code="code" in owners,
+        args.state_directory,
         work_budget=getattr(args, "_semantic_work_budget", None),
-        repair_stale_code_links=True,
     )
     previous = {head.owner: head for head in view.epoch.owner_heads}
     if any(
@@ -2378,10 +2223,8 @@ def _final_publication_owner_heads(
         observe_semantic_generation_heads,
     )
 
-    publication_owners = _integrated_publication_owners(args, selected_sources)
     generations: dict[str, int] = {}
-    text_models: set[str] = set()
-    for scope, value in captured_results:
+    for _scope, value in captured_results:
         if getattr(value, "complete", False) is not True:
             raise RuntimeError("Semantic publication requires complete generation results")
         for generation in getattr(value, "generations", ()):
@@ -2397,8 +2240,6 @@ def _final_publication_owner_heads(
                 and getattr(summary, "stale", 0) == 0
             ):
                 generations[model_signature] = generation_id
-                if scope == "text":
-                    text_models.add(model_signature)
     if not generations:
         raise RuntimeError("Semantic publication produced no owner generation")
     try:
@@ -2413,17 +2254,8 @@ def _final_publication_owner_heads(
         raise StatePublicationRecoveryRequired(str(exc)) from exc
     if any(observed_generations.get(model) != generation for model, generation in generations.items()):
         raise StatePublicationRecoveryRequired("Semantic results do not match all published model heads")
-    if "code" in publication_owners:
-        from neocortex.code.search.code_semantic_links import synchronize_code_embedding_links
-
-        for model_signature in sorted(text_models):
-            synchronize_code_embedding_links(
-                args.state_directory,
-                generation_id=observed_generations[model_signature],
-                model_signature=model_signature,
-            )
     return _observe_integrated_heads(
-        args.state_directory, include_code="code" in publication_owners,
+        args.state_directory,
         work_budget=getattr(args, "_semantic_work_budget", None),
     )
 
@@ -2531,9 +2363,7 @@ def _resolve_integrated_publication_after_nonterminal(
     pending = tuple(item for item in view.pending if item.event_id == event_id)
     if len(pending) != 1:
         return False
-    observed = _observe_integrated_heads(
-        state_directory, include_code="code" in getattr(prepared, "owners", ())
-    )
+    observed = _observe_integrated_heads(state_directory)
     if baseline:
         if canonical_owner_heads(observed) != canonical_owner_heads(baseline):
             return False
@@ -2570,16 +2400,7 @@ def _select_integrated_sources(args: argparse.Namespace, run_id: int | None):
                 count = summary.get("candidates", 0) if isinstance(summary, dict) else 0
                 route_states[str(route_name)] = (str(status), count if type(count) is int else 0)
     explicit = args.semantic_source is not None
-    requested = (
-        tuple(args.semantic_source)
-        if explicit
-        else tuple(source for source in TEXT_SOURCE_KINDS if source != "code")
-    )
-    if getattr(args, "all", False) and explicit and "code" in requested:
-        raise ValueError(
-            "--semantic-source code requires an explicit --route code; "
-            "it cannot be selected by --all"
-        )
+    requested = tuple(args.semantic_source) if explicit else tuple(TEXT_SOURCE_KINDS)
     selected: list[str] = []
     empty: list[str] = []
     blocked: dict[str, str] = {}
@@ -2768,7 +2589,6 @@ def run_integrated_all_semantic_index(
             f"max_new_jobs={integrated_args.semantic_max_new_jobs} "
             f"time_budget_seconds={integrated_args.semantic_time_budget_seconds if integrated_args.semantic_time_budget_seconds is not None else 'unlimited'} "
             f"images={int(image_available)} "
-            f"code_explicit={int('code' in selected_sources)}"
         )
     emit_progress(
         progress,
@@ -2818,16 +2638,11 @@ def run_integrated_all_semantic_index(
                 captured_results,
                 selected_sources=selected_sources,
             )
-            publication_owners = _integrated_publication_owners(
-                integrated_args,
-                selected_sources,
-            )
             integrated_args._semantic_work_budget.checkpoint()
             publication.commit(
                 final_heads,
                 verify_owner_heads=lambda: _observe_integrated_heads(
                     integrated_args.state_directory,
-                    include_code="code" in publication_owners,
                     work_budget=integrated_args._semantic_work_budget,
                 ),
             )

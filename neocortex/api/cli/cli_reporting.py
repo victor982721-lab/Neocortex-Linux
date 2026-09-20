@@ -341,19 +341,7 @@ def _print_action_report(result, dedup_policy: str) -> None:
         f"files_renamed={actions.files_renamed} "
         f"empty_directory_candidates={actions.empty_directory_candidates} "
         f"empty_directories_trashed={actions.empty_directories_trashed} "
-        f"third_party_candidates={_optional_counter(actions, 'third_party_candidates') or 0} "
-        f"third_party_trashed={_optional_counter(actions, 'third_party_trashed') or 0} "
-        f"third_party_skips={_optional_counter(actions, 'third_party_skips') or 0} "
         f"action_errors={actions.errors}"
-    )
-    print(
-        "CORPUS_ADMISSION "
-        f"processed={_optional_counter(actions, 'admission_processed') or 0} "
-        f"metadata_only={_optional_counter(actions, 'admission_metadata_only') or 0} "
-        f"sensitive={_optional_counter(actions, 'admission_sensitive') or 0} "
-        f"regeneration_proven={_optional_counter(actions, 'regeneration_proven') or 0} "
-        f"regeneration_unproven={_optional_counter(actions, 'regeneration_unproven') or 0} "
-        "exclusion_is_not_deletion=1"
     )
 
 
@@ -380,42 +368,6 @@ def _print_organization_report(result) -> None:
             f"organization_batches={applied.batches} "
             f"organization_remaining={applied.remaining}"
         )
-
-
-def _print_code_report(result) -> None:
-    summary = getattr(result, "code", None)
-    if summary is None:
-        return
-    print(
-        f"code_candidates={summary.candidates} "
-        f"code_project_scope="
-        f"{'projects' if summary.project_scope_enabled else 'broad'} "
-        f"code_project_roots={summary.project_roots} "
-        f"code_outside_project_skips={summary.outside_project_skips} "
-        f"code_dependency_skips={summary.dependency_skips} "
-        f"code_generated_scope_skips={summary.generated_scope_skips} "
-        f"code_cache_skips={summary.cache_skips} "
-        f"code_processed={summary.processed} "
-        f"code_cache_hits={summary.cache_hits} "
-        f"code_cache_batches={summary.cache_batches} "
-        f"code_symbols={summary.symbols} "
-        f"code_references={summary.references} "
-        f"code_diagnostics={summary.diagnostics} "
-        f"code_projects={summary.projects} "
-        f"code_errors={summary.errors} "
-        f"code_partial={getattr(summary, 'partial', 'no_verificado')} "
-        f"code_text_only={getattr(summary, 'text_only', 'no_verificado')} "
-        f"code_skipped_limit={getattr(summary, 'skipped_limit', 'no_verificado')} "
-        f"code_stale_inventory={getattr(summary, 'stale_inventory', 'no_verificado')} "
-        f"code_bytes_read={summary.bytes_read} "
-        f"code_read_ms={summary.read_milliseconds} "
-        f"code_analyze_ms={summary.analyze_milliseconds} "
-        f"code_persist_ms={summary.persist_milliseconds} "
-        f"code_cache_lookup_ms={summary.cache_lookup_milliseconds} "
-        f"code_cache_update_ms={summary.cache_update_milliseconds} "
-        f"code_cache_commit_ms={summary.cache_commit_milliseconds} "
-        f"code_graph_ms={summary.graph_milliseconds}"
-    )
 
 
 def has_organization_errors(result) -> bool:
@@ -489,7 +441,6 @@ def print_reports(result, args: argparse.Namespace) -> None:
         _print_audio_report(result)
         _print_video_report(result)
         _print_image_report(result)
-        _print_code_report(result)
         _print_global_resource_report(result)
         _print_organization_report(result)
         return
@@ -502,7 +453,6 @@ def print_reports(result, args: argparse.Namespace) -> None:
     _print_audio_report(result)
     _print_video_report(result)
     _print_image_report(result)
-    _print_code_report(result)
     _print_global_resource_report(result)
     _print_dedup_report(result)
     _print_action_report(result, args.dedup_policy)
@@ -638,7 +588,6 @@ def _action_counts(actions: object) -> dict[str, int]:
             "duplicate_candidates",
             "rename_candidates",
             "empty_directory_candidates",
-            "third_party_candidates",
         )
     )
     skips = sum(
@@ -647,7 +596,6 @@ def _action_counts(actions: object) -> dict[str, int]:
             "duplicate_skips",
             "rename_skips",
             "empty_directory_skips",
-            "third_party_skips",
         )
     )
     applied = sum(
@@ -656,7 +604,6 @@ def _action_counts(actions: object) -> dict[str, int]:
             "duplicates_trashed",
             "files_renamed",
             "empty_directories_trashed",
-            "third_party_trashed",
         )
     )
     apply_requested = bool(_field_value(actions, "apply_actions")[1])
@@ -774,7 +721,6 @@ _ROUTE_NAMES = {
     "Audio": "audio",
     "Video": "video",
     "Imágenes": "image",
-    "Código": "code",
 }
 
 
@@ -792,13 +738,6 @@ def _route_replay_view(
     if candidates == 0:
         # Zero candidates is an observed empty selection, not complete coverage.
         return candidates, cache_hits, 0, "sin_candidatos"
-    if route_name == "code" and _has_valid_counters(summary, ("candidates", "processed", "cache_hits")):
-        # Code counts cache misses in processed, and includes cached errors in
-        # cache_hits/errors. It has no separate cached_errors counter; requiring
-        # one would hide known replay work from this built-in owner.
-        work = _optional_counter(summary, "processed")
-        observed = work is not None and cache_hits is not None and work + cache_hits > 0
-        return candidates, cache_hits, work, "observado" if observed else "no_verificado"
     explicit_new_work = _optional_counter(summary, "new_work")
     new_work: int | None
     if explicit_new_work is not None:
@@ -904,7 +843,6 @@ def _professional_route_rows(result) -> tuple[tuple[str, object], ...]:
         ("Audio", "audio"),
         ("Video", "video"),
         ("Imágenes", "image"),
-        ("Código", "code"),
     )
     return tuple(
         (label, summary)

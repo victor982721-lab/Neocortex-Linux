@@ -11,168 +11,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from neocortex.code.code_state import CodeState
-from neocortex.code.ingestion.code_candidate_scope import ProjectCandidateScope
-from neocortex.code.ingestion import code_rust
 from neocortex.capabilities.formats.docx import layout as docx_layout
 from neocortex.capabilities.formats.docx import route as docx_route
 
 
-def test_manifest_roots_preserve_longest_first_tie_and_posix_paths() -> None:
-    roots = (
-        (1, "outer", "python", "/projects"),
-        (2, "first", "python", "/projects/a"),
-        (3, "same-root", "rust", "/projects/a/."),
-        (4, "nested", "go", "/projects/a/sub"),
-        (5, "double-slash", "python", "//projects/a"),
-    )
-    paths = (
-        "/projects/a/main.py", "/projects/a/sub/file.go", "/projects/ab/file.py",
-        "/elsewhere/file.py", "//projects/a/file.py", "/projects/a", "/projects/a/../a/x.py",
-    )
-    connection = sqlite3.connect(":memory:")
-    connection.executescript("""
-        CREATE TABLE files(current_path TEXT,current_version_id INTEGER,status TEXT);
-        CREATE TABLE file_versions(version_id INTEGER,invalidated_ns INTEGER);
-        CREATE TABLE project_memberships(project_id INTEGER,version_id INTEGER,
-            proposed_path TEXT,relation TEXT,confidence REAL,selected INTEGER,evidence_json TEXT);
-    """)
-    for index, path in enumerate(paths, 1):
-        connection.execute("INSERT INTO files VALUES(?,?,'current')", (path, index))
-        connection.execute("INSERT INTO file_versions VALUES(?,NULL)", (index,))
-    owner = SimpleNamespace(connection=connection, _manifest_roots=lambda: roots)
-    CodeState._assign_manifest_roots(owner, 123)
-    actual = {row[0]: (row[1], row[2], json.loads(row[3])) for row in connection.execute(
-        "SELECT version_id,project_id,proposed_path,evidence_json FROM project_memberships"
-    )}
-    expected = {}
-    for index, path in enumerate(paths, 1):
-        normalized = os.path.normcase(os.path.abspath(path))
-        matches = [root for root in roots if os.path.commonpath((
-            normalized, os.path.normcase(os.path.abspath(root[3]))
-        )) == os.path.normcase(os.path.abspath(root[3]))]
-        if not matches:
-            continue
-        chosen = max(matches, key=lambda root: len(os.path.normcase(os.path.abspath(root[3]))))
-        try:
-            proposed = str(Path(path).relative_to(Path(chosen[3]))).replace("\\", "/")
-        except ValueError:
-            proposed = Path(path).name
-        expected[index] = (chosen[0], proposed, {"root": chosen[3], "run_id": 123})
-    assert actual == expected
-    connection.close()
 
 
-_BASE_SCOPED_QUERY = """
-SELECT r.reference_id,MIN(target.symbol_id)
-FROM code_references r JOIN _nc_current_versions current ON current.version_id=r.version_id
-JOIN symbols source ON source.symbol_id=r.source_symbol_id
-JOIN symbols module ON module.version_id=r.version_id AND module.kind='module'
-JOIN symbols target ON target.version_id=r.version_id
-LEFT JOIN symbols target_parent ON target_parent.symbol_id=target.parent_symbol_id
-WHERE r.target_symbol_id IS NULL AND r.kind IN('call','inherits','implements_trait','decorator')
-AND ((r.evidence='python-ast:call-expression-import-bound' AND r.target_hint=target.qualified_name)
- OR (r.evidence!='python-ast:call-expression-import-bound' AND (
-    r.name=target.name OR substr(r.name,-(length(target.name)+1))='.'||target.name
-    OR r.target_hint=target.qualified_name OR r.target_hint=target.name
-    OR substr(r.target_hint,-(length(target.name)+1))='.'||target.name)))
-AND ((target.kind IN ('function','class') AND target.parent_symbol_id=module.symbol_id)
- OR (target.kind='method' AND (
-    (source.kind='class' AND target.parent_symbol_id=source.symbol_id)
-    OR (source.kind IN ('method','nested_function') AND target.parent_symbol_id=source.parent_symbol_id)
-    OR (target_parent.kind='class' AND (
-        r.name=target_parent.name||'.'||target.name
-        OR r.target_hint=target_parent.name||'.'||target.name)))))
-GROUP BY r.reference_id HAVING COUNT(DISTINCT target.symbol_id)=1
-"""
 
 
-def test_scoped_candidates_equal_base_predicate_for_names_types_and_ambiguity() -> None:
-    connection = sqlite3.connect(":memory:")
-    connection.executescript("""
-        CREATE TABLE symbols(symbol_id INTEGER PRIMARY KEY,version_id INTEGER,
-            parent_symbol_id INTEGER,kind TEXT,name TEXT,qualified_name TEXT);
-        CREATE INDEX symbols_name_idx ON symbols(name,kind,version_id);
-        CREATE INDEX symbols_qualified_idx ON symbols(qualified_name,version_id);
-        CREATE INDEX symbols_version_fixture_idx ON symbols(version_id,kind);
-        CREATE TABLE code_references(reference_id INTEGER PRIMARY KEY,version_id INTEGER,
-            source_symbol_id INTEGER,target_symbol_id INTEGER,kind TEXT,name TEXT,
-            target_hint TEXT,evidence TEXT);
-        CREATE TEMP TABLE _nc_current_versions(version_id INTEGER PRIMARY KEY);
-        INSERT INTO _nc_current_versions VALUES(1),(2);
-    """)
-    symbols = [
-        (1, 1, None, "module", "m", "m"), (2, 1, 1, "function", "f", "m.f"),
-        (3, 1, 1, "function", "a.b", "m.a.b"), (4, 1, 1, "class", "A", "m.A"),
-        (5, 1, 4, "method", "go", "m.A.go"), (6, 1, 1, "class", "B", "m.B"),
-        (7, 1, 6, "method", "go", "m.B.go"), (8, 1, 1, "function", "dup", "m.dup1"),
-        (9, 1, 1, "function", "dup", "m.dup2"), (10, 1, 1, "function", "", "m.empty"),
-        (11, 1, 1, "function", "Case", "m.Case"), (12, 1, 1, "function", "case", "m.case"),
-        (13, 2, None, "module", "n", "n"), (14, 2, 13, "function", "f", "n.f"),
-        (15, 1, 1, "function", "dot.", "m.dot."),
-        (16, 1, 1, "function", sqlite3.Binary(b"blob"), "m.blob"),
-        (17, 1, 1, "function", "nul", "m.nul"),
-    ]
-    connection.executemany("INSERT INTO symbols VALUES(?,?,?,?,?,?)", symbols)
-    cases = [
-        (1, "f", None, "lexical"), (1, "prefix.a.b", None, "lexical"),
-        (1, "unused", "m.a.b", "lexical"), (1, "A.go", None, "lexical"),
-        (4, "go", None, "lexical"), (5, "go", None, "lexical"),
-        (1, "dup", None, "lexical"), (1, "Case", None, "lexical"),
-        (1, "case", None, "lexical"), (1, "trailing.", None, "lexical"),
-        (1, "prefix.dot.", None, "lexical"), (1, "prefix.blob", None, "lexical"),
-        (1, "prefix.nul\0ignored", None, "lexical"),
-        (1, "f", "m.f", "python-ast:call-expression-import-bound"),
-        (1, "f", "f", "python-ast:call-expression-import-bound"),
-        (1, "f", None, None), (None, "f", None, "lexical"),
-        (1, "prefix." * 100 + "f", None, "lexical"),
-        (1, sqlite3.Binary(b"blob"), None, "lexical"),
-    ]
-    for index, (source, name, hint, evidence) in enumerate(cases, 1):
-        connection.execute("INSERT INTO code_references VALUES(?,1,?,NULL,'call',?,?,?)",
-                           (index, source, name, hint, evidence))
-    expected = dict(connection.execute(_BASE_SCOPED_QUERY))
-    CodeState._resolve_scoped_reference_targets(SimpleNamespace(connection=connection))
-    actual = dict(connection.execute("SELECT reference_id,symbol_id FROM _nc_scoped_reference_targets"))
-    assert actual == expected
-    assert actual[2] == 3 and actual[12] == 16
-    assert 7 not in actual and 15 not in actual and 16 not in actual
-    connection.close()
 
 
-def test_scope_discovery_preserves_nested_policy_and_frozen_result(tmp_path: Path) -> None:
-    roots = [tmp_path / "p", tmp_path / "p" / "src", tmp_path / "p" / "node_modules" / "q",
-             tmp_path / "p" / "build" / "r", tmp_path / "p" / ".cache" / "s"]
-    scope = ProjectCandidateScope.discover((), explicit_roots=roots,
-                                           include_generated=False, include_vendored=False)
-    assert set(scope.roots) == {str(roots[0]), str(roots[1])}
-    assert isinstance(scope._root_keys, frozenset)
-    assert scope.decision(roots[1] / "module.py") == "admit"
-    assert scope.decision(tmp_path / "outside.py") == "outside_project"
-
-
-def test_rust_impl_cursor_preserves_first_overlap_and_open_boundaries() -> None:
-    spans = [(0, 100, "outer", None), (10, 20, "inner", None),
-             (30, 150, "overlap", "Trait"), (150, 170, "next", None)]
-    cursor = code_rust._ImplCursor(spans)
-    for offset in (0, 1, 10, 11, 20, 30, 31, 99, 100, 149, 150, 151, 169, 170, 171):
-        expected = next((span for span in spans if span[0] < offset < span[1]), None)
-        assert cursor.containing(offset) == expected
-
-
-@pytest.mark.parametrize("text", [
-    "const FIRST: i32 = 1;\nconst SECOND: i32 = 2;\n", "type Alias = u8;",
-    "fn item() {\n    next();\n}\n", "  static NAME: &str = \"π\";\n",
-    "struct S;\n" + "const X: i32 = 0;\n" * 100,
-])
-def test_rust_signature_matches_base_without_unbounded_tail_copy(text: str) -> None:
-    for match in code_rust._ITEM.finditer(text):
-        end = code_rust._matching_brace(text, match.start())
-        signature_end = text.find("{", match.end(), min(len(text), match.end() + 8192))
-        if signature_end < 0 or signature_end > end:
-            signature_end = min(end, text.find("\n", match.end()) if "\n" in text[match.end():] else end)
-        expected = text[match.start():signature_end].strip()[:4096]
-        assert code_rust._rust_item_signature(text, match, end) == expected
 
 
 def test_docx_detachment_preserves_properties_nested_text_and_extensions(monkeypatch) -> None:

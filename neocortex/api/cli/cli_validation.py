@@ -21,7 +21,6 @@ from .cli_archive_surface import (
 )
 from .cli_capabilities_surface import validate_capabilities_arguments
 from .cli_config_doctor_surface import validate_config_doctor_arguments
-from .cli_code_surface import validate_code_arguments
 from .cli_content_diagnostics import validate_content_diagnostics_arguments
 from .cli_docx_surface import validate_docx_arguments, validate_docx_direct_operation
 from .cli_dedup_keeper import validate_dedup_keeper_arguments
@@ -164,12 +163,6 @@ _DIRECT_LEAF_OPTIONS = frozenset(
 
 ALL_PRESET = {
     "route": "all",
-    # Keep the integrated command conservative: Code only admits configured
-    # project roots unless the caller explicitly opts into a broader scan.
-    "code_candidate_scope": "projects",
-    # Code is not part of integrated ``--all`` anymore.  Keep its explicit
-    # route policy inert unless a caller requests ``--route code``.
-    "code_third_party_action": "keep",
     "ocr": "auto",
     "pdf_cache_validation": "metadata",
     "image_document_ocr": "auto",
@@ -779,7 +772,7 @@ def _validate_direct_operation_selection(args: argparse.Namespace) -> None:
     direct_operations = selected_direct_operations(args)
     if len(direct_operations) > 1:
         raise SystemExit(
-            "direct status/recovery/review/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/code/"
+            "direct status/recovery/review/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/"
             "Knowledge "
             "operations are mutually exclusive"
         )
@@ -1384,7 +1377,6 @@ def validate_arguments(args: argparse.Namespace) -> None:
     validate_audio_arguments(args)
     validate_video_arguments(args)
     validate_semantic_arguments(args)
-    validate_code_arguments(args)
     validate_platform_arguments(args)
     validate_models_arguments(args)
     _validate_direct_operations(args)

@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, is_dataclass, replace
 import heapq
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Protocol, TYPE_CHECKING
+from typing import Any, Callable, Literal, Mapping, TYPE_CHECKING
 
 from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER as BUILTIN_ROUTE_ORDER,
@@ -14,11 +14,6 @@ from neocortex.runtime.orchestration.route_selection import (
 from neocortex.runtime.orchestration.route_selection import (
     normalize_route_selection as normalize_route_selection,
 )
-from neocortex.runtime.orchestration.inventory_projection import (
-    CodeInventoryProjection as CodeInventoryProjection,
-    build_code_inventory_projection as build_code_inventory_projection,
-)
-
 from neocortex.runtime.orchestration.replay_metrics import (
     normalize_route_replay_metrics,
 )
@@ -30,8 +25,6 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig as ArchiveRouteConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
     from neocortex.capabilities.formats.audio.route import AudioRoute as AudioRoute
-    from neocortex.code.code_contracts import CodeRouteConfig as CodeRouteConfig
-    from neocortex.code.code_route import CodeRoute as CodeRoute
     from neocortex.runtime.control.cancellation import CancellationToken
     from neocortex.capabilities.formats.docx.route import DocxRoute as DocxRoute
     from neocortex.capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
@@ -49,8 +42,6 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.text.text_route import TextRouteConfig as TextRouteConfig
     from neocortex.capabilities.formats.video.route import VideoRoute as VideoRoute
     from neocortex.capabilities.formats.video.route import VideoRouteConfig as VideoRouteConfig
-    from neocortex.code.code_route import CodeInventory
-    from neocortex.deduplication import FileSnapshot
 
 
 # region [01] Generic route contracts and selection exports
@@ -58,11 +49,6 @@ if TYPE_CHECKING:
 RouteLifecycleCapability = Literal["phase_resume", "safe_replay", "not_resumable"]
 RouteWorkload = tuple[int, int]
 
-
-class _InventorySnapshotSource(Protocol):
-    """Minimal inventory owner/projection seam used by the Code route."""
-
-    def snapshots(self, scan_id: int) -> Iterable[FileSnapshot]: ...
 
 @dataclass(frozen=True, slots=True)
 class RouteExecutionContext:
@@ -74,10 +60,6 @@ class RouteExecutionContext:
     progress: "ProgressCallback | None"
     resource_coordinator: GlobalResourceCoordinator | None
     cancellation: "CancellationToken"
-    # Normal --all runs may provide a bounded projection built by the already
-    # open inventory owner.  Keeping it optional preserves route-only and
-    # legacy test adapters, while avoiding a second WAL-backed DedupIndex.
-    inventory_view: "CodeInventory | None" = None
     source_published: Callable[[str], None] | None = None
 
 
@@ -126,37 +108,6 @@ class RouteAdapter:
             mapping,
             replayability=self.lifecycle_capability,
         )
-
-
-
-def _project_roots_relevant_to_corpus(
-    corpus_root: Path,
-    project_roots: Iterable[Path],
-) -> tuple[Path, ...]:
-    """Keep allowlist roots that overlap the selected corpus lexically.
-
-    The default personal project roots normally live outside the controlled
-    corpus.  Discarding disjoint roots keeps the route's effective allowlist
-    bounded to inventory paths; an empty result remains empty and therefore
-    cannot fall back to marker discovery.  An explicitly overlapping root
-    remains authoritative; no filesystem walk or symlink resolution is
-    performed here.
-    """
-
-    corpus = Path(corpus_root).absolute()
-    relevant: list[Path] = []
-    for root in project_roots:
-        candidate = Path(root).absolute()
-        try:
-            corpus.relative_to(candidate)
-        except ValueError:
-            try:
-                candidate.relative_to(corpus)
-            except ValueError:
-                continue
-        relevant.append(candidate)
-    return tuple(relevant)
-
 
 # region [01b] Bounded route workload projections
 
@@ -262,63 +213,6 @@ def _candidate_route_workload(
     if callable(checkpoint):
         checkpoint()
     return workload
-
-
-def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:
-    """Bound Code work from the durable inventory, not route candidates."""
-
-    from neocortex.code.ingestion.code_candidate_scope import (
-        ProjectCandidateScope,
-        is_project_marker,
-        normalize_code_path,
-    )
-    from neocortex.code.ingestion.code_detection import likely_code_candidate
-    config = context.config
-    selected_paths = {
-        normalize_code_path(value) for value in config.selection.paths
-    }
-    project_roots = _project_roots_relevant_to_corpus(
-        context.root,
-        config.code_project_roots,
-    )
-
-    def estimate(index: _InventorySnapshotSource) -> RouteWorkload:
-        project_scope = None
-        if config.code_candidate_scope == "projects" and not selected_paths:
-            project_scope = ProjectCandidateScope.discover(
-                (snapshot.path for snapshot in index.snapshots(context.scan_id)),
-                include_generated=config.code_include_generated,
-                include_vendored=config.code_include_vendored,
-                explicit_roots=project_roots,
-            )
-
-        def code_sizes() -> Iterable[int]:
-            for snapshot in index.snapshots(context.scan_id):
-                if selected_paths and normalize_code_path(snapshot.path) not in selected_paths:
-                    continue
-                if not likely_code_candidate(snapshot.path) and not is_project_marker(snapshot.path):
-                    continue
-                if project_scope is not None and project_scope.decision(snapshot.path) != "admit":
-                    continue
-                if snapshot.size > config.code_max_file_bytes:
-                    # Code records this as a bounded skip, not a candidate that
-                    # enters analysis; do not reserve it as route work.
-                    continue
-                yield max(0, int(snapshot.size))
-
-        return _bounded_workload(code_sizes(), config.code_max_documents)
-
-    projected = context.inventory_view
-    if projected is not None:
-        return estimate(projected)
-
-    # Route-only and legacy callers may not have an owner-provided projection.
-    # Preserve their historical behavior; normal --all runs always inject the
-    # bounded view before workers are created.
-    from neocortex.deduplication import DedupIndex
-
-    with DedupIndex(config.dedup_database) as index:
-        return estimate(index)
 
 
 def _candidate_workload_estimator(route_name: str) -> Callable[[RouteExecutionContext], RouteWorkload]:
@@ -627,70 +521,6 @@ def _run_video(context: RouteExecutionContext) -> object:
     return summary
 
 
-def code_route_config_from_framework(config: "FrameworkConfig") -> "CodeRouteConfig":
-    """Project application values into the canonical Code route contract."""
-
-    from neocortex.runtime.config.application_config_projections import (
-        code_route_config_from_application,
-    )
-
-    return code_route_config_from_application(config)
-
-
-def _run_code(context: RouteExecutionContext) -> object:
-    from neocortex.code.code_route import CodeRoute
-
-    config = context.config
-    code_config = code_route_config_from_framework(config)
-    # Keep lightweight route-config test doubles and legacy adapters working;
-    # the canonical CodeRouteConfig always exposes these fields.
-    if getattr(code_config, "candidate_scope", None) == "projects":
-        relevant_roots = _project_roots_relevant_to_corpus(
-            context.root,
-            getattr(code_config, "explicit_project_roots", ()),
-        )
-        if relevant_roots != getattr(code_config, "explicit_project_roots", ()):
-            code_config = replace(code_config, explicit_project_roots=relevant_roots)
-    gate = None
-    if context.resource_coordinator is not None:
-        from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
-
-        gate = CoordinatedMemoryGate(context.resource_coordinator, "code")
-    inventory_view = context.inventory_view
-    if inventory_view is not None:
-        summary = CodeRoute(
-            code_config,
-            inventory_view,
-            context.framework_state,
-            context.run_id,
-            context.scan_id,
-            progress=context.progress,
-            cancellation=context.cancellation,
-            memory_gate=gate,
-        ).run()
-    else:
-        # Route-only and legacy callers may not have the owner-provided
-        # projection.  Keep their existing fallback while normal --all avoids
-        # reopening a WAL-backed inventory database from a worker.
-        from neocortex.deduplication import DedupIndex
-
-        with DedupIndex(config.dedup_database) as dedup_index:
-            summary = CodeRoute(
-                code_config,
-                dedup_index,
-                context.framework_state,
-                context.run_id,
-                context.scan_id,
-                progress=context.progress,
-                cancellation=context.cancellation,
-                memory_gate=gate,
-            ).run()
-    catalog = _update_document_catalog_after_route(context, "code")
-    if catalog:
-        summary = _summary_with_catalog(summary, catalog)
-    return summary
-
-
 def _update_document_catalog_after_route(
     context: RouteExecutionContext,
     source_kind: Literal[
@@ -702,7 +532,6 @@ def _update_document_catalog_after_route(
         "archive",
         "image",
         "video",
-        "code",
     ],
 ) -> "tuple[CatalogUpdateSummary, ...]":
     """Classify only the source cache completed by this route."""
@@ -726,8 +555,6 @@ def _update_document_catalog_after_route(
         sources = ((context.config.image_database, "image"),)
     elif source_kind == "video":
         sources = ((context.config.video_database, "video"),)
-    elif source_kind == "code":
-        sources = ((context.config.code_database, "code"),)
     else:
         sources = (
             (context.config.office_database, "xlsx"),
@@ -879,12 +706,6 @@ def builtin_route_registry() -> dict[str, RouteAdapter]:
             "image",
             _run_image,
             estimate_workload=_candidate_workload_estimator("image"),
-        ),
-        RouteAdapter(
-            "code",
-            _run_code,
-            input_source="inventory_snapshot",
-            estimate_workload=_code_route_workload,
         ),
     )
     return {adapter.name: adapter for adapter in adapters}

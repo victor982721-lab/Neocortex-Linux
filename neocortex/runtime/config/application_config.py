@@ -18,7 +18,6 @@ from typing import TypeAlias
 from .application_config_projections import (
     archive_route_config_from_application,
     audio_route_config_from_application,
-    code_route_config_from_application,
     docx_route_config_from_application,
     global_resource_limits_from_application,
     image_route_config_from_application,
@@ -37,7 +36,6 @@ __all__ = [
     "FrameworkConfig",
     "archive_route_config_from_application",
     "audio_route_config_from_application",
-    "code_route_config_from_application",
     "docx_route_config_from_application",
     "global_resource_limits_from_application",
     "image_route_config_from_application",

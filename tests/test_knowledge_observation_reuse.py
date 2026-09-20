@@ -24,4 +24,4 @@ def test_stable_public_query_observes_each_owner_once_per_attempt(tmp_path, monk
         counts.clear()
         result = service.search(KnowledgeQuery("transformador"))
         assert result.snapshot.consistency.value == "stable"
-        assert dict(counts) == {"inventory": 1, "catalog": 1, "semantic": 1, "code": 1}
+        assert dict(counts) == {"inventory": 1, "catalog": 1, "semantic": 1}

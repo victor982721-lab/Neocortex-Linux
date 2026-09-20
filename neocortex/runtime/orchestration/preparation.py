@@ -147,7 +147,7 @@ def prepare_run(
 
 
 _ROUTE_PACKAGES: Mapping[str, tuple[str, ...]] = {
-    "text": (), "code": (), "archive": (), "docx": (), "office": (),
+    "text": (), "archive": (), "docx": (), "office": (),
     "pdf": ("pymupdf", "pdfminer"), "image": ("PIL", "pytesseract"),
     "audio": ("faster_whisper", "ctranslate2", "av"),
     "video": ("av", "PIL"),

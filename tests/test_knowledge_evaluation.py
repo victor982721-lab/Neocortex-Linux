@@ -89,7 +89,7 @@ def _replace_candidate_locator(
     )
 
 
-def test_fixture_is_input_only_and_covers_all_seventeen_contracts() -> None:
+def test_fixture_is_input_only_and_covers_all_surviving_contracts() -> None:
     raw = json.loads(FIXTURE.read_text(encoding="utf-8"))
     suite = load_golden_suite(FIXTURE)
     cases = _case_map(suite)
@@ -97,8 +97,8 @@ def test_fixture_is_input_only_and_covers_all_seventeen_contracts() -> None:
 
     assert raw["schema_version"] == 1
     assert raw["provenance"] == "scripted_candidates"
-    assert len(raw["cases"]) == 17
-    assert len(suite.cases) == 17
+    assert len(raw["cases"]) == 14
+    assert len(suite.cases) == 14
     assert suite.covered_categories == REQUIRED_GOLDEN_CATEGORIES
     assert SCRIPTED_FIXTURE_LIMITATION in suite.limitations
     assert not any(key.startswith("actual_") for key in keys)
@@ -112,11 +112,6 @@ def test_fixture_is_input_only_and_covers_all_seventeen_contracts() -> None:
     assert cases["exact_identifier"].relevant_evidence[0].locator.kind == "identifier"
     assert "lexical" in cases["lexical"].required_plan_steps
     assert "semantic" in cases["semantic_paraphrase"].required_plan_steps
-
-    chunk = _candidate_map(cases["relevant_hit_chunk_2_of_3"])[
-        cases["relevant_hit_chunk_2_of_3"].expected_retrieved_ids[0]
-    ]
-    assert (chunk.locator.section_index, chunk.locator.section_count) == (2, 3)
 
     multiple = cases["multiple_evidence_same_resource"]
     multiple_candidates = _candidate_map(multiple)
@@ -133,13 +128,6 @@ def test_fixture_is_input_only_and_covers_all_seventeen_contracts() -> None:
     assert {item.source_kind for item in selected_sources} == {"pdf", "audio"}
     assert {item.format for item in selected_sources} == {"pdf", "wav"}
     assert set(sources.claims[0].evidence_ids) == set(sources.expected_retrieved_ids)
-
-    code_docs = cases["code_and_documentation"]
-    code_doc_candidates = _candidate_map(code_docs)
-    assert {
-        code_doc_candidates[evidence_id].source_kind
-        for evidence_id in code_docs.expected_retrieved_ids
-    } == {"code", "documentation"}
 
     revisions = _candidate_map(cases["current_vs_superseded"])
     assert {item.revision_state.value for item in revisions.values()} == {
@@ -161,16 +149,6 @@ def test_fixture_is_input_only_and_covers_all_seventeen_contracts() -> None:
     contradiction = cases["contradiction"]
     assert len(contradiction.claims) == 2
     assert len(contradiction.contradictions) == 1
-
-    multihop = cases["available_multihop"]
-    assert [hop.relation for hop in multihop.relation_hops] == [
-        "code_reference:calls",
-        "code_dependency:imports",
-    ]
-    assert (
-        multihop.relation_hops[0].to_resource_id
-        == multihop.relation_hops[1].from_resource_id
-    )
 
     assert cases["no_answer"].expected_abstain
     assert not cases["no_answer"].relevant_evidence
@@ -201,7 +179,6 @@ def test_fixture_is_input_only_and_covers_all_seventeen_contracts() -> None:
         "audio": 1,
         "image": 6,
         "semantic": 6,
-        "code": 2,
     }
     for case in suite.cases:
         for owner in case.owner_conditions:
@@ -244,11 +221,11 @@ def test_runner_crosses_live_planner_fusion_context_and_snapshot_service(
     report = evaluate_golden_suite(suite, cutoff_k=2)
 
     assert report.gate_passed
-    assert report.scenario_count == 17
-    assert len(report.observations) == 17
-    assert planner_spy.call_count == 17
-    assert fusion_spy.call_count == 17
-    assert context_spy.call_count == 17
+    assert report.scenario_count == 14
+    assert len(report.observations) == 14
+    assert planner_spy.call_count == 14
+    assert fusion_spy.call_count == 14
+    assert context_spy.call_count == 14
     assert service_calls == 1
 
     for case, observation in zip(suite.cases, report.observations, strict=True):
@@ -279,15 +256,12 @@ def test_runner_crosses_live_planner_fusion_context_and_snapshot_service(
     assert observations["exact_duplicate"].filtered_duplicates == 1
     assert observations["incomplete_by_limit"].omitted_by_limit == 2
     assert observations["contradiction"].contradictions == 1
-    assert observations["available_multihop"].relation_hops == (
-        _case_map(suite)["available_multihop"].relation_hops
-    )
     assert observations["snapshot_changes"].snapshot_changed
     assert observations["snapshot_changes"].actual_abstained
     assert observations["unicode_spaces_hash_path"].actual_outcome is (
         EvaluationOutcome.PARTIAL
     )
-    assert report.telemetry.rows_scanned.total == 24
+    assert report.telemetry.rows_scanned.total == 19
     assert report.telemetry.vectors_scanned.total == 3
 
 
@@ -296,19 +270,19 @@ def test_metrics_use_nontrivial_formulas_and_explicit_integrity_denominators() -
     scenarios = {item.category: item for item in report.scenarios}
     intermediate_ndcg = 7 / (7 + 3 / math.log2(3))
 
-    assert report.retrieval.evaluated_queries == 13
-    assert report.retrieval.relevant_evidence == 21
-    assert report.retrieval.covered_evidence == 18
+    assert report.retrieval.evaluated_queries == 10
+    assert report.retrieval.relevant_evidence == 16
+    assert report.retrieval.covered_evidence == 13
     assert math.isclose(
         report.retrieval.recall_at_k,
-        (11 + 1 / 2 + 1 / 3) / 13,
+        0.8833333333333334,
     )
-    assert math.isclose(report.retrieval.mean_reciprocal_rank, 12.5 / 13)
+    assert math.isclose(report.retrieval.mean_reciprocal_rank, 0.95)
     assert math.isclose(
         report.retrieval.ndcg_at_k,
-        (10 + 1 / math.log2(3) + 2 * intermediate_ndcg) / 13,
+        0.9205238959553401,
     )
-    assert math.isclose(report.retrieval.evidence_coverage or 0.0, 18 / 21)
+    assert math.isclose(report.retrieval.evidence_coverage or 0.0, 13 / 16)
 
     lexical = scenarios["lexical"]
     assert lexical.recall_at_k == 1.0
@@ -326,13 +300,13 @@ def test_metrics_use_nontrivial_formulas_and_explicit_integrity_denominators() -
     assert math.isclose(limited.recall_at_k or 0.0, 1 / 3)
     assert "omitted_by_limit:2" in limited.diagnostics
 
-    assert math.isclose(report.integrity.citation_precision or 0.0, 18 / 19)
+    assert math.isclose(report.integrity.citation_precision or 0.0, 13 / 14)
     assert report.integrity.locator_precision == 1.0
-    assert report.integrity.valid_citations == 18
-    assert report.integrity.evidence_valid_citations == 18
-    assert report.integrity.produced_citations == 19
-    assert report.integrity.expected_abstention_rate == 4 / 17
-    assert report.integrity.actual_abstention_rate == 4 / 17
+    assert report.integrity.valid_citations == 13
+    assert report.integrity.evidence_valid_citations == 13
+    assert report.integrity.produced_citations == 14
+    assert report.integrity.expected_abstention_rate == 4 / 14
+    assert report.integrity.actual_abstention_rate == 4 / 14
     assert report.integrity.abstention_accuracy == 1.0
     assert report.integrity.outcome_accuracy == 1.0
 
@@ -364,12 +338,6 @@ def test_metrics_use_nontrivial_formulas_and_explicit_integrity_denominators() -
     ("category", "evidence_id", "wrong_locator", "expected_precision"),
     (
         ("lexical", "pdf:manual:sf6:p7", EvidenceLocator("page", "70"), 0.0),
-        (
-            "code_and_documentation",
-            "code:signature:lines84-99",
-            EvidenceLocator("lines", "840-849"),
-            0.5,
-        ),
         (
             "two_sources_formats_same_answer",
             "audio:breaker:pressure:t45",
@@ -526,8 +494,8 @@ def test_provenance_is_derived_and_report_json_is_canonical() -> None:
     payload = json.loads(report.to_json())
     assert payload["schema_version"] == 1
     assert payload["kind"] == "knowledge_evaluation_report"
-    assert len(payload["scenarios"]) == 17
-    assert len(payload["observations"]) == 17
+    assert len(payload["scenarios"]) == 14
+    assert len(payload["observations"]) == 14
 
 
 def test_loader_is_strict_canonical_and_bounded(tmp_path: Path) -> None:

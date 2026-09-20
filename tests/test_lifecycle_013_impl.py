@@ -58,7 +58,6 @@ from neocortex.runtime.orchestration.route_registry import (
 from neocortex.runtime.orchestration.route_selection import BUILTIN_ROUTE_ORDER
 from neocortex.runtime.orchestration.run_manifest import RunBudget, RunManifest
 from neocortex.runtime.orchestration.run_status import list_run_status
-from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
 import neocortex.sdk as sdk
 from neocortex.sdk import read_run_status_json as sdk_read_run_status_json
 
@@ -72,7 +71,6 @@ ALL_ROUTES = (
     "audio",
     "video",
     "image",
-    "code",
 )
 
 # The MCP parity regression is skipped by the repository capability gate when
@@ -94,18 +92,6 @@ class _SourceFixture:
 def _root_identity(root: Path) -> tuple[int, int, int]:
     metadata = root.stat()
     return (int(metadata.st_dev), int(metadata.st_ino), stat_birthtime_ns(metadata))
-
-
-def _current_admission_configuration() -> dict[str, object]:
-    config = FrameworkConfig()
-    policy = CorpusAdmissionPolicy(
-        interested_roots=config.code_project_roots,
-        code_scope=config.code_candidate_scope,
-    )
-    return {
-        "corpus_admission": policy.to_dict(),
-        "corpus_admission_signature": policy.signature,
-    }
 
 
 def _make_source_fixture(
@@ -189,7 +175,7 @@ def _make_source_fixture(
                 root_identity=_root_identity(root),
                 selected_routes=selected_routes,
                 route_capabilities=capabilities,
-                configuration={"fixture": True, **_current_admission_configuration()},
+                configuration={"fixture": True},
                 budget={"durable": RunBudget().payload()},
                 input_snapshot={
                     "scan_id": scan.scan_id,
@@ -288,7 +274,7 @@ def _run_route_only(
     ).run()
 
 
-def test_all_contract_closes_nine_routes_and_types_missing_dependencies() -> None:
+def test_all_contract_closes_eight_routes_and_types_missing_dependencies() -> None:
     registry = builtin_route_registry()
     assert tuple(registry) == ALL_ROUTES == BUILTIN_ROUTE_ORDER
     assert registry["pdf"].lifecycle_capability == "phase_resume"
@@ -471,7 +457,7 @@ def test_global_budget_covers_route_semantic_and_final_deadline_gate(
                 root=str(source.root),
                 root_identity=_root_identity(source.root),
                 selected_routes=("text",),
-                configuration=_current_admission_configuration(),
+                configuration={},
                 budget={"durable": budget.payload()},
             ).event_payload(),
         )
@@ -584,22 +570,16 @@ def test_owner_head_drift_blocks_cross_owner_epoch_without_partial_success(
 ) -> None:
     state_directory = tmp_path / "publication"
     state_directory.mkdir()
-    baseline = (
-        StateOwnerHead("code", 1, "b" * 64),
-        StateOwnerHead("semantic", 1, "a" * 64),
-    )
+    baseline = (StateOwnerHead("semantic", 1, "a" * 64),)
     record_state_publication(
         state_directory,
         operation="fixture-baseline",
-        owners=("semantic", "code"),
+        owners=("semantic",),
         status="complete",
         idempotency_key="fixture-baseline",
         owner_heads=baseline,
     )
-    drifted = (
-        StateOwnerHead("code", 1, "b" * 64),
-        StateOwnerHead("semantic", 2, "c" * 64),
-    )
+    drifted = (StateOwnerHead("semantic", 2, "c" * 64),)
     with pytest.raises(StatePublicationConflictError, match="owner heads"):
         require_complete_state_epoch(state_directory, owner_heads=drifted)
     view = read_state_publication_state(state_directory)

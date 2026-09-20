@@ -87,7 +87,6 @@ def test_source_head_excludes_observation_clocks_but_tracks_semantic_revision(
         ("odt", "format=?", ("odt",)),
         ("audio", "JOIN segments", ()),
         ("archive", "JOIN containers", ()),
-        ("code", "JOIN code_chunks", ()),
     ),
 )
 def test_source_head_queries_cover_each_supported_owner_projection(

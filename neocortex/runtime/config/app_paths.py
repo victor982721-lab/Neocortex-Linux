@@ -36,25 +36,14 @@ def default_state_directory() -> Path:
     return local_application_data_directory() / "state"
 
 
-def default_code_project_roots() -> tuple[Path, ...]:
-    """Return the exact personal project allowlist used by integrated Code.
+def default_generated_artifact_directories() -> tuple[Path, ...]:
+    """Return known project build trees that are never corpus source material."""
 
-    These are the only projects admitted by the normal ``projects`` scope.
-    Marker files elsewhere in a corpus do not extend this allowlist; a new
-    project must be supplied explicitly with ``--code-project-root``.
-    """
-
-    return (
+    projects = (
         source_repository_directory(),
         Path.home() / "MTF",
         Path.home() / "Documentos" / "ANDRITZ" / "Bitacoras-EPS",
     )
-
-
-def default_generated_artifact_directories() -> tuple[Path, ...]:
-    """Return project build trees that are never corpus source material."""
-
-    projects = default_code_project_roots()
     return tuple(
         project / directory for project in projects for directory in ("build", "dist", "wheelhouse")
     )

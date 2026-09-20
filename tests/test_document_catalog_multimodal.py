@@ -250,77 +250,6 @@ def _make_audio_owner(path: Path, sources: tuple[tuple[Path, str], ...]) -> None
             )
 
 
-def _make_code_owner(
-    path: Path,
-    source: Path,
-    *,
-    truncated: bool = False,
-    hex_identity: bool = False,
-) -> None:
-    volume_id, physical_file_id = _file_identity(source)
-    with sqlite3.connect(path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE files(
-                file_id INTEGER PRIMARY KEY, volume_id TEXT,
-                physical_file_id TEXT, current_path TEXT, current_version_id INTEGER,
-                status TEXT
-            );
-            CREATE TABLE file_versions(
-                version_id INTEGER PRIMARY KEY, file_id INTEGER, size INTEGER,
-                mtime_ns INTEGER, birthtime_ns INTEGER, analysis_status TEXT,
-                processing_signature TEXT, language TEXT, artifact_kind TEXT,
-                text_xxh3_128 TEXT, text_truncated INTEGER, text_zlib BLOB,
-                provenance_json TEXT
-            );
-            CREATE TABLE code_chunks(
-                chunk_id INTEGER PRIMARY KEY, version_id INTEGER,
-                chunk_index INTEGER, text TEXT
-            );
-            """
-        )
-        stat = source.stat()
-        if hex_identity:
-            connection.execute(
-                "CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-            )
-            connection.execute("INSERT INTO metadata VALUES('schema_version','7')")
-            stored_volume_id = f"{int(volume_id):x}"
-            stored_physical_file_id = f"{int(physical_file_id):x}"
-        else:
-            stored_volume_id = volume_id
-            stored_physical_file_id = physical_file_id
-        connection.execute(
-            "INSERT INTO files VALUES(?,?,?,?,?,?)",
-            (
-                1,
-                stored_volume_id,
-                stored_physical_file_id,
-                str(source),
-                1,
-                "current",
-            ),
-        )
-        connection.execute(
-            """INSERT INTO file_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                1,
-                1,
-                stat.st_size,
-                stat.st_mtime_ns,
-                -1,
-                "complete",
-                "code-fixture-v1",
-                "python",
-                "source",
-                "code-text-hash",
-                int(truncated),
-                _compressed("def transformer_status(): return 'U2'"),
-                "{}",
-            ),
-        )
-
-
 def test_multimodal_catalog_adapters_preserve_owner_and_coverage(tmp_path: Path) -> None:
     catalog = tmp_path / "document_catalog.sqlite3"
     initialize_document_catalog(catalog)
@@ -328,18 +257,15 @@ def test_multimodal_catalog_adapters_preserve_owner_and_coverage(tmp_path: Path)
     video_file = tmp_path / "clip.mkv"
     image_file = tmp_path / "plate.png"
     archive_file = tmp_path / "bundle.zip"
-    code_file = tmp_path / "module.py"
-    for path in (video_file, image_file, archive_file, code_file):
+    for path in (video_file, image_file, archive_file):
         path.write_bytes(b"fixture")
 
     video_db = tmp_path / "video.sqlite3"
     image_db = tmp_path / "image.sqlite3"
     archive_db = tmp_path / "archive.sqlite3"
-    code_db = tmp_path / "code.sqlite3"
     _make_video_owner(video_db, video_file, status="partial")
     _make_image_owner(image_db, image_file, truncated=True)
     _make_archive_owner(archive_db, archive_file, container_status="partial")
-    _make_code_owner(code_db, code_file, truncated=True)
 
     summaries = (
         update_document_catalog_source(
@@ -360,29 +286,22 @@ def test_multimodal_catalog_adapters_preserve_owner_and_coverage(tmp_path: Path)
             "archive",
             verify_source_paths=True,
         ),
-        update_document_catalog_source(
-            catalog,
-            code_db,
-            "code",
-            verify_source_paths=True,
-        ),
     )
 
-    assert [summary.candidates for summary in summaries] == [1, 1, 1, 1]
+    assert [summary.candidates for summary in summaries] == [1, 1, 1]
     assert all(summary.classified == 1 for summary in summaries)
-    assert [summary.review_required for summary in summaries] == [1, 1, 1, 1]
+    assert [summary.review_required for summary in summaries] == [1, 1, 1]
     with document_catalog_database(catalog, readonly=True) as connection:
         rows = connection.execute(
             """SELECT source_kind,file_key,path,source_status,catalog_status
             FROM documents WHERE active=1 ORDER BY source_kind"""
         ).fetchall()
 
-    assert [str(row[0]) for row in rows] == ["archive", "code", "image", "video"]
+    assert [str(row[0]) for row in rows] == ["archive", "image", "video"]
     assert all(str(row[4]) == "review" for row in rows)
     assert str(next(row[2] for row in rows if row[0] == "archive")).endswith(
         "!/report.txt"
     )
-    assert str(next(row[1] for row in rows if row[0] == "code")).startswith("code:")
 
 
 def test_complete_multimodal_assets_can_be_classified(tmp_path: Path) -> None:
@@ -488,7 +407,6 @@ def test_independent_multimodal_catalog_producers_overlap_and_replay(
         "archive": tmp_path / "bundle.zip",
         "image": tmp_path / "plate.png",
         "video": tmp_path / "clip.mkv",
-        "code": tmp_path / "module.py",
     }
     for source in source_by_kind.values():
         source.write_bytes(b"fixture")
@@ -515,11 +433,6 @@ def test_independent_multimodal_catalog_producers_overlap_and_replay(
         connection.execute("UPDATE documents SET container_key=?", (anchor_key,))
     _make_image_owner(tmp_path / "image.sqlite3", source_by_kind["image"])
     _make_video_owner(tmp_path / "video.sqlite3", source_by_kind["video"])
-    _make_code_owner(
-        tmp_path / "code.sqlite3",
-        source_by_kind["code"],
-        hex_identity=True,
-    )
 
     config = SimpleNamespace(
         document_catalog_enabled=True,
@@ -530,7 +443,6 @@ def test_independent_multimodal_catalog_producers_overlap_and_replay(
         archive_database=tmp_path / "archive.sqlite3",
         image_database=tmp_path / "image.sqlite3",
         video_database=tmp_path / "video.sqlite3",
-        code_database=tmp_path / "code.sqlite3",
     )
 
     class LifecycleProbe:
@@ -566,7 +478,7 @@ def test_independent_multimodal_catalog_producers_overlap_and_replay(
     active = 0
     max_active = 0
     activity_lock = threading.Lock()
-    started_together = threading.Barrier(4)
+    started_together = threading.Barrier(3)
 
     def recording_update(*args: object, **kwargs: object):
         nonlocal active, max_active
@@ -587,26 +499,26 @@ def test_independent_multimodal_catalog_producers_overlap_and_replay(
     def run_kind(kind: str):
         return _update_document_catalog_after_route(contexts[kind], kind)  # type: ignore[arg-type]
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         first = tuple(executor.map(run_kind, source_by_kind))
 
-    assert max_active == 4
-    assert [summary.candidates for summaries in first for summary in summaries] == [1] * 4
+    assert max_active == 3
+    assert [summary.candidates for summaries in first for summary in summaries] == [1] * 3
     with document_catalog_database(catalog, readonly=True) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM documents WHERE active=1").fetchone()[0] == 4
-        assert connection.execute("SELECT COUNT(*) FROM catalog_publications").fetchone()[0] == 4
+        assert connection.execute("SELECT COUNT(*) FROM documents WHERE active=1").fetchone()[0] == 3
+        assert connection.execute("SELECT COUNT(*) FROM catalog_publications").fetchone()[0] == 3
         assert connection.execute(
             "SELECT COUNT(*) FROM catalog_generations WHERE status='published'"
-        ).fetchone()[0] == 4
+        ).fetchone()[0] == 3
 
     active = 0
     max_active = 0
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         replay = tuple(executor.map(run_kind, source_by_kind))
 
-    assert max_active == 4
-    assert [summary.cache_hits for summaries in replay for summary in summaries] == [1] * 4
-    assert [summary.classified for summaries in replay for summary in summaries] == [0] * 4
+    assert max_active == 3
+    assert [summary.cache_hits for summaries in replay for summary in summaries] == [1] * 3
+    assert [summary.classified for summaries in replay for summary in summaries] == [0] * 3
 
 
 def test_catalog_update_discovers_present_optional_owners(tmp_path: Path) -> None:

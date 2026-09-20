@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.code.code_contracts import CodeSearchQuery
-from neocortex.code.search.code_search import search_code
 from neocortex.semantic.semantic_lexical import (
     LexicalAvailability,
     LexicalStatePaths,
@@ -108,82 +106,6 @@ def _create_docx_state(path: Path) -> None:
         )
 
 
-def _create_code_state(path: Path, *, rows: int = 5_000) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE files(
-                file_id INTEGER PRIMARY KEY,
-                current_path TEXT NOT NULL,
-                current_version_id INTEGER,
-                status TEXT NOT NULL
-            );
-            CREATE TABLE file_versions(
-                version_id INTEGER PRIMARY KEY,
-                language TEXT,
-                artifact_kind TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                mtime_ns INTEGER NOT NULL,
-                analysis_status TEXT NOT NULL,
-                invalidated_ns INTEGER
-            );
-            CREATE TABLE projects(
-                project_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL
-            );
-            CREATE TABLE project_memberships(
-                version_id INTEGER NOT NULL,
-                project_id INTEGER NOT NULL,
-                confidence REAL NOT NULL
-            );
-            CREATE TABLE code_chunks(
-                chunk_id INTEGER PRIMARY KEY,
-                version_id INTEGER NOT NULL,
-                chunk_index INTEGER NOT NULL,
-                start_line INTEGER NOT NULL,
-                end_line INTEGER NOT NULL,
-                text TEXT NOT NULL
-            );
-            CREATE VIRTUAL TABLE code_fts USING fts5(
-                chunk_id UNINDEXED,
-                version_id UNINDEXED,
-                path,
-                project,
-                language UNINDEXED,
-                symbol,
-                signature,
-                body,
-                tokenize='unicode61 remove_diacritics 2'
-            );
-            INSERT INTO files VALUES(1,'C:/code/protection.py',1,'current');
-            INSERT INTO file_versions VALUES(
-                1,'python','source',100000,20,'complete',NULL
-            );
-            """
-        )
-        chunks = (
-            (index + 1, 1, index, index + 1, index + 1, "protection breaker")
-            for index in range(rows)
-        )
-        fts_rows = (
-            (
-                index + 1,
-                1,
-                "C:/code/protection.py",
-                "",
-                "python",
-                "",
-                "",
-                f"protection breaker cancellation fixture {index}",
-            )
-            for index in range(rows)
-        )
-        connection.executemany(
-            "INSERT INTO code_chunks VALUES(?,?,?,?,?,?)",
-            chunks,
-        )
-        connection.executemany("INSERT INTO code_fts VALUES(?,?,?,?,?,?,?,?)", fts_rows)
 
 
 # endregion [01]
@@ -237,22 +159,6 @@ def test_lexical_owner_isolation_never_swallows_callback_exception(
     assert not state.exists()
 
 
-def test_code_checks_cancellation_before_opening_owner(tmp_path: Path) -> None:
-    state = tmp_path / "missing-code.sqlite3"
-    cancellation = KeyboardInterrupt("cancel before code owner")
-
-    def cancel() -> None:
-        raise cancellation
-
-    with pytest.raises(KeyboardInterrupt) as raised:
-        search_code(
-            state,
-            CodeSearchQuery(text="protection", modes=("fts",)),
-            cancellation_check=cancel,
-        )
-
-    assert raised.value is cancellation
-    assert not state.exists()
 
 
 # endregion [02]
@@ -289,33 +195,6 @@ def test_lexical_sqlite_progress_rethrows_original_keyboard_interrupt(
     assert isinstance(raised.value.__cause__, sqlite3.OperationalError)
 
 
-def test_code_sqlite_progress_rethrows_original_callback_exception(
-    tmp_path: Path,
-) -> None:
-    class CodeCancellation(RuntimeError):
-        pass
-
-    state = tmp_path / "large-code.sqlite3"
-    _create_code_state(state)
-    calls = 0
-    cancellation = CodeCancellation("cancel inside code SQLite")
-
-    def cancel() -> None:
-        nonlocal calls
-        calls += 1
-        if calls > 1:
-            raise cancellation
-
-    with pytest.raises(CodeCancellation) as raised:
-        search_code(
-            state,
-            CodeSearchQuery(text="protection", modes=("fts",), limit=8),
-            cancellation_check=cancel,
-        )
-
-    assert raised.value is cancellation
-    assert calls >= 2
-    assert isinstance(raised.value.__cause__, sqlite3.OperationalError)
 
 
 # endregion [03]

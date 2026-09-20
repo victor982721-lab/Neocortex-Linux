@@ -68,10 +68,7 @@ from neocortex.runtime.models import (
 )
 from neocortex.runtime.orchestration.route_registry import (
     RouteAdapter,
-    CodeInventoryProjection,
     RouteExecutionContext,
-    _project_roots_relevant_to_corpus,
-    build_code_inventory_projection,
     builtin_route_registry,
     normalize_route_selection,
 )
@@ -113,7 +110,6 @@ def _complete_root_identity(policy: CorpusAccessPolicy) -> tuple[int, int, int]:
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
-    from neocortex.code.code_contracts import CodeRouteSummary
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary
     from neocortex.capabilities.formats.image.route import ImageRouteSummary
     from neocortex.capabilities.formats.office.route import OfficeRouteSummary
@@ -220,13 +216,6 @@ class FrameworkOrchestrator:
         self.selected_routes = normalize_route_selection(
             self.config.route, tuple(self.route_registry)
         )
-        if self.config.route.casefold() == "all" and not self.config.route_only:
-            # ``--all`` is the controlled ingestion workflow.  Code analysis
-            # remains available through an explicit ``--route code`` request,
-            # but is not part of the default Corpus cleaning pipeline.
-            self.selected_routes = tuple(
-                route for route in self.selected_routes if route != "code"
-            )
         self.progress = progress or NullProgress()
         self._progress_lock = threading.Lock()
         self._active_progress: dict[tuple[str, str], ProgressEvent] = {}
@@ -583,31 +572,10 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         run_id: int,
         scan_id: int,
-        inventory_view: CodeInventoryProjection | None = None,
-        inventory_workload: tuple[int, int] | None = None,
     ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
         self._unavailable_routes = {}
         if not self.selected_routes:
             return {}, None
-
-        # Code consumes the durable inventory snapshot directly.  Do not
-        # materialize the Framework route-candidate database when it is the
-        # only selected input source; that snapshot can contain every MIME
-        # candidate even though Code will admit only project/code paths.
-        needs_candidate_snapshot = any(
-            self.route_registry[name].input_source == "route_candidates"
-            for name in self.selected_routes
-        )
-        if not needs_candidate_snapshot:
-            return self._run_content_routes_with_snapshot(
-                root=root,
-                state=state,
-                run_id=run_id,
-                scan_id=scan_id,
-                candidate_database=None,
-                inventory_view=inventory_view,
-                inventory_workload=inventory_workload,
-            )
 
         # Candidates and selection evidence have already been committed. Pin
         # that input once through the writer owner, before route/event writers
@@ -624,8 +592,6 @@ class FrameworkOrchestrator:
                 run_id=run_id,
                 scan_id=scan_id,
                 candidate_database=candidate_database,
-                inventory_view=inventory_view,
-                inventory_workload=inventory_workload,
             )
 
     def _reserve_route_work(
@@ -635,17 +601,12 @@ class FrameworkOrchestrator:
         run_id: int,
         route_name: str,
         input_source: str,
-        inventory_workload: tuple[int, int] | None = None,
         context: RouteExecutionContext | None = None,
         stage: str | None = None,
     ) -> dict[str, object]:
         """Consume one global route reservation before a worker starts.
 
-        Candidate-backed routes have an exact durable item/byte workload.  An
-        inventory-backed route still participates in the ledger with a zero
-        reservation because its producer owns a different database; the route
-        summary can publish a later bounded observation without guessing at
-        filesystem state here.
+        Candidate-backed routes have an exact durable item/byte workload.
         """
 
         read_budget = getattr(state, "read_run_budget", None)
@@ -660,10 +621,6 @@ class FrameworkOrchestrator:
             items, bytes_count = adapter.estimate_workload(context)
         elif input_source == "route_candidates":
             items, bytes_count = state.route_candidate_workload(run_id)
-        elif input_source == "inventory_snapshot":
-            if inventory_workload is None:
-                raise RuntimeError("inventory-backed route has no durable workload")
-            items, bytes_count = inventory_workload
         if (
             type(items) is not int
             or items < 0
@@ -752,8 +709,6 @@ class FrameworkOrchestrator:
         run_id: int,
         scan_id: int,
         candidate_database: Path | None,
-        inventory_view: CodeInventoryProjection | None = None,
-        inventory_workload: tuple[int, int] | None = None,
     ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
         coordinator: GlobalResourceCoordinator | None = None
         previous_coordinator = self._active_coordinator
@@ -790,17 +745,6 @@ class FrameworkOrchestrator:
                     raise
                 state.begin_route_runs(run_id, self.selected_routes)
 
-            if inventory_workload is None and any(
-                self.route_registry[name].input_source == "inventory_snapshot"
-                for name in self.selected_routes
-            ):
-                with DedupIndex(self.config.dedup_database) as inventory_index:
-                    inventory_summary = inventory_index.scan_summary(scan_id)
-                inventory_workload = (
-                    int(inventory_summary.files_seen),
-                    int(inventory_summary.bytes_seen),
-                )
-
             source_publications = {name: threading.Event() for name in self.selected_routes}
 
             def source_published(route_name: str) -> None:
@@ -820,7 +764,6 @@ class FrameworkOrchestrator:
                     progress=self._coordinated_progress,
                     resource_coordinator=coordinator,
                     cancellation=self._cancellation,
-                    inventory_view=inventory_view,
                     source_published=source_published,
                 )
 
@@ -871,7 +814,6 @@ class FrameworkOrchestrator:
                             run_id=run_id,
                             route_name=route_name,
                             input_source=adapter.input_source,
-                            inventory_workload=inventory_workload,
                             context=route_context(route_name),
                             stage="routes",
                         )
@@ -1107,7 +1049,6 @@ class FrameworkOrchestrator:
         boundary: NormalInventoryBoundary,
         excluded_paths: tuple[Path, ...],
     ) -> dict[str, object]:
-        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
         from neocortex.workflow.actions.redlist import (
             redlist_policy_digest,
             redlist_policy_payload,
@@ -1142,29 +1083,6 @@ class FrameworkOrchestrator:
             "dedup_prefer_roots": [
                 os.path.abspath(path.expanduser()) for path in self.config.dedup_prefer_roots
             ],
-            "code_max_file_bytes": self.config.code_max_file_bytes,
-            "code_max_documents": self.config.code_max_documents,
-            "code_cache_validation": self.config.code_cache_validation,
-            "code_candidate_scope": self.config.code_candidate_scope,
-            "corpus_admission": CorpusAdmissionPolicy(
-                interested_roots=self.config.code_project_roots,
-                code_scope=self.config.code_candidate_scope,
-                include_generated=self.config.code_include_generated,
-                include_vendored=self.config.code_include_vendored,
-            ).to_dict(),
-            "corpus_admission_signature": CorpusAdmissionPolicy(
-                interested_roots=self.config.code_project_roots,
-                code_scope=self.config.code_candidate_scope,
-                include_generated=self.config.code_include_generated,
-                include_vendored=self.config.code_include_vendored,
-            ).signature,
-            "code_include_generated": self.config.code_include_generated,
-            "code_include_vendored": self.config.code_include_vendored,
-            "code_third_party_policy": (
-                None
-                if getattr(self.config, "code_third_party_policy", None) is None
-                else self.config.code_third_party_policy.to_dict()
-            ),
             "apply_actions": self.config.apply_actions,
             "corpus_redlist": redlist_policy_payload(),
             "corpus_redlist_digest": redlist_policy_digest(),
@@ -1496,11 +1414,6 @@ class FrameworkOrchestrator:
         state.set_run_phase(run_id, "dedup_plan")
         started = time.perf_counter_ns()
         from .dedup_keeper import resolve_keeper_inputs
-        from neocortex.deduplication.planning.keeper_references import (
-            KeeperReferenceChanged,
-            KeeperReferenceResolution,
-            resolve_keeper_references,
-        )
 
         selection = resolve_keeper_inputs(
             dedup_index,
@@ -1508,53 +1421,17 @@ class FrameworkOrchestrator:
             keep_paths=self.config.dedup_keep_paths,
             preferred_roots=self.config.dedup_prefer_roots,
         )
-        references = resolve_keeper_references(
+        plan = DedupPlanner(
             dedup_index,
+            keeper_policy=selection.policy,
+            keeper_validation=selection.verify,
+            resource_gate=resource_gate("dedup", self._active_coordinator),
+            cancellation=self._cancellation,
+        ).plan(
             scan_id,
-            self.config.code_database,
-        )
-
-        def build_plan() -> DedupPlan:
-            policy = replace(
-                references.policy,
-                explicit_keep_identities=selection.policy.explicit_keep_identities,
-                preferred_roots=selection.policy.preferred_roots,
-            )
-
-            def verify_keeper_inputs() -> None:
-                selection.verify()
-                references.verify()
-
-            return DedupPlanner(
-                dedup_index,
-                keeper_policy=policy,
-                keeper_validation=verify_keeper_inputs,
-                resource_gate=resource_gate("dedup", self._active_coordinator),
-                cancellation=self._cancellation,
-            ).plan(
-                scan_id,
-                progress=self.progress,
-                preview_limit=self.config.preview_group_limit,
-                exact_compare=self.config.dedup_policy == "exact",
-            )
-
-        try:
-            plan = build_plan()
-        except KeeperReferenceChanged:
-            # Refuse to publish the stale-reference choice, then retry once
-            # with unchanged explicit preferences and no unproved reference.
-            references = KeeperReferenceResolution(
-                selection.policy,
-                "stale",
-                "reference_changed_before_plan_publication",
-                0,
-            )
-            plan = build_plan()
-        plan = replace(
-            plan,
-            keeper_reference_status=references.status,
-            keeper_reference_reason=references.reason,
-            keeper_reference_count=references.evidence_count,
+            progress=self.progress,
+            preview_limit=self.config.preview_group_limit,
+            exact_compare=self.config.dedup_policy == "exact",
         )
         state.record_event(
             run_id,
@@ -1567,7 +1444,6 @@ class FrameworkOrchestrator:
                 "reclaimable_bytes": plan.reclaimable_bytes,
                 "keeper_explicit_identities": len(selection.policy.explicit_keep_identities),
                 "keeper_preferred_roots": len(selection.policy.preferred_roots),
-                "keeper_references": references.to_dict(),
             },
         )
         self._reserve_lifecycle_stage_work(
@@ -1581,22 +1457,6 @@ class FrameworkOrchestrator:
         )
         return plan
 
-    def _code_project_roots_for_actions(
-        self,
-        *,
-        dedup_index: DedupIndex,
-        scan_id: int,
-        corpus_root: Path,
-    ) -> tuple[Path, ...]:
-        """Resolve the owned Code roots without opening another inventory DB."""
-
-        # A marker is a fact about a directory, not an expression of user
-        # interest. In particular, an empty intersection must stay empty.
-        return _project_roots_relevant_to_corpus(
-            corpus_root,
-            self.config.code_project_roots,
-        )
-
     def _execute_initial_actions(
         self,
         *,
@@ -1607,9 +1467,7 @@ class FrameworkOrchestrator:
         plan: DedupPlan,
         excluded_paths: tuple[Path, ...],
         inventory_policy: InventoryExclusionPolicy,
-        third_party_project_roots: tuple[Path, ...] = (),
     ) -> tuple[FrameworkActions, ActionSummary]:
-        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
 
         read_budget = getattr(state, "read_run_budget", None)
         budgeted = callable(read_budget) and read_budget(run_id) is not None
@@ -1649,21 +1507,6 @@ class FrameworkOrchestrator:
             exclusion_policy=inventory_policy,
             progress=self.progress,
             trash_backend=trash_backend,
-            third_party_policy=(
-                getattr(self.config, "code_third_party_policy", None)
-                if "code" in self.selected_routes
-                else None
-            ),
-            third_party_project_roots=third_party_project_roots,
-            corpus_admission_policy=(
-                CorpusAdmissionPolicy(
-                    interested_roots=self.config.code_project_roots,
-                    code_scope=self.config.code_candidate_scope,
-                    include_generated=self.config.code_include_generated,
-                    include_vendored=self.config.code_include_vendored,
-                )
-                if "code" in self.selected_routes else None
-            ),
             cancellation_check=action_checkpoint,
             reserve_work=reserve_action_work if budgeted else None,
         )
@@ -1695,8 +1538,6 @@ class FrameworkOrchestrator:
         action_runner: FrameworkActions,
         plan: DedupPlan,
         actions: ActionSummary,
-        inventory_view: CodeInventoryProjection | None = None,
-        inventory_workload: tuple[int, int] | None = None,
     ) -> tuple[
         ActionSummary,
         dict[str, object],
@@ -1710,8 +1551,6 @@ class FrameworkOrchestrator:
             state=state,
             run_id=run_id,
             scan_id=scan_id,
-            inventory_view=inventory_view,
-            inventory_workload=inventory_workload,
         )
         image_summary = cast("ImageRouteSummary | None", route_results.get("image"))
         organization_plan, organization_apply = self._run_document_organization(
@@ -1747,16 +1586,17 @@ class FrameworkOrchestrator:
                 dedup_index=dedup_index,
                 journal_before=journal_before,
             )
-            # The explicit Corpus redlist is a metadata-only admission gate.
-            # It must cross the Trash boundary before duplicate planning or
-            # any content-type/route work can read the selected files.
-            if (
-                self.config.apply_actions
-                and self.config.route.casefold() == "all"
-                and not self.config.route_only
-            ):
-                from neocortex.curation.application import KioTrashBackend
+            # Evaluate the explicit Corpus redlist before duplicate planning
+            # or any content-type/route work. Apply mode crosses the Trash
+            # boundary; preview mode publishes the same matches without it.
+            if self.config.route.casefold() == "all" and not self.config.route_only:
                 from neocortex.workflow.actions.redlist import redlist_policy_digest
+
+                redlist_trash_backend = None
+                if self.config.apply_actions:
+                    from neocortex.curation.application import KioTrashBackend
+
+                    redlist_trash_backend = KioTrashBackend()
 
                 read_budget = getattr(state, "read_run_budget", None)
                 budgeted = callable(read_budget) and read_budget(run_id) is not None
@@ -1790,40 +1630,29 @@ class FrameworkOrchestrator:
                     state,
                     run_id,
                     inventory.scan.scan_id,
-                    apply=True,
+                    apply=self.config.apply_actions,
                     exclusion_policy=boundary.exclusion_policy,
                     progress=self.progress,
-                    trash_backend=KioTrashBackend(),
+                    trash_backend=redlist_trash_backend,
                     cancellation_check=redlist_checkpoint,
                     reserve_work=reserve_redlist_work if budgeted else None,
                 )
                 redlist_runner.apply_redlist_prepass(
                     policy_digest=redlist_policy_digest(),
                 )
-                successor_scan_id = dedup_index.current_scan_id(inventory.scan.scan_id)
-                if successor_scan_id != inventory.scan.scan_id:
-                    inventory = replace(
-                        inventory,
-                        scan=dedup_index.scan_summary(successor_scan_id),
-                    )
+                if self.config.apply_actions:
+                    successor_scan_id = dedup_index.current_scan_id(inventory.scan.scan_id)
+                    if successor_scan_id != inventory.scan.scan_id:
+                        inventory = replace(
+                            inventory,
+                            scan=dedup_index.scan_summary(successor_scan_id),
+                        )
             plan = self._plan_initial_dedup(
                 state,
                 run_id,
                 dedup_index,
                 inventory.scan.scan_id,
             )
-            third_party_project_roots: tuple[Path, ...] = ()
-            third_party_policy = getattr(self.config, "code_third_party_policy", None)
-            if (
-                "code" in self.selected_routes
-                and third_party_policy is not None
-                and third_party_policy.mutation_requested
-            ):
-                third_party_project_roots = self._code_project_roots_for_actions(
-                    dedup_index=dedup_index,
-                    scan_id=inventory.scan.scan_id,
-                    corpus_root=boundary.access_policy.root,
-                )
             action_runner, actions = self._execute_initial_actions(
                 state=state,
                 run_id=run_id,
@@ -1832,7 +1661,6 @@ class FrameworkOrchestrator:
                 plan=plan,
                 excluded_paths=excluded_paths,
                 inventory_policy=boundary.exclusion_policy,
-                third_party_project_roots=third_party_project_roots,
             )
             candidate_rows = state.route_candidate_run_count(run_id)
             state.publish_initial_routing_snapshot(
@@ -1843,43 +1671,22 @@ class FrameworkOrchestrator:
                 inventory.inventory_mode,
                 candidate_rows,
             )
-            inventory_view = None
-            if "code" in self.selected_routes:
-                inventory_view = build_code_inventory_projection(
-                    dedup_index,
-                    inventory.scan.scan_id,
-                    cancellation=self._cancellation,
-                )
-            try:
-                # Actions may have published a reconciliation successor.  Read
-                # the post-action summary from the owner that is already open so
-                # route reservations reflect the same generation as Code and do
-                # not reopen the WAL-backed inventory database.
-                route_inventory_summary = dedup_index.scan_summary(inventory.scan.scan_id)
-                (
-                    actions,
-                    route_results,
-                    image_summary,
-                    global_resources,
-                    organization_plan,
-                    organization_apply,
-                ) = self._run_initial_routes(
-                    root=boundary.access_policy.root,
-                    state=state,
-                    run_id=run_id,
-                    scan_id=inventory.scan.scan_id,
-                    action_runner=action_runner,
-                    plan=plan,
-                    actions=actions,
-                    inventory_view=inventory_view,
-                    inventory_workload=(
-                        int(route_inventory_summary.files_seen),
-                        int(route_inventory_summary.bytes_seen),
-                    ),
-                )
-            finally:
-                if inventory_view is not None:
-                    inventory_view.close()
+            (
+                actions,
+                route_results,
+                image_summary,
+                global_resources,
+                organization_plan,
+                organization_apply,
+            ) = self._run_initial_routes(
+                root=boundary.access_policy.root,
+                state=state,
+                run_id=run_id,
+                scan_id=inventory.scan.scan_id,
+                action_runner=action_runner,
+                plan=plan,
+                actions=actions,
+            )
         return _InitialWork(
             inventory,
             plan,
@@ -2409,7 +2216,7 @@ class FrameworkOrchestrator:
         """Run the dependent lifecycle stage before finalizing Framework.
 
         The callback executes outside the Framework writer connection so an
-        owner-local stage (Semantic/Code publication) can use its own bounded
+        owner-local Semantic stage can use its own bounded
         transactions.  The run remains ``running`` and has a pending stage
         marker until the callback returns; interruption therefore remains
         recoverable instead of being hidden behind a completed Framework row.
@@ -2495,7 +2302,6 @@ class FrameworkOrchestrator:
             audio=cast("AudioRouteSummary | None", routes.get("audio")),
             video=cast("VideoRouteSummary | None", routes.get("video")),
             image=work.image,
-            code=cast("CodeRouteSummary | None", routes.get("code")),
             route_results=routes,
             global_resources=work.global_resources,
             organization_plan=work.organization_plan,
@@ -2824,7 +2630,6 @@ class FrameworkOrchestrator:
         boundary: NormalInventoryBoundary,
     ) -> _RouteOnlySource:
         source_run_id, expected_scan_id = self._route_only_source_run(state, boundary)
-        self._require_source_admission_policy(state, source_run_id)
         self._select_route_only_routes(state, source_run_id)
         route_input_sources = {
             name: self.route_registry[name].input_source for name in self.selected_routes
@@ -2871,45 +2676,13 @@ class FrameworkOrchestrator:
             candidate_rows,
         )
 
-    def _require_source_admission_policy(self, state: FrameworkState, source_run_id: int) -> None:
-        """Never replay candidate-backed routes under a different interest policy."""
-        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
-
-        manifest = state.read_run_manifest(source_run_id)
-        configuration = None if manifest is None else manifest.get("configuration")
-        expected = CorpusAdmissionPolicy(
-            interested_roots=self.config.code_project_roots,
-            code_scope=self.config.code_candidate_scope,
-            include_generated=self.config.code_include_generated,
-            include_vendored=self.config.code_include_vendored,
-        )
-        if (
-            not isinstance(configuration, Mapping)
-            or configuration.get("corpus_admission") != expected.to_dict()
-            or configuration.get("corpus_admission_signature") != expected.signature
-        ):
-            raise ValueError(
-                f"source run {source_run_id} has an incompatible corpus admission policy; "
-                "repeat the original explicit project roots/scope or start a new initial run"
-            )
-
     def _route_only_start_payload(
         self,
         boundary: NormalInventoryBoundary,
         source: _RouteOnlySource,
         copied_candidates: int,
     ) -> dict[str, object]:
-        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
-
-        admission = CorpusAdmissionPolicy(
-            interested_roots=self.config.code_project_roots,
-            code_scope=self.config.code_candidate_scope,
-            include_generated=self.config.code_include_generated,
-            include_vendored=self.config.code_include_vendored,
-        )
         return {
-            "corpus_admission": admission.to_dict(),
-            "corpus_admission_signature": admission.signature,
             "root": str(boundary.access_policy.root),
             "source_run_id": source.run_id,
             "inventory_exclusion_signature": boundary.exclusion_policy.signature,
@@ -3244,7 +3017,6 @@ class FrameworkOrchestrator:
             audio=cast("AudioRouteSummary | None", routes.get("audio")),
             video=cast("VideoRouteSummary | None", routes.get("video")),
             image=cast("ImageRouteSummary | None", routes.get("image")),
-            code=cast("CodeRouteSummary | None", routes.get("code")),
             route_results=routes,
             global_resources=execution.global_resources,
             route_failures=execution.route_failures,

@@ -281,9 +281,6 @@ def test_broker_exposes_one_signed_clock_across_every_owner_and_phase(
             ),
         )
 
-    def code(*_args: object, **_kwargs: object):
-        return (), RankingExecution("code_structural", "structural_code", True, True, True, 0)
-
     def catalog(*_args: object, **_kwargs: object):
         return (), RankingExecution("catalog_metadata", "catalog", True, True, True, 0)
 
@@ -295,13 +292,12 @@ def test_broker_exposes_one_signed_clock_across_every_owner_and_phase(
     monkeypatch.setattr(knowledge_search, "_lexical_rankings", lexical)
     monkeypatch.setattr(knowledge_search, "_semantic_rankings", semantic)
     monkeypatch.setattr(knowledge_search, "_exact_rankings", exact)
-    monkeypatch.setattr(knowledge_search, "_code_ranking", code)
     monkeypatch.setattr(knowledge_search, "_catalog_ranking", catalog)
     monkeypatch.setattr(knowledge_search, "_apply_inventory_dispositions", dispositions)
     monkeypatch.setattr(
         knowledge_search,
         "_planned",
-        lambda _plan, channel: channel in {"semantic", "exact", "structural_code", "catalog"},
+        lambda _plan, channel: channel in {"semantic", "exact", "catalog"},
     )
     monkeypatch.setattr(
         knowledge_search,
@@ -328,7 +324,6 @@ def test_broker_exposes_one_signed_clock_across_every_owner_and_phase(
         ("pdf", ("fts_pdf",)),
         ("semantic", ("semantic_text",)),
         ("inventory", ("exact_inventory_path:fixture",)),
-        ("code", ("code_structural",)),
         ("catalog", ("catalog_metadata",)),
         ("inventory", ("inventory_duplicate_plan",)),
     }
@@ -342,8 +337,8 @@ def test_broker_exposes_one_signed_clock_across_every_owner_and_phase(
         phase.duration_ns
         for phase in result.telemetry.phases
         if phase.phase is KnowledgeTimingPhase.BROKER
-    ] == [1_500]
-    assert result.telemetry.total_duration_ns == 1_500
+    ] == [1_300]
+    assert result.telemetry.total_duration_ns == 1_300
     assert result.elapsed_milliseconds == 0
     assert result.to_dict()["elapsed_milliseconds"] == 0
 

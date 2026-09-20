@@ -18,11 +18,7 @@ from neocortex.platform.policy import (
     default_whisper_model_cache,
 )
 
-from neocortex.runtime.config.app_paths import (
-    default_code_project_roots,
-    default_state_directory,
-)
-from neocortex.runtime.config.third_party_policy import CodeThirdPartyPolicy
+from neocortex.runtime.config.app_paths import default_state_directory
 from neocortex.safety.ocr_profiles import OcrProfileName
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.capabilities.formats.video.limits import DEFAULT_VIDEO_WORKER_MEMORY_BYTES
@@ -35,7 +31,6 @@ if TYPE_CHECKING:
     from neocortex.enumeration.models import JournalCursor
     from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
-    from neocortex.code.code_contracts import CodeRouteSummary
     from neocortex.documents.document_organization import (
         OrganizationApplySummary,
         OrganizationPlanSummary,
@@ -81,22 +76,6 @@ class FrameworkConfig:
     global_cpu_slots: int | None = None
     global_max_cpu_load_percent: float = 90.0
     global_resource_wait_timeout_seconds: float | None = None
-    code_max_file_bytes: int = 8 * 1024 * 1024
-    code_max_documents: int | None = None
-    code_max_text_chars: int = 4_000_000
-    code_chunk_chars: int = 12_000
-    code_retry_errors: bool = False
-    code_cache_validation: Literal["metadata", "full"] = "metadata"
-    code_candidate_scope: Literal["projects", "broad"] = "projects"
-    code_project_roots: tuple[Path, ...] = field(default_factory=default_code_project_roots)
-    code_include_generated: bool = False
-    code_include_vendored: bool = False
-    code_complexity_warning: int = 15
-    code_function_lines_warning: int = 200
-    code_third_party_policy: CodeThirdPartyPolicy = field(
-        default_factory=CodeThirdPartyPolicy,
-        kw_only=True,
-    )
     image_workers: int | None = None
     image_max_file_bytes: int | None = None
     image_max_documents: int | None = None
@@ -282,11 +261,6 @@ class FrameworkConfig:
     def video_database(self) -> Path:
         return self.state_directory / "video.sqlite3"
 
-    @property
-    def code_database(self) -> Path:
-        return self.state_directory / "code.sqlite3"
-
-
 @dataclass(frozen=True, slots=True)
 class InitialRunResult:
     run_id: int
@@ -306,7 +280,6 @@ class InitialRunResult:
     audio: AudioRouteSummary | None = None
     video: VideoRouteSummary | None = None
     image: ImageRouteSummary | None = None
-    code: CodeRouteSummary | None = None
     route_results: dict[str, object] = field(default_factory=dict)
     global_resources: GlobalResourceSummary | None = None
     organization_plan: OrganizationPlanSummary | None = None
@@ -338,7 +311,6 @@ class RouteOnlyRunResult:
     audio: AudioRouteSummary | None = None
     video: VideoRouteSummary | None = None
     image: ImageRouteSummary | None = None
-    code: CodeRouteSummary | None = None
     actions: ActionSummary = field(default_factory=lambda: ActionSummary(False))
 
 
@@ -365,17 +337,4 @@ class ActionSummary:
     empty_directories_trashed: int = 0
     empty_directory_skips: int = 0
     errors: int = 0
-    # Appended keyword-only fields keep older positional consumers compatible.
-    # Third-party origin is advisory; non-zero values only appear when an
-    # explicit Code third-party action policy was requested.
-    third_party_candidates: int = field(default=0, kw_only=True)
-    third_party_trashed: int = field(default=0, kw_only=True)
-    third_party_skips: int = field(default=0, kw_only=True)
-    admission_processed: int = field(default=0, kw_only=True)
-    admission_metadata_only: int = field(default=0, kw_only=True)
-    admission_sensitive: int = field(default=0, kw_only=True)
-    regeneration_proven: int = field(default=0, kw_only=True)
-    regeneration_unproven: int = field(default=0, kw_only=True)
-    regeneration_action_limit_reached: bool = field(default=False, kw_only=True)
-    regeneration_sources_truncated: bool = field(default=False, kw_only=True)
 # endregion [02]

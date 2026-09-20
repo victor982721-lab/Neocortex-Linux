@@ -20,7 +20,6 @@ from .cli_audio_surface import register_audio_arguments
 from .cli_archive_surface import register_archive_arguments
 from .cli_capabilities_surface import register_capabilities_arguments
 from .cli_config_doctor_surface import register_config_doctor_arguments
-from .cli_code_surface import register_code_arguments
 from .cli_content_diagnostics import register_content_diagnostics_arguments
 from .cli_docx_surface import register_docx_arguments
 from .cli_knowledge_surface import register_knowledge_arguments
@@ -204,8 +203,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--all",
         action="store_true",
         help=(
-            "run every PDF, DOCX, Office, ZIP (including nested ZIP), audio, video, image and "
-            "code route using the existing "
+            "run every PDF, DOCX, Office, ZIP (including nested ZIP), audio, video and image "
+            "route using the existing "
             "cache, update the technical catalog and prune stale cache state; with "
             "--apply, also organize every safely classified technical document "
             "only when the active backend capability is verified; "
@@ -290,7 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ROUTES",
         help=(
             "content routes after the common inventory: one name, a comma-separated "
-            "set such as pdf,docx,office,archive,audio,video,image,code, or all"
+            "set such as pdf,docx,office,archive,audio,video,image, or all"
         ),
     )
     parser.add_argument(
@@ -1151,9 +1150,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_archive_arguments(parser, megabyte_type=decimal_megabytes)
     register_text_arguments(parser, megabyte_type=decimal_megabytes)
 
-    # Keep the long-standing final group ordering (audio, video, code,
-    # semantic, Knowledge) stable while grouping the control-plane options
-    # before those route surfaces.
+    # Keep the long-standing final group ordering while grouping the
+    # control-plane options before the remaining route surfaces.
     maintenance = parser.add_argument_group("Scratch and historical maintenance")
     maintenance.add_argument(
         "--maintenance-json",
@@ -1310,8 +1308,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_audio_arguments(parser, megabyte_type=decimal_megabytes)
     register_video_arguments(parser, megabyte_type=decimal_megabytes)
-
-    register_code_arguments(parser, megabyte_type=decimal_megabytes)
 
     register_content_diagnostics_arguments(parser)
     register_semantic_arguments(parser)

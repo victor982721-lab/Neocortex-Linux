@@ -17,7 +17,6 @@ SourceKind = Literal[
     "video",
     "image",
     "archive",
-    "code",
 ]
 SourceCoverage = Literal["complete", "partial", "blocked"]
 

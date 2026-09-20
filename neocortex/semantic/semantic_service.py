@@ -598,17 +598,6 @@ def index_text_embeddings(
                 work_budget=budget,
                 progress=progress,
             )
-            if "code" in result.sources and result.complete:
-                if len(result.generations) != 1:
-                    raise RuntimeError("Code Semantic linking requires exactly one text generation")
-                from neocortex.code.search.code_semantic_links import synchronize_code_embedding_links
-
-                summary = result.generations[0].summary
-                synchronize_code_embedding_links(
-                    state_directory,
-                    generation_id=summary.generation_id,
-                    model_signature=summary.model_signature,
-                )
             return result
     finally:
         budget.close_registered_resources()

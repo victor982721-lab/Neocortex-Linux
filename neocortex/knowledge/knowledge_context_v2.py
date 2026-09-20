@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import copy
 import json
-import math
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -34,7 +33,6 @@ _MAX_GRAPH_RELATIONS = 256
 _MAX_GRAPH_IDENTIFIERS_PER_EVIDENCE = 64
 _MAX_GRAPH_PROVENANCE = 16
 _MAX_GRAPH_PROVENANCE_CHARS = 4_096
-_CODE_RELATION_FAMILIES = {"reference": "code_references", "dependency": "dependencies"}
 _ARCHIVE_IDENTIFIER_NAMES = frozenset(
     {
         "inside_zip",
@@ -486,16 +484,12 @@ def _mapping_method(value: object) -> str | None:
 def _published_relation_candidate(
     entry: Mapping[str, Any],
     hit: Mapping[str, Any],
-    *,
-    family: str,
 ) -> bool:
-    """Require a relation-bearing owner result to be published and current.
+    """Require an inventory duplicate relation to be published and current.
 
     A v2 context may contain a partial result because an unrelated owner is
-    unavailable.  That must not erase a separately published Code relation,
-    but neither may a malformed fixture or an unresolved ranking become a
-    graph edge.  The relation's own current revision and completed ranking are
-    the only admissible positive signals; no path/name join is inferred here.
+    unavailable, but neither may a malformed fixture or an unresolved ranking
+    become a graph edge.
     """
 
     result = entry.get("result")
@@ -508,126 +502,14 @@ def _published_relation_candidate(
     if revision.get("state") != "current":
         return False
     rankings = result.get("rankings")
-    expected = "code_structural" if family in _CODE_RELATION_FAMILIES else "inventory_duplicate_plan"
+    expected = "inventory_duplicate_plan"
     if isinstance(rankings, list):
         for ranking in rankings:
             if not isinstance(ranking, Mapping) or ranking.get("name") != expected:
                 continue
             return bool(ranking.get("available") is True and ranking.get("complete") is True)
-    # Directly supplied, current structural evidence remains usable when a
-    # caller has already filtered rankings out of the detached projection.
-    return family in _CODE_RELATION_FAMILIES and evidence.get("method") == "structural"
+    return False
 
-
-def _code_relation_payload(
-    entry: Mapping[str, Any],
-    hit: Mapping[str, Any],
-    *,
-    evidence_id: str,
-    citation_id: str,
-    entities: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
-) -> dict[str, Any] | None:
-    evidence = hit.get("evidence")
-    resource = hit.get("resource")
-    if not isinstance(evidence, Mapping) or not isinstance(resource, Mapping):
-        return None
-    if evidence.get("section_kind") != "code_relation":
-        return None
-    identifiers = dict(_bounded_identifier_pairs(evidence))
-    required = (
-        "code_relation_id",
-        "code_relation_family",
-        "code_relation_kind",
-        "code_relation_name",
-        "code_relation_source_resource",
-        "code_relation_target_resource",
-        "code_relation_resolved",
-        "code_relation_confirmed",
-        "code_relation_confidence",
-        "code_relation_provenance",
-    )
-    if any(name not in identifiers for name in required):
-        return None
-    family = identifiers["code_relation_family"]
-    source_table, separator, source_row = identifiers["code_relation_id"].partition(":")
-    if (
-        family not in _CODE_RELATION_FAMILIES
-        or separator != ":"
-        or source_table != _CODE_RELATION_FAMILIES[family]
-        or not source_row.isdecimal()
-        or int(source_row) < 1
-        or source_row != str(int(source_row))
-        or evidence.get("section_id") != identifiers["code_relation_id"]
-        or identifiers["code_relation_resolved"].casefold() != "true"
-        or identifiers["code_relation_confirmed"].casefold() != "true"
-        or not _published_relation_candidate(entry, hit, family=family)
-    ):
-        return None
-    try:
-        confidence = float(identifiers["code_relation_confidence"])
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
-        return None
-    method = _mapping_method(evidence.get("method"))
-    if method != "structural":
-        return None
-    source_label = identifiers["code_relation_source_resource"]
-    target_label = identifiers["code_relation_target_resource"]
-    if source_label == target_label:
-        return None
-    resource_id = resource.get("resource_id")
-    if not isinstance(resource_id, str) or not resource_id.strip():
-        return None
-    source_key = _append_graph_entity(
-        entities,
-        entity_kind="resource",
-        label=source_label,
-        evidence_id=evidence_id,
-        resource_ids=(resource_id,),
-    )
-    target_key = _append_graph_entity(
-        entities,
-        entity_kind="resource_reference",
-        label=target_label,
-        evidence_id=evidence_id,
-        resource_ids=(target_label,),
-    )
-    if source_key is None or target_key is None:
-        return None
-    provenance = [
-        f"code:{source_table}:{source_row}",
-        f"analyzer:{identifiers['code_relation_provenance']}",
-        f"name:{identifiers['code_relation_name']}",
-    ]
-    for name in ("code_relation_scope", "code_relation_version_spec"):
-        if name in identifiers:
-            provenance.append(f"{name}:{identifiers[name]}")
-    provenance = provenance[:_MAX_GRAPH_PROVENANCE]
-    relation_id = _graph_stable_id(
-        "context-relation",
-        {
-            "relation_kind": f"code_{family}:{identifiers['code_relation_kind']}",
-            "method": method,
-            "provenance": provenance,
-            "confidence": confidence,
-            "source_entity_id": entities[source_key]["entity_id"],
-            "target_entity_id": entities[target_key]["entity_id"],
-        },
-    )
-    return {
-        "schema_version": 1,
-        "kind": "context_relation_ref",
-        "relation_id": relation_id,
-        "source_entity_id": entities[source_key]["entity_id"],
-        "target_entity_id": entities[target_key]["entity_id"],
-        "relation_kind": f"code_{family}:{identifiers['code_relation_kind']}",
-        "method": method,
-        "provenance": provenance,
-        "evidence_ids": [evidence_id],
-        "confidence": confidence,
-        "citation_ids": [citation_id],
-    }
 
 
 def _graph_projection(
@@ -675,29 +557,12 @@ def _graph_projection(
                 resource_id = resource.get("resource_id")
                 if not isinstance(resource_id, str) or not resource_id.strip():
                     continue
-                if evidence.get("symbol") is not None:
-                    _append_graph_entity(
-                        entities,
-                        entity_kind="code_symbol",
-                        label=str(evidence["symbol"])[:1_024],
-                        evidence_id=evidence_id,
-                        resource_ids=(resource_id,),
-                    )
-                relation = _code_relation_payload(
-                    entry,
-                    {**hit, "evidence": evidence},
-                    evidence_id=evidence_id,
-                    citation_id=citation_ids[evidence_id],
-                    entities=entities,
-                )
-                if relation is not None:
-                    relation_values.setdefault(str(relation["relation_id"]), relation)
                 planned_value = next(
                     (value for namespace, value in identifiers if namespace.casefold() == "planned_duplicate_of"),
                     None,
                 )
                 if planned_value is not None and _published_relation_candidate(
-                    entry, {**hit, "evidence": evidence}, family="inventory"
+                    entry, {**hit, "evidence": evidence}
                 ):
                     source_key = _append_graph_entity(
                         entities,
@@ -741,7 +606,7 @@ def _graph_projection(
                         )
                 for namespace, value in identifiers:
                     lowered = namespace.casefold()
-                    if lowered.startswith("code_relation_") or lowered == "planned_duplicate_of":
+                    if lowered == "planned_duplicate_of":
                         continue
                     if lowered in _ARCHIVE_IDENTIFIER_NAMES and not (
                         resource.get("owner") == "archive"

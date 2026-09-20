@@ -20,6 +20,8 @@ from tests.internal_paths_test_support import begin_signed_normal_run
 import json
 from pathlib import Path
 
+import pytest
+
 
 class _MetadataOnlyBackend:
     def __init__(self) -> None:
@@ -49,6 +51,7 @@ def test_redlist_matches_names_and_suffixes_case_insensitively() -> None:
     assert redlist_match("/root/cache.BAK-2") == ".bak-2"
     assert redlist_match("/root/.GITIGNORE") == ".gitignore"
     assert redlist_match("/root/report.sqlite3-wal") == ".sqlite3-wal"
+    assert redlist_match("/root/service.TIMER") == ".timer"
     assert redlist_match("/root/report.keep") is None
 
 
@@ -60,7 +63,7 @@ def test_redlist_does_not_treat_intermediate_version_dots_as_extensions() -> Non
 
 
 def test_redlist_policy_is_stable_and_metadata_binding_does_not_read_payload() -> None:
-    assert len(REDLIST_ENTRIES) == 288
+    assert len(REDLIST_ENTRIES) == 289
     assert redlist_policy_digest().startswith("sha256:")
     first = metadata_binding(_snapshot("/root/a.bak"))
     second = metadata_binding(_snapshot("/root/a.bak"))
@@ -73,8 +76,11 @@ def test_redlist_uses_only_the_current_explicit_list() -> None:
     assert ".bak legado (v1)" in REDLIST_ENTRIES
     assert ".astro" in REDLIST_ENTRIES
     assert ".py" in REDLIST_ENTRIES
+    assert ".timer" in REDLIST_ENTRIES
     assert ".pdbxml" not in REDLIST_ENTRIES
     assert ".bak" not in REDLIST_ENTRIES
+    assert ".back" not in REDLIST_ENTRIES
+    assert ".backup" not in REDLIST_ENTRIES
 
 
 def test_redlist_exports_only_policy_symbols() -> None:
@@ -129,6 +135,33 @@ def test_redlist_prepass_removes_matches_before_content_hashing(tmp_path: Path, 
     assert str(retained) in paths
 
 
+def test_redlist_preview_records_plan_without_mutating_or_hashing(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    state_root = tmp_path / "state"
+    root.mkdir()
+    state_root.mkdir()
+    candidate = root / "service.timer"
+    candidate.write_bytes(b"must remain in preview")
+
+    with DedupIndex(state_root / "dedup.sqlite3") as index:
+        scan = index.scan(root)
+        with FrameworkState(state_root / "framework.sqlite3") as state:
+            run_id = begin_signed_normal_run(state, root)
+            runner = FrameworkActions(index, state, run_id, scan.scan_id, apply=False)
+            result = runner.apply_redlist_prepass(policy_digest=redlist_policy_digest())
+            row = state._connection.execute(
+                "SELECT action_type,status,evidence FROM file_actions"
+            ).fetchone()
+
+    assert result["matched"] == 1
+    assert result["planned"] == 1
+    assert result["applied"] == 0
+    assert result["skipped"] == 0
+    assert candidate.exists()
+    assert row is not None and row[0:2] == ("trash_redlist", "planned")
+    assert '"redlist_entry":".timer"' in row[2]
+
+
 def test_integrated_all_does_not_select_code_route(tmp_path: Path) -> None:
     orchestrator = FrameworkOrchestrator(
         FrameworkConfig(root=tmp_path, state_directory=tmp_path / "state", route="all")
@@ -136,11 +169,11 @@ def test_integrated_all_does_not_select_code_route(tmp_path: Path) -> None:
     assert "code" not in orchestrator.selected_routes
 
 
-def test_explicit_code_route_remains_available(tmp_path: Path) -> None:
-    orchestrator = FrameworkOrchestrator(
-        FrameworkConfig(root=tmp_path, state_directory=tmp_path / "state", route="code")
-    )
-    assert orchestrator.selected_routes == ("code",)
+def test_explicit_code_route_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown routes: code"):
+        FrameworkOrchestrator(
+            FrameworkConfig(root=tmp_path, state_directory=tmp_path / "state", route="code")
+        )
 
 
 def test_all_apply_prefilters_the_corpus_before_planning_and_never_leaves_root(

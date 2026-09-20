@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -14,11 +15,16 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryExclusionPolicy
+from neocortex.deduplication import (
+    DedupIndex,
+    DedupPlanner,
+    InventoryExclusionPolicy,
+    snapshot_path,
+)
 from neocortex.deduplication.io import native_io_path
 from neocortex.curation.application import BackendOutcome
 from neocortex.workflow.actions.actions import FrameworkActions
-from neocortex.platform.content_types import detect_content_type
+from neocortex.platform.content_types import DetectedType, detect_content_type
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.models import ActionSummary
 from tests.internal_paths_test_support import begin_signed_normal_run
@@ -71,6 +77,24 @@ class ContentTypeTests(unittest.TestCase):
             self.assertEqual(detected.mime, "image/png")
             self.assertEqual(detected.canonical_extension, ".png")
             self.assertFalse(detected.accepts(path))
+
+    def test_extensionless_signatures_have_canonical_extensions(self) -> None:
+        cases = (
+            (b"\x89PNG\r\n\x1a\nfixture", ".png"),
+            (b"\xff\xd8\xfffixture", ".jpg"),
+            (b"%PDF-1.7\nfixture", ".pdf"),
+            (b"SQLite format 3\x00fixture", ".sqlite3"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for number, (payload, expected) in enumerate(cases):
+                with self.subTest(expected=expected):
+                    path = Path(directory) / f"extensionless-{number}"
+                    path.write_bytes(payload)
+                    detected = detect_content_type(path)
+                    self.assertIsNotNone(detected)
+                    assert detected is not None
+                    self.assertEqual(detected.canonical_extension, expected)
+                    self.assertFalse(detected.accepts(path))
 
     def test_distinguishes_ooxml_zip_container(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -912,7 +936,6 @@ class ActionTests(unittest.TestCase):
                 ],
             )
 
-    @unittest.skipUnless(os.name == "nt", "identity-bound rename is Windows-only")
     def test_abstains_exact_trash_and_applies_safe_extension_rename(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -1033,6 +1056,87 @@ class ActionTests(unittest.TestCase):
             self.assertEqual(summary.rename_skips, 1)
             self.assertTrue(source.exists())
             self.assertEqual(target.read_bytes(), b"\x89PNG\r\n\x1a\ntarget")
+
+    def test_linux_extension_restore_uses_no_replace_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "corpus"
+            corpus.mkdir()
+            source = corpus / "photo"
+            source.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+            with (
+                DedupIndex(base / "dedup.sqlite3") as index,
+                FrameworkState(_framework_database(base)) as state,
+            ):
+                scan = index.scan(corpus)
+                run_id = begin_signed_normal_run(state, corpus)
+                summary = FrameworkActions(
+                    index, state, run_id, scan.scan_id, apply=True
+                )._rename_mismatch(
+                    snapshot_path(source),
+                    DetectedType("image/png", ".png", frozenset({".png"}), "fixture"),
+                    ActionSummary(apply_actions=True),
+                )
+                row = state._connection.execute(
+                    "SELECT status,effect_receipt_json FROM file_actions"
+                ).fetchone()
+            self.assertEqual(summary.files_renamed, 1)
+            self.assertFalse(source.exists())
+            self.assertTrue((corpus / "photo.png").exists())
+            self.assertEqual(row[0], "applied")
+            self.assertEqual(json.loads(row[1])["operation"], "rename")
+
+    def test_extensionless_executable_redlist_uses_metadata_trash_binding(self) -> None:
+        class Backend:
+            def apply_many_snapshots(self, items, *, root):
+                del root
+                outcomes = []
+                for snapshot, source_digest in items:
+                    Path(snapshot.path).unlink()
+                    outcomes.append(
+                        BackendOutcome(
+                            "applied",
+                            "fixture_verified",
+                            receipt_json=json.dumps(
+                                {"digest": source_digest},
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                        )
+                    )
+                return tuple(outcomes)
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "corpus"
+            corpus.mkdir()
+            source = corpus / "binary"
+            source.write_bytes(b"MZ" + b"\0" * 100)
+            with (
+                DedupIndex(base / "dedup.sqlite3") as index,
+                FrameworkState(_framework_database(base)) as state,
+            ):
+                scan = index.scan(corpus)
+                plan = DedupPlanner(index).plan(scan.scan_id)
+                run_id = begin_signed_normal_run(state, corpus)
+                summary = FrameworkActions(
+                    index,
+                    state,
+                    run_id,
+                    scan.scan_id,
+                    apply=True,
+                    trash_backend=Backend(),  # type: ignore[arg-type]
+                ).execute(plan, cleanup_empty_directories=False)
+                row = state._connection.execute(
+                    "SELECT action_type,status,evidence FROM file_actions"
+                ).fetchone()
+            self.assertEqual(summary.rename_candidates, 0)
+            self.assertFalse(source.exists())
+            self.assertEqual(row[0:2], ("trash_redlist", "applied"))
+            evidence = json.loads(row[2])
+            self.assertEqual(evidence["original_suffix"], "")
+            self.assertEqual(evidence["detected_extension"], ".exe")
+            self.assertEqual(evidence["redlist_entry"], ".exe")
 
 
 if __name__ == "__main__":

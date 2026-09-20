@@ -19,7 +19,6 @@ from neocortex.capabilities.formats.office.models import OfficeRouteSummary
 from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteSummary
 from neocortex.capabilities.formats.text.text_route import TextRouteSummary
 from neocortex.capabilities.formats.video.models import VideoRouteSummary
-from neocortex.code.code_contracts import CodeRouteSummary
 import neocortex.documents.document_catalog as catalog_module
 from neocortex.documents.document_catalog import CatalogUpdateSummary
 from neocortex.runtime.models import FrameworkConfig
@@ -32,7 +31,7 @@ from neocortex.runtime.orchestration.route_registry import (
 RouteSummaryType: TypeAlias = type[object]
 
 
-def test_functional_defaults_keep_catalog_enabled_and_select_nine_routes() -> None:
+def test_functional_defaults_keep_catalog_enabled_and_select_eight_routes() -> None:
     config = FrameworkConfig()
 
     assert config.document_catalog_enabled
@@ -45,7 +44,6 @@ def test_functional_defaults_keep_catalog_enabled_and_select_nine_routes() -> No
         "audio",
         "video",
         "image",
-        "code",
     )
 
 
@@ -60,7 +58,6 @@ def test_functional_defaults_keep_catalog_enabled_and_select_nine_routes() -> No
         ArchiveRouteSummary,
         ImageRouteSummary,
         VideoRouteSummary,
-        CodeRouteSummary,
     ),
 )
 def test_all_route_summaries_expose_catalog_status_keyword_only(
@@ -76,7 +73,7 @@ def test_all_route_summaries_expose_catalog_status_keyword_only(
 
 @pytest.mark.parametrize(
     "summary_type",
-    (ArchiveRouteSummary, ImageRouteSummary, VideoRouteSummary, CodeRouteSummary),
+    (ArchiveRouteSummary, ImageRouteSummary, VideoRouteSummary),
 )
 def test_multimodal_summaries_add_catalog_counters_without_shifting_positionals(
     summary_type: RouteSummaryType,
@@ -138,16 +135,6 @@ def test_multimodal_summaries_add_catalog_counters_without_shifting_positionals(
             False,
             0,
         ),
-        (
-            CodeRouteSummary(candidates=1),
-            CatalogUpdateSummary(
-                catalog_run_id=5,
-                source_kind="code",
-                review_required=1,
-            ),
-            True,
-            0,
-        ),
     ),
 )
 def test_catalog_projection_reports_missing_stale_error_and_review_without_false_error(
@@ -180,7 +167,6 @@ def test_catalog_hook_maps_each_route_to_its_existing_owner_and_lifecycle(
             "archive",
             "image",
             "video",
-            "code",
         )
     }
     config = SimpleNamespace(
@@ -211,7 +197,7 @@ def test_catalog_hook_maps_each_route_to_its_existing_owner_and_lifecycle(
         return CatalogUpdateSummary(  # type: ignore[arg-type]
             catalog_run_id=len(calls),
             source_kind=source_kind,
-            review_required=int(source_kind in {"archive", "image", "video", "code"}),
+            review_required=int(source_kind in {"archive", "image", "video"}),
         )
 
     monkeypatch.setattr(catalog_module, "update_document_catalog_source", fake_update)
@@ -254,7 +240,6 @@ def test_catalog_hook_maps_each_route_to_its_existing_owner_and_lifecycle(
         "archive",
         "image",
         "video",
-        "code",
     ):
         summaries = route_registry._update_document_catalog_after_route(  # type: ignore[arg-type]
             context, source_kind
@@ -272,7 +257,6 @@ def test_catalog_hook_maps_each_route_to_its_existing_owner_and_lifecycle(
         (owner_paths["archive"], "archive"),
         (owner_paths["image"], "image"),
         (owner_paths["video"], "video"),
-        (owner_paths["code"], "code"),
     )
     assert tuple((source, kind) for _operation, source, kind, _kwargs in calls) == expected
     assert all(kwargs["framework_run_id"] == 23 for _operation, _source, _kind, kwargs in calls)
@@ -287,7 +271,6 @@ def test_catalog_hook_maps_each_route_to_its_existing_owner_and_lifecycle(
         "archive",
         "image",
         "video",
-        "code",
     )
     assert all(
         kwargs["progress_operation"] == progress
@@ -295,17 +278,17 @@ def test_catalog_hook_maps_each_route_to_its_existing_owner_and_lifecycle(
             calls, expected_progress, strict=True
         )
     )
-    assert [item[0] for item in state.lifecycle].count("begin") == 9
-    assert [item[0] for item in state.lifecycle].count("complete") == 9
+    assert [item[0] for item in state.lifecycle].count("begin") == 8
+    assert [item[0] for item in state.lifecycle].count("complete") == 8
     assert not any(item[0] == "fail" for item in state.lifecycle)
-    assert len(state.events) == 9
+    assert len(state.events) == 8
     events_by_phase = {str(item[2]): item for item in state.events}
     complete_by_route = {
         str(item[1][1]): item
         for item in state.lifecycle
         if item[0] == "complete"
     }
-    for source_kind in ("archive", "image", "video", "code"):
+    for source_kind in ("archive", "image", "video"):
         event = events_by_phase[f"{source_kind}-catalog"]
         assert event[1] == "warning"
         assert event[4]["sources"][0]["review_required"] == 1
@@ -374,7 +357,7 @@ def test_multimodal_wrappers_update_catalog_after_the_owner_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    route_names = ("archive", "image", "video", "code")
+    route_names = ("archive", "image", "video")
     fake_runs: list[str] = []
 
     def make_fake_route(route_name: str) -> type[object]:
@@ -392,7 +375,6 @@ def test_multimodal_wrappers_update_catalog_after_the_owner_route(
         "archive": "neocortex.capabilities.formats.archive.route",
         "image": "neocortex.capabilities.formats.image.route",
         "video": "neocortex.capabilities.formats.video.route",
-        "code": "neocortex.code.code_route",
     }
     for route_name, module_name in module_names.items():
         module = types.ModuleType(module_name)
@@ -400,7 +382,6 @@ def test_multimodal_wrappers_update_catalog_after_the_owner_route(
             "archive": "ArchiveRoute",
             "image": "ImageRoute",
             "video": "VideoRoute",
-            "code": "CodeRoute",
         }[route_name]
         setattr(module, class_name, make_fake_route(route_name))
         monkeypatch.setitem(sys.modules, module_name, module)
@@ -438,7 +419,6 @@ def test_multimodal_wrappers_update_catalog_after_the_owner_route(
         archive_database=tmp_path / "archive.sqlite3",
         image_database=tmp_path / "image.sqlite3",
         video_database=tmp_path / "video.sqlite3",
-        code_database=tmp_path / "code.sqlite3",
     )
     context = RouteExecutionContext(
         config=config,  # type: ignore[arg-type]
@@ -454,7 +434,6 @@ def test_multimodal_wrappers_update_catalog_after_the_owner_route(
     route_registry._run_archive(context)
     route_registry._run_image(context)
     route_registry._run_video(context)
-    route_registry._run_code(context)
 
     assert fake_runs == list(route_names)
     assert catalog_calls == list(route_names)

@@ -1,29 +1,86 @@
 {
   "schema": "neocortex-lookup-exact-orchestration/v1",
   "ground_truth_status": "captured_before_rc21_refactor",
-  "semantic_result_xxh3_128": "fa837abb067a705b36a269036e65e7b6",
+  "semantic_result_xxh3_128": "f6e895b681a2f974e1396a3e79292e26",
   "semantic_digest_scope": "complete_result_excluding_top_level_and_report_sqlite_steps",
   "expected": {
     "result_xxh3_128": "8c8767fff9a5fd3ad8a361dc1b0927cd",
     "matches": [
-      ["path", "catalog", "C:/docs/proteccion.pdf", 1],
-      ["name", "inventory", "C:/docs/A%_# report.pdf", 1],
-      ["hash", "inventory", "C:/docs/A%_# report.pdf", 1],
-      ["symbol", "code", "C:/src/control.py", 1],
-      ["identifier", "catalog", "C:/docs/proteccion.pdf", 1]
+      [
+        "path",
+        "catalog",
+        "C:/docs/proteccion.pdf",
+        1
+      ],
+      [
+        "name",
+        "inventory",
+        "C:/docs/A%_# report.pdf",
+        1
+      ],
+      [
+        "hash",
+        "inventory",
+        "C:/docs/A%_# report.pdf",
+        1
+      ],
+      [
+        "identifier",
+        "catalog",
+        "C:/docs/proteccion.pdf",
+        1
+      ]
     ],
     "reports": [
-      ["knowledge", "serial", "unsupported", false, false],
-      ["inventory", "path", "partial", true, true],
-      ["inventory", "name", "partial", true, true],
-      ["inventory", "hash", "partial", true, true],
-      ["code", "path", "partial", true, true],
-      ["code", "name", "partial", true, true],
-      ["code", "hash", "partial", true, true],
-      ["code", "symbol", "partial", true, true],
-      ["catalog", "path", "complete", true, true],
-      ["catalog", "name", "complete", true, true],
-      ["catalog", "identifier", "complete", true, true]
+      [
+        "knowledge",
+        "serial",
+        "unsupported",
+        false,
+        false
+      ],
+      [
+        "inventory",
+        "path",
+        "partial",
+        true,
+        true
+      ],
+      [
+        "inventory",
+        "name",
+        "partial",
+        true,
+        true
+      ],
+      [
+        "inventory",
+        "hash",
+        "partial",
+        true,
+        true
+      ],
+      [
+        "catalog",
+        "path",
+        "complete",
+        true,
+        true
+      ],
+      [
+        "catalog",
+        "name",
+        "complete",
+        true,
+        true
+      ],
+      [
+        "catalog",
+        "identifier",
+        "complete",
+        true,
+        true
+      ]
     ],
     "owner_timings": [
       {
@@ -38,25 +95,13 @@
         "measurement_scope": "owner_batch"
       },
       {
-        "owner": "code",
-        "ranking_names": [
-          "exact_code_path:b9e4656af3f8dfe0d77c3bad59b69f6f",
-          "exact_code_name:2d2352cff527be46986b3e370b21ab82",
-          "exact_code_hash:97b9910c13a81620904a126016589cfc",
-          "exact_code_symbol:9c1599ae35f09073a97a574171b0e012"
-        ],
-        "duration_ns": 15,
-        "executed": true,
-        "measurement_scope": "owner_batch"
-      },
-      {
         "owner": "catalog",
         "ranking_names": [
           "exact_catalog_path:b9e4656af3f8dfe0d77c3bad59b69f6f",
           "exact_catalog_name:2d2352cff527be46986b3e370b21ab82",
           "exact_catalog_identifier:06e1ace3ac9b2ceb46d4b2257cd9eec4"
         ],
-        "duration_ns": 21,
+        "duration_ns": 15,
         "executed": true,
         "measurement_scope": "owner_batch"
       }
@@ -65,7 +110,7 @@
       "complete": false,
       "truncated": false,
       "omitted_matches": 0,
-      "rows_observed": 8,
+      "rows_observed": 6,
       "sqlite_steps": 15000,
       "warnings": []
     }

@@ -152,14 +152,6 @@ DIRECT_ARGUMENT_CASES = (
     ("video_status", "run_video_status", ("--video-status",)),
     ("video_search", "run_video_search", ("--video-search", "query")),
     ("video_doctor", "run_video_doctor", ("--video-doctor",)),
-    ("code_status", "run_code_status", ("--code-status",)),
-    ("code_search", "run_code_search", ("--code-search", "query")),
-    ("code_projects", "run_code_projects", ("--code-projects",)),
-    (
-        "code_reconstruct",
-        "run_code_reconstruct",
-        ("--code-reconstruct", "project"),
-    ),
     ("knowledge_status", "run_knowledge_status", ("--knowledge-status",)),
     (
         "knowledge_health",
@@ -197,7 +189,6 @@ def test_importing_dispatch_keeps_direct_handler_module_lazy() -> None:
                     "neocortex.api.cli.cli_direct",
                     "neocortex.api.cli.cli_review_evidence",
                     "neocortex.api.cli.cli_watcher",
-                    "neocortex.api.cli.cli_code",
                     "neocortex.api.cli.cli_knowledge",
                     "neocortex.api.cli.cli_video",
                     "neocortex.workflow.review.review_evidence",
@@ -280,7 +271,7 @@ def test_direct_operations_remain_mutually_exclusive_across_domains() -> None:
         validate_arguments(args)
 
     assert str(raised.value) == (
-        "direct status/recovery/review/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/code/"
+            "direct status/recovery/review/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/"
         "Knowledge "
         "operations are mutually exclusive"
     )

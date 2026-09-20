@@ -10,15 +10,11 @@ import neocortex.runtime.config.application_config_projections as runtime_projec
 from neocortex.api.public import ApplicationConfig
 from neocortex.runtime.config.application_config import (
     audio_route_config_from_application,
-    code_route_config_from_application,
     image_route_config_from_application,
     office_route_config_from_application,
 )
 from neocortex.capabilities.formats.audio.models import AudioRouteConfig
-from neocortex.runtime.config.app_paths import (
-    default_code_project_roots,
-    source_repository_directory,
-)
+from neocortex.runtime.config.app_paths import source_repository_directory
 from neocortex.capabilities.formats.image.contracts import ImageRouteConfig
 from neocortex.capabilities.formats.office.route import OfficeRouteConfig
 from neocortex.safety.route_filters import CandidateSelection
@@ -99,21 +95,6 @@ def test_image_projection_accepts_the_route_context_effective_root() -> None:
     assert projected.isolate_decoders is True
 
 
-def test_code_projection_uses_only_the_configured_project_allowlist(tmp_path: Path) -> None:
-    owned_roots = (tmp_path / "Neocortex", tmp_path / "Bitacoras-EPS")
-    config = ApplicationConfig(
-        root=tmp_path,
-        state_directory=tmp_path / "state",
-        code_project_roots=owned_roots,
-    )
-
-    projected = code_route_config_from_application(config)
-    assert projected.explicit_project_roots == owned_roots
-    assert default_code_project_roots() == (
-        source_repository_directory(),
-        Path.home() / "MTF",
-        Path.home() / "Documentos" / "ANDRITZ" / "Bitacoras-EPS",
-    )
 
 
 # endregion [01]

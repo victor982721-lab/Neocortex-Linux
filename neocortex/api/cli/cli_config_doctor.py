@@ -21,7 +21,6 @@ from neocortex.platform.policy import (
     default_corpus_root,
 )
 from neocortex.runtime.config.app_paths import default_state_directory
-from neocortex.runtime.config.third_party_policy import default_code_third_party_policy
 from neocortex.runtime.orchestration.route_selection import BUILTIN_ROUTE_ORDER
 
 __all__ = [
@@ -107,7 +106,6 @@ def configuration_report(
     """
 
     policy = current_platform_policy()
-    third_party = default_code_third_party_policy()
     canonical = _canonical_paths(policy)
     effective = _effective_paths(
         policy,
@@ -123,8 +121,6 @@ def configuration_report(
             "route": "none",
             "apply": False,
             "dedup_policy": "fast",
-            "code_candidate_scope": "projects",
-            "code_third_party_policy": third_party.to_dict(),
             "knowledge_scope": "personal",
             "knowledge_mode": "evidence",
             "knowledge_limit": 20,
@@ -184,10 +180,8 @@ def _print_human(report: dict[str, object]) -> None:
     assert isinstance(paths, dict)
     knowledge = defaults["knowledge"]
     mutation = capabilities["mutation"]
-    third_party = defaults["code_third_party_policy"]
     assert isinstance(knowledge, dict)
     assert isinstance(mutation, dict)
-    assert isinstance(third_party, dict)
     print(
         "CONFIG "
         f"schema={CONFIG_REPORT_SCHEMA_VERSION} read_only=1 "
@@ -197,16 +191,7 @@ def _print_human(report: dict[str, object]) -> None:
         "CONFIG_DEFAULTS "
         f"route={defaults['route']} apply={int(bool(defaults['apply']))} "
         f"dedup_policy={defaults['dedup_policy']} "
-        f"code_scope={defaults['code_candidate_scope']} "
-        f"third_party_action={third_party['action']} "
         f"knowledge_scope={knowledge['scope']} knowledge_mode={knowledge['mode']}"
-    )
-    print(
-        "CONFIG_THIRD_PARTY "
-        f"action={third_party['action']} "
-        f"min_confidence={third_party['min_confidence']} "
-        f"max_actions={third_party['max_actions']} "
-        f"kinds={','.join(str(kind) for kind in third_party['kinds'])}"
     )
     for name, value in limits.items():
         if isinstance(value, dict):

@@ -335,11 +335,10 @@ def _materialize_candidate(
             raise ValueError("catalog resource binding does not match its row")
         binding = parsed
 
-    if source_kind in {"archive", "code"}:
-        # Archive members and unbound Code owner records are logical references,
-        # not filesystem identities.  In particular, never reinterpret the
-        # owner key or the denormalized volume/file columns as decimal or hex
-        # merely because they happen to contain numeric-looking text.
+    if source_kind == "archive":
+        # Archive members are logical references, not filesystem identities.
+        # Never reinterpret the owner key or denormalized volume/file columns
+        # as decimal or hex merely because they happen to contain numeric text.
         if binding is None:
             resource = ResourceRef(
                 f"resource:{source_kind}:{file_key}",

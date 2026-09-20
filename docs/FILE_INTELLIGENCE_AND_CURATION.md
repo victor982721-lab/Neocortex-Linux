@@ -75,7 +75,7 @@ evidencia de procedencia, no nombres o extensiones aislados.
 
 La fuente y la release `0.13.0-c6d3985f7a45-cp314-linux-x86_64` aportan
 inventario, extracción multimodal, catálogos, búsqueda, Knowledge, Semantic,
-Code como contenido, planes de duplicados/organización, Review, receipts y
+planes de duplicados/organización, Review, receipts y
 recuperación parcial. La tranche post-0.13 está instalada; su procedencia es
 `source_sha=c6d3985f7a45fc3120bd03e9561195674f2b8ac2`.
 
@@ -311,16 +311,6 @@ ni conceden autoridad. El contrato `neocortex.authenticated-principal/v1`
 rechaza actores textuales o principals no atestados; no habilita autorización
 MCP. La promoción física de KIO, restore de escritorio y sincronización de
 `trash` permanecen fuera del alcance.
-
-## Separación de Code y desarrollo
-
-Un repositorio, incluido NeoCortex, puede procesarse como corpus Code: lenguajes,
-estructura, símbolos, relaciones y búsqueda. Las pruebas, lint, tipos y análisis
-de seguridad pertenecen al desarrollo y se ejecutan con herramientas externas.
-
-Dogfooding significa consultar NeoCortex como contenido y entregar evidencia a
-Codex; no significa reintroducir una plataforma productiva que coordine sus
-propios validadores.
 
 ## Criterio de completitud
 

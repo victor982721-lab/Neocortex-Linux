@@ -89,7 +89,6 @@ from .document_catalog_replay import (
 )
 from neocortex.runtime.control.cancellation import CancellationRequested
 from neocortex.foundation.file_identity import (
-    FileIdentity,
     FileIdentityEncoding,
     decode_file_identity,
 )
@@ -1156,9 +1155,14 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
             break
         updates: list[tuple[str, str, str, str]] = []
         for row in rows:
-            if row["source_kind"] in {"archive", "code"}:
+            if row["source_kind"] == "archive":
                 continue  # owner keys are not filesystem keys; preserve legacy evidence
-            volume_id, file_id = _split_file_key(str(row["file_key"]))
+            try:
+                volume_id, file_id = _split_file_key(str(row["file_key"]))
+            except ValueError:
+                # Preserve legacy owner-scoped rows without guessing a
+                # filesystem identity for an owner no longer active here.
+                continue
             if volume_id and (volume_id != str(row["volume_id"]) or file_id != str(row["file_id"])):
                 updates.append((volume_id, file_id, str(row["source_kind"]), str(row["file_key"])))
         connection.executemany(
@@ -1179,9 +1183,12 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
             break
         plan_updates: list[tuple[str, str, int]] = []
         for row in rows:
-            if row["source_kind"] in {"archive", "code"}:
+            if row["source_kind"] == "archive":
                 continue
-            volume_id, file_id = _split_file_key(str(row["file_key"]))
+            try:
+                volume_id, file_id = _split_file_key(str(row["file_key"]))
+            except ValueError:
+                continue
             if volume_id and (volume_id != str(row["volume_id"]) or file_id != str(row["file_id"])):
                 plan_updates.append((volume_id, file_id, int(row["plan_id"])))
         connection.executemany(
@@ -1217,8 +1224,6 @@ def _source_coverage(
         complete = source_status == "done" and not text_truncated
     elif source_kind == "archive":
         complete = source_status == "indexed" and container_status == "complete"
-    elif source_kind == "code":
-        complete = source_status == "complete" and not text_truncated
     else:
         complete = source_status in {"complete", "done"} and not text_truncated
     return "complete" if complete else "partial"
@@ -1887,19 +1892,6 @@ def _source_document_count(
                 AND d.status IN ('indexed','metadata_only','archive')"""
             ).fetchone()[0]
         )
-    elif source_kind == "code":
-        # Code publishes one current version per file.  Text-only and bounded
-        # partial analyses remain useful catalog assets, but are explicitly
-        # marked partial by the adapter and can never become a complete
-        # published classification.
-        return int(
-            connection.execute(
-                """SELECT COUNT(*) FROM files AS f
-                JOIN file_versions AS v ON v.version_id=f.current_version_id
-                WHERE f.status='current'
-                AND v.analysis_status IN ('complete','partial','text_only','skipped_limit')"""
-            ).fetchone()[0]
-        )
     else:
         predicate = "format=? AND status='complete'"
         parameters = (source_kind,)
@@ -1970,7 +1962,7 @@ def update_document_catalog(
     # that have not enabled those routes yet.  Their source-specific adapters
     # below keep their taxonomies separate while sharing this catalog's
     # publication boundary.
-    optional_source_kinds: tuple[SourceKind, ...] = ("archive", "code", "image", "video")
+    optional_source_kinds: tuple[SourceKind, ...] = ("archive", "image", "video")
     optional_assets: tuple[tuple[Path, SourceKind], ...] = tuple(
         (
             state_directory / content_capability_for_source(source_kind).state_database,
@@ -2825,67 +2817,6 @@ def _iter_source_documents(
                 resource_binding_json=json.dumps(binding, sort_keys=True, separators=(",", ":")),
             )
         return
-    elif source_kind == "code":
-        rows = connection.execute(
-            """SELECT f.file_id,f.volume_id,f.physical_file_id,f.current_path,
-            v.size,v.mtime_ns,v.birthtime_ns,v.analysis_status,
-            v.processing_signature,v.language,v.artifact_kind,v.text_xxh3_128,
-            v.text_truncated,v.version_id,v.provenance_json
-            FROM files AS f JOIN file_versions AS v
-            ON v.version_id=f.current_version_id
-            WHERE f.status='current'
-            AND v.analysis_status IN ('complete','partial','text_only','skipped_limit')
-            ORDER BY f.current_path"""
-        )
-        owner_schema_current: bool | None = None
-        for row in rows:
-            if source_root is not None and not _catalog_path_in_scope(
-                str(row["current_path"]), source_root
-            ):
-                continue
-            if owner_schema_current is None:
-                # The live source cursor and owner reader share this SQLite
-                # observation. Read its declaration once, never retain it
-                # across separate observations or connections.
-                owner_schema_current = _code_owner_schema_is_current(connection)
-            status = str(row["analysis_status"])
-            file_key = f"code:{int(row['file_id'])}"
-            identity = _code_source_identity(
-                connection, row, verify_source_paths=verify_source_paths,
-                owner_schema_current=owner_schema_current,
-            )
-            volume_id, physical_file_id = identity.decimal_components
-            metadata = {
-                "language": row["language"],
-                "artifact_kind": row["artifact_kind"],
-                "version_id": row["version_id"],
-                "text_truncated": bool(row["text_truncated"]),
-            }
-            yield SourceDocument(
-                source_kind="code",
-                file_key=file_key,
-                path=str(row["current_path"]),
-                volume_id=volume_id,
-                file_id=physical_file_id,
-                size=int(row["size"]),
-                mtime_ns=int(row["mtime_ns"]),
-                birthtime_ns=int(row["birthtime_ns"]),
-                source_status=status,
-                processing_signature=str(row["processing_signature"]),
-                text_fingerprint=(
-                    None if row["text_xxh3_128"] is None else str(row["text_xxh3_128"])
-                ),
-                title=Path(str(row["current_path"])).stem,
-                author="",
-                metadata=_metadata_text(metadata),
-                coverage=_source_coverage(
-                    "code",
-                    status,
-                    text_truncated=bool(row["text_truncated"]),
-                ),
-                text_truncated=bool(row["text_truncated"]),
-            )
-        return
     else:
         rows = connection.execute(
             """SELECT file_key,path,size,mtime_ns,birthtime_ns,status,
@@ -2943,82 +2874,13 @@ def _split_file_key(file_key: str) -> tuple[str, str]:
     try:
         return decode_file_identity(file_key).decimal_components
     except ValueError:
-        # Archive members and Code files use owner-scoped stable identities,
-        # not filesystem volume/inode keys.  Keep those identities intact in
-        # the catalog instead of guessing numeric components or discarding the
-        # source owner boundary.
-        for owner in ("archive", "code"):
-            prefix = f"{owner}:"
-            if file_key.startswith(prefix) and len(file_key) > len(prefix):
-                return owner, file_key[len(prefix) :]
+        # Archive members use owner-scoped stable identities, not filesystem
+        # volume/inode keys. Keep those identities intact in the catalog
+        # instead of guessing numeric components.
+        prefix = "archive:"
+        if file_key.startswith(prefix) and len(file_key) > len(prefix):
+            return "archive", file_key[len(prefix) :]
         raise
-
-
-def _code_owner_schema_is_current(connection: sqlite3.Connection) -> bool:
-    """Validate the declaration within the caller's current source observation."""
-
-    metadata = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'"
-    ).fetchone()
-    versions = (
-        []
-        if metadata is None
-        else connection.execute(
-            "SELECT value FROM metadata WHERE key='schema_version' LIMIT 2"
-        ).fetchall()
-    )
-    if len(versions) > 1 or (
-        versions and str(versions[0][0]) not in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}
-    ):
-        raise ResourceBindingError(
-            "Code owner schema is unsupported",
-            field="schema_version",
-            encoding="code-owner-schema",
-            value=versions,
-        )
-    return bool(versions and str(versions[0][0]) in {"7", "8", "9"})
-
-
-def _code_source_identity(
-    connection: sqlite3.Connection, row: sqlite3.Row, *, verify_source_paths: bool,
-    owner_schema_current: bool | None = None,
-) -> FileIdentity:
-    """Decode the Code owner codec; legacy decimal needs independent evidence."""
-    volume, inode = str(row["volume_id"]), str(row["physical_file_id"])
-    hexadecimal = physical_identity_from_components(volume, inode, encoding="code-owner-hex")
-    if owner_schema_current is None:
-        owner_schema_current = _code_owner_schema_is_current(connection)
-    if owner_schema_current:
-        # A declared current producer always owns hex. Never reinterpret a
-        # stale current identity as decimal just because that matches a path.
-        return hexadecimal
-    if verify_source_paths:
-        try:
-            current = os.stat(str(row["current_path"]), follow_symlinks=False)
-        except OSError:
-            return hexadecimal  # the caller records this observation as stale
-        if (hexadecimal.volume_id, hexadecimal.file_id) == (current.st_dev, current.st_ino):
-            return hexadecimal
-        try:
-            decimal = physical_identity_from_components(volume, inode, encoding="legacy-decimal")
-        except ResourceBindingError:
-            return hexadecimal
-        if (decimal.volume_id, decimal.file_id) == (current.st_dev, current.st_ino):
-            return decimal
-        return hexadecimal  # neither codec matches: the snapshot check must fail
-    try:
-        decimal = physical_identity_from_components(volume, inode, encoding="legacy-decimal")
-    except ResourceBindingError:
-        return hexadecimal  # alphabetic hex is not a valid legacy decimal identity
-    if decimal != hexadecimal:
-        raise ResourceBindingError(
-            "legacy Code identity encoding requires owner or physical evidence",
-            field="volume_id,file_id",
-            encoding="unresolved",
-            value=[volume, inode],
-            code="identity_encoding_unresolved",
-        )
-    return hexadecimal
 
 
 def _attach_resource_binding(document: SourceDocument) -> SourceDocument:
@@ -3557,10 +3419,6 @@ def _store_classification(
             if (
                 classification.uncertainty == "alta"
                 or document.coverage != "complete"
-                # Code is a distinct content role, not a document-taxonomy
-                # classification.  Keep the strong role evidence while retaining
-                # the catalog's review gate for organization decisions.
-                or classification.document_role == "codigo"
             )
             else "classified"
         )

@@ -1540,8 +1540,8 @@ def restart_state_publication_checkpoint(
         raise ValueError("expected_epoch must be a non-negative integer")
     heads = _owner_heads(owner_heads)
     owners = _owners(tuple(head.owner for head in heads))
-    if "semantic" not in owners or not set(owners) <= {"semantic", "code"}:
-        raise ValueError("restart checkpoint requires Semantic and optional Code heads")
+    if owners != ("semantic",):
+        raise ValueError("restart checkpoint requires the Semantic owner only")
     operation = "framework-all-restart-checkpoint"
     digest = _idempotency_digest(
         operation,

@@ -301,7 +301,6 @@ ROUTE_CAPABILITY_NAMES = (
     "audio",
     "video",
     "image",
-    "code",
 )
 
 CAPABILITY_SPECS: Mapping[str, RuntimeCapabilitySpec] = MappingProxyType(
@@ -485,10 +484,6 @@ CAPABILITY_SPECS: Mapping[str, RuntimeCapabilitySpec] = MappingProxyType(
                 ),
             ),
             extra="image",
-        ),
-        "code": RuntimeCapabilitySpec(
-            "code",
-            _with_base(),
         ),
         "semantic": RuntimeCapabilitySpec(
             "semantic",

@@ -58,11 +58,11 @@ def _identifier_for(
     )
 
 
-def test_planner_combines_exact_lexical_semantic_and_structural_signals() -> None:
+def test_planner_combines_exact_lexical_semantic_and_catalog_signals() -> None:
     query = KnowledgeQuery(
-        text=r"C:\Corpus\Área #1\control.py serial SN-2048 control.validate",
+        text=r"C:\Corpus\Área #1\control.pdf serial SN-2048",
         retrieval_mode=RetrievalMode.EVIDENCE,
-        source_kinds=("code", "pdf", "code"),
+        source_kinds=("pdf", "pdf"),
         project="Subestación Norte",
         limit=12,
         max_per_resource=3,
@@ -74,22 +74,14 @@ def test_planner_combines_exact_lexical_semantic_and_structural_signals() -> Non
     assert first == second
     assert first.plan_id == second.plan_id
     assert first.plan_id.startswith("knowledge-plan-v2:")
-    assert first.source_kinds == ("code", "pdf")
+    assert first.source_kinds == ("pdf",)
     assert _semantic_steps(first) == (("semantic_text", True),)
-    assert {step.channel for step in first.steps} >= {
-        "exact",
-        "lexical",
-        "semantic",
-        "structural_code",
-        "catalog",
-    }
+    assert {step.channel for step in first.steps} >= {"exact", "lexical", "semantic", "catalog"}
     assert "path" in first.intents
     assert "identifier" in first.intents
-    assert "symbol" in first.intents
-    assert r"C:\Corpus\Área #1\control.py" in first.exact_terms
+    assert r"C:\Corpus\Área #1\control.pdf" in first.exact_terms
     assert any("SN-2048" in value for value in first.exact_terms)
     assert first.to_dict()["schema_version"] == 1
-
 
 def test_discovery_v3_declares_optional_title_without_changing_evidence_v2() -> None:
     discovery = plan_knowledge_query(
@@ -163,14 +155,12 @@ def test_standalone_exact_identifier_routes_to_published_catalog() -> None:
         r"\\server\share\a.pdf",
     ),
 )
-def test_path_spans_are_exact_inventory_cues_not_code_cues(path: str) -> None:
+def test_path_spans_are_exact_inventory_cues(path: str) -> None:
     plan = plan_knowledge_query(KnowledgeQuery(f"Busca {path}, compáralo"))
     channels = {step.channel for step in plan.steps}
 
     assert plan.exact_terms == (path,)
     assert {"exact", "catalog"} <= channels
-    assert "structural_code" not in channels
-    assert "symbol" not in plan.intents
 
 
 @pytest.mark.parametrize(
@@ -223,39 +213,23 @@ def test_full_file_names_preserve_safe_spaces_and_punctuation(
 
     assert plan.exact_terms == (expected,)
     assert "name" in plan.intents
-    assert "symbol" not in plan.intents
-    assert "structural_code" not in {step.channel for step in plan.steps}
 
 
-def test_file_name_leader_does_not_swallow_serial_or_symbol_cues() -> None:
-    plan = plan_knowledge_query(
-        KnowledgeQuery("find serial SN-2048 symbol control.validate")
-    )
-
-    assert plan.exact_terms == ("serial SN-2048", "control.validate")
-    assert "symbol" in plan.intents
-    assert "structural_code" in {step.channel for step in plan.steps}
-
-
-def test_arbitrary_file_extensions_are_names_without_code_evidence() -> None:
+def test_arbitrary_file_extensions_are_names() -> None:
     plan = plan_knowledge_query(KnowledgeQuery("manual.dwg archive.zip"))
 
     assert plan.exact_terms == ("manual.dwg", "archive.zip")
     assert "name" in plan.intents
-    assert "symbol" not in plan.intents
-    assert "structural_code" not in {step.channel for step in plan.steps}
 
 
 def test_exact_terms_preserve_surface_order_across_grammars() -> None:
     plan = plan_knowledge_query(
         KnowledgeQuery(
             "C:/docs/a.py SN-2048 control.validate",
-            source_kinds=("code",),
-        )
+            )
     )
 
     assert plan.exact_terms == ("C:/docs/a.py", "SN-2048", "control.validate")
-    assert "symbol" in plan.intents
 
 
 @pytest.mark.parametrize("serial", ("SN-2048", "S/N 2048", "serial:ABC-9"))
@@ -273,8 +247,6 @@ def test_serial_prefix_substrings_are_not_serial_cues(text: str) -> None:
     plan = plan_knowledge_query(KnowledgeQuery(text))
 
     assert "path" not in plan.intents
-    assert "symbol" not in plan.intents
-    assert "structural_code" not in {step.channel for step in plan.steps}
 
 
 def test_exact_term_limit_is_enforced_before_retrieval() -> None:
@@ -291,7 +263,6 @@ def test_planner_records_temporal_relational_and_explicit_history() -> None:
         KnowledgeQuery(
             text="¿Qué función importa y depende del módulo protección en 2025?",
             include_history=True,
-            source_kinds=("code",),
             retrieval_mode=RetrievalMode.DISCOVERY,
         )
     )
@@ -302,65 +273,11 @@ def test_planner_records_temporal_relational_and_explicit_history() -> None:
     assert steps.keys() >= {
         "relational",
         "temporal",
-        "structural_code",
     }
     assert plan.include_history
-    assert not steps["lexical"].required
-    assert steps["structural_code"].required
+    assert steps["lexical"].required
     assert steps["relational"].required
     assert steps["temporal"].required
-
-
-def test_code_local_calls_and_imports_do_not_require_cross_owner_relations() -> None:
-    plan = plan_knowledge_query(
-        KnowledgeQuery(
-            "¿Qué función llama e importa control.validate?",
-            source_kinds=("code",),
-        )
-    )
-    steps = {step.channel: step for step in plan.steps}
-
-    assert "structural_code" in steps
-    assert steps["structural_code"].required
-    assert not steps["lexical"].required
-    assert "relational" not in steps
-
-
-def test_code_only_bare_identifier_does_not_plan_catalog() -> None:
-    plan = plan_knowledge_query(
-        KnowledgeQuery(
-            "definition calculate_breaker",
-            source_kinds=("code",),
-        )
-    )
-    steps = {step.channel: step for step in plan.steps}
-
-    assert steps["structural_code"].required
-    assert not steps["lexical"].required
-    assert _semantic_steps(plan) == (("semantic_text", True),)
-    assert "catalog" not in steps
-
-
-@pytest.mark.parametrize("code_format", ("py", "rs", "rust", "typescript"))
-def test_code_format_routes_bare_identifier_to_structural_search(
-    code_format: str,
-) -> None:
-    plan = plan_knowledge_query(
-        KnowledgeQuery("calculate_breaker", formats=(code_format,))
-    )
-    steps = {step.channel: step for step in plan.steps}
-
-    assert steps["structural_code"].required
-    assert not steps["lexical"].required
-    assert _semantic_steps(plan) == (("semantic_text", True),)
-    assert "catalog" not in steps
-
-
-def test_reference_word_routes_bare_symbol_to_structural_search() -> None:
-    plan = plan_knowledge_query(KnowledgeQuery("KnowledgeSnapshot create references"))
-    steps = {step.channel: step for step in plan.steps}
-
-    assert steps["structural_code"].required
 
 
 def test_project_membership_word_is_a_cross_owner_relation_cue() -> None:
@@ -786,11 +703,11 @@ def test_plan_json_is_stable_for_unicode_filters() -> None:
         '"limit":20,"max_per_resource":3,"max_vectors":500000,'
         '"min_section_distance":128,"normalized_query":"transformador código '
         'IEC-61850","plan_id":"knowledge-plan-v2:'
-        '2d1f8e4ab95ce9e8c93af8a83f03de3d","project":"Área eléctrica",'
+        'd1f0078943dee03680ee6d55e8b899ee","project":"Área eléctrica",'
         '"retrieval_mode":"evidence","schema_version":1,"source_kinds":[],'
         '"steps":[{"candidate_limit":60,"channel":"exact",'
         '"ranking_name":"exact_identifiers","reason":"query contains exact path, '
-        'identifier, hash, serial or symbol syntax","required":true},'
+        'identifier, hash or serial syntax","required":true},'
         '{"candidate_limit":60,"channel":"lexical","ranking_name":"owner_fts",'
         '"reason":"exact lexical evidence is available from owner FTS indexes",'
         '"required":true},{"candidate_limit":60,"channel":"semantic",'
@@ -806,12 +723,12 @@ def test_plan_json_is_stable_for_unicode_filters() -> None:
 
     assert plan.formats == ("pdf", "docx")
     expected_plan_id = (
-        "knowledge-plan-v2:2d1f8e4ab95ce9e8c93af8a83f03de3d"
+        "knowledge-plan-v2:d1f0078943dee03680ee6d55e8b899ee"
         if HASH_ALGORITHM_128 == "xxh3-128"
         else plan.plan_id
     )
     expected_json = expected_json.replace(
-        '"plan_id":"knowledge-plan-v2:2d1f8e4ab95ce9e8c93af8a83f03de3d"',
+        '"plan_id":"knowledge-plan-v2:d1f0078943dee03680ee6d55e8b899ee"',
         f'"plan_id":"{expected_plan_id}"',
     )
     assert plan.plan_id == expected_plan_id

@@ -45,9 +45,6 @@ class ModularParserTests(unittest.TestCase):
         parser = build_parser()
         for option in (
             "--self-analysis",
-            "--code-validate-change",
-            "--code-review",
-            "--code-experiment-run",
             "--deep-test-selector",
         ):
             with self.subTest(option=option):

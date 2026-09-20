@@ -98,34 +98,6 @@ def test_builtin_workload_estimate_applies_mime_size_and_count_filters(tmp_path:
     assert estimate == (1, 9)
 
 
-def test_code_only_execution_does_not_materialize_route_candidates(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "root"
-    state_directory = tmp_path / "state"
-    root.mkdir()
-    (root / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
-    (root / "module.py").write_text("def fixture():\n    return True\n", encoding="utf-8")
-
-    def unexpected_snapshot(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("Code-only execution must not create a candidate snapshot")
-
-    monkeypatch.setattr(FrameworkState, "route_candidate_snapshot", unexpected_snapshot)
-    result = FrameworkOrchestrator(
-        FrameworkConfig(
-            root=root,
-            state_directory=state_directory,
-            route="code",
-            code_candidate_scope="projects",
-            code_project_roots=(root,),
-            global_min_free_memory_bytes=0,
-            global_min_free_commit_bytes=0,
-        )
-    ).run_initial()
-
-    assert result.code is not None
-    assert result.code.candidates == 2
 
 
 def test_semantic_only_resume_creates_no_content_route_run(tmp_path: Path) -> None:

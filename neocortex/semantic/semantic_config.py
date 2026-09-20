@@ -45,7 +45,6 @@ TEXT_RETRIEVAL_CALIBRATION_BACKEND = "fastembed"
 TEXT_RETRIEVAL_SCORE_FLOORS = (
     ("archive", 0.42),
     ("audio", 0.42),
-    ("code", 0.42),
     ("docx", 0.42),
     ("image", 0.42),
     ("odt", 0.42),

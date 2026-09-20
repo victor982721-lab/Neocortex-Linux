@@ -113,7 +113,6 @@ _EXPECTED_PRIVATE_SIGNATURES = {
 
 _REASONS = {
     "catalog_metadata": "exact identifiers or explicit filters require owner metadata",
-    "code_structural": "query contains code or symbol structure",
     "owner_fts": "exact lexical evidence is available from owner FTS indexes",
     "published_history": "query requests history, vigency or a temporal boundary",
     "semantic_image": "semantic image retrieval covers compatible visual evidence",
@@ -122,7 +121,6 @@ _REASONS = {
 
 _CHANNELS = {
     "catalog_metadata": "catalog",
-    "code_structural": "structural_code",
     "owner_fts": "lexical",
     "published_history": "temporal",
     "semantic_image": "semantic",
@@ -184,21 +182,6 @@ _PLAN_CASES = (
             ("catalog_metadata", 60, True),
         ),
         id="text",
-    ),
-    pytest.param(
-        KnowledgeQuery(
-            "definition calculate_breaker",
-            source_kinds=("code",),
-            limit=7,
-        ),
-        "knowledge-plan-v2:4a93ddc1e3fa5a32359ac7feca22946d",
-        ("lexical", "semantic", "structural", "filtered"),
-        (
-            ("owner_fts", 21, False),
-            ("semantic_text", 21, True),
-            ("code_structural", 21, True),
-        ),
-        id="code",
     ),
     pytest.param(
         KnowledgeQuery(
@@ -414,11 +397,6 @@ print(
         "neocortex.foundation",
         "neocortex.foundation.hash_compat",
         "neocortex.knowledge.knowledge_planner",
-            "neocortex.code",
-            "neocortex.code.code_contracts",
-            "neocortex.code.code_retention",
-            "neocortex.code.ingestion",
-            "neocortex.code.ingestion.code_detection",
         "neocortex.deduplication",
         "neocortex.deduplication.domain",
         "neocortex.deduplication.domain.errors",

@@ -58,10 +58,10 @@ def _snapshot(marker: str) -> KnowledgeSnapshot:
         captured_monotonic_ns=1,
         owners=(
             OwnerSnapshot(
-                "code",
+                "pdf",
                 OwnerAvailability.AVAILABLE,
-                2,
-                2,
+                11,
+                11,
                 watermarks=(LogicalWatermark("fixture", marker),),
             ),
             OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
@@ -72,10 +72,10 @@ def _snapshot(marker: str) -> KnowledgeSnapshot:
 def _hit(marker: str) -> KnowledgeHit:
     resource = ResourceRef(
         resource_id=f"resource:{marker}",
-        source_kind="code",
-        owner="code",
+        source_kind="pdf",
+        owner="pdf",
         physical_identity=PhysicalIdentityRef("fixture", marker, 1),
-        current_path=f"C:/fixture/{marker}.py",
+        current_path=f"C:/fixture/{marker}.pdf",
     )
     revision = RevisionRef(
         resource_id=resource.resource_id,
@@ -89,10 +89,10 @@ def _hit(marker: str) -> KnowledgeHit:
         evidence_id=f"evidence:{marker}",
         resource_id=resource.resource_id,
         revision_id=revision.revision_id,
-        method=EvidenceMethod.STRUCTURAL,
+        method=EvidenceMethod.EXTRACTED,
         start_line=1,
         end_line=1,
-        section_kind="code_symbol",
+        section_kind="pdf_page",
         section_id=marker,
         snippet=marker,
     )
@@ -226,11 +226,13 @@ def test_second_identity_change_returns_latest_hits_as_observable_partial(
     assert result.hits[0].evidence.evidence_id == "evidence:2"
     assert not result.complete
     assert result.snapshot.consistency is SnapshotConsistency.SNAPSHOT_CHANGED
-    assert result.snapshot.owners[0].identity_changed
-    assert result.snapshot.owners[0].watermarks == three.owners[0].watermarks
-    assert result.snapshot.owners[0].data_version_before is None
-    assert result.snapshot.owners[0].data_version_after is None
-    assert not result.snapshot.owners[1].identity_changed
+    owners = {owner.owner: owner for owner in result.snapshot.owners}
+    assert owners["pdf"].identity_changed
+    expected_pdf = {owner.owner: owner for owner in three.owners}["pdf"]
+    assert owners["pdf"].watermarks == expected_pdf.watermarks
+    assert owners["pdf"].data_version_before is None
+    assert owners["pdf"].data_version_after is None
+    assert not owners["inventory"].identity_changed
     assert "snapshot_changed_during_query" in result.warnings
     assert any(warning.startswith("snapshot_after:") for warning in result.warnings)
 

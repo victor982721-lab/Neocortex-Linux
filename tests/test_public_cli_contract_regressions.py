@@ -23,13 +23,6 @@ from neocortex.api.read_contract import ReadOperation, validate_read_payload
             "relay",
             10,
         ),
-        (
-            ("inspect", "code", "relay", "--json"),
-            ReadOperation.INSPECT_CODE,
-            "personal",
-            "relay",
-            10,
-        ),
     ),
 )
 def test_read_value_error_emits_typed_json_and_exit_two(
@@ -44,7 +37,6 @@ def test_read_value_error_emits_typed_json_and_exit_two(
     producer = {
         ReadOperation.SEARCH: "search_payload",
         ReadOperation.CONTEXT: "context_payload",
-        ReadOperation.INSPECT_CODE: "code_search_payload",
     }[operation]
 
     def reject(*_args: object, **_kwargs: object) -> object:
@@ -61,8 +53,8 @@ def test_read_value_error_emits_typed_json_and_exit_two(
         operation,
         scope=scope,
         query=query,
-        mode="evidence" if operation is not ReadOperation.INSPECT_CODE else None,
-        include_history=False if operation is not ReadOperation.INSPECT_CODE else None,
+        mode="evidence",
+        include_history=False,
         limit=limit,
     )
     assert payload["exit_code"] == 2
@@ -111,7 +103,6 @@ def test_review_value_error_emits_the_review_contract(
             "context_payload",
             "Neocortex ask --help",
         ),
-        (("inspect", "code", "relay"), "code_search_payload", "Neocortex inspect code --help"),
     ),
 )
 def test_read_value_error_text_is_actionable_and_traceback_free(
@@ -155,7 +146,6 @@ def test_blank_search_query_is_handled_before_state_lookup(
     (
         (("help", "status"), "usage: Neocortex status"),
         (("help", "curate", "plan"), "usage: Neocortex curate plan"),
-        (("help", "inspect", "code"), "usage: Neocortex inspect code"),
     ),
 )
 def test_contextual_help_reuses_the_canonical_subparser(

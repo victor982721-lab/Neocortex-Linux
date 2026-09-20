@@ -15,7 +15,6 @@ import pytest
 import neocortex.runtime.config.application_config_projections as projections
 from neocortex.api.public import ApplicationConfig, FrameworkConfig
 from neocortex.capabilities.formats.audio.models import AudioRouteConfig
-from neocortex.code.code_contracts import CodeRouteConfig
 from neocortex.capabilities.formats.docx.models import DocxRouteConfig
 from neocortex.runtime.control.global_resources import GlobalResourceLimits
 from neocortex.capabilities.formats.image.contracts import ImageRouteConfig
@@ -67,7 +66,7 @@ def test_capability_selection_stops_after_universe_plus_one() -> None:
 
 def test_capability_selection_preserves_duplicate_and_unknown_errors() -> None:
     with pytest.raises(ValueError, match="cannot be duplicated"):
-        inspect_runtime_capabilities(("code", "code"))
+        inspect_runtime_capabilities(("image", "image"))
 
     with pytest.raises(
         ValueError,
@@ -77,12 +76,11 @@ def test_capability_selection_preserves_duplicate_and_unknown_errors() -> None:
 
 
 def test_capability_selection_preserves_explicit_and_default_order() -> None:
-    explicit = _inspect_available(("image", "code", "docx"))
+    explicit = _inspect_available(("image", "docx"))
     default = _inspect_available()
 
     assert tuple(status.capability for status in explicit) == (
         "image",
-        "code",
         "docx",
     )
     assert tuple(status.capability for status in default) == tuple(CAPABILITY_SPECS)
@@ -98,7 +96,6 @@ def test_capability_selection_preserves_explicit_and_default_order() -> None:
     ("projection", "expected_return"),
     (
         (projections.audio_route_config_from_application, AudioRouteConfig),
-        (projections.code_route_config_from_application, CodeRouteConfig),
         (projections.docx_route_config_from_application, DocxRouteConfig),
         (
             projections.global_resource_limits_from_application,
@@ -133,7 +130,6 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "neocortex.capabilities.formats.archive.route",
             "neocortex.capabilities.formats.archive.route",
             "neocortex.capabilities.formats.audio.models",
-            "neocortex.code.code_contracts",
             "neocortex.capabilities.formats.docx.models",
             "neocortex.capabilities.formats.docx.models",
             "neocortex.runtime.control.global_resources",
@@ -151,7 +147,6 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
         if tuple(projections.__all__) != (
             "archive_route_config_from_application",
             "audio_route_config_from_application",
-            "code_route_config_from_application",
             "docx_route_config_from_application",
             "global_resource_limits_from_application",
             "image_route_config_from_application",

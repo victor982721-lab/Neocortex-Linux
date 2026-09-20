@@ -125,7 +125,6 @@ def _snapshot() -> KnowledgeSnapshot:
         "office": 1,
         "audio": 1,
         "semantic": 6,
-        "code": 2,
         "catalog": 6,
         "inventory": 7,
     }

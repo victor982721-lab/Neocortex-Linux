@@ -132,7 +132,6 @@ def build_execution_page(window: Any) -> QWidget:
         "audio": "Audio",
         "video": "Video",
         "image": "Imágenes",
-        "code": "Código",
     }
     window.route_toggles = {}
     for index, route in enumerate(ROUTE_ORDER):

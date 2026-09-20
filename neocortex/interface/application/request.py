@@ -43,7 +43,6 @@ _ROUTE_LIMIT_FLAGS = {
     "audio": "--audio-max-count",
     "video": "--video-max-count",
     "image": "--image-max-count",
-    "code": "--code-max-count",
 }
 
 

@@ -7,7 +7,6 @@ honours a hard Unicode-codepoint budget without silently cutting citations.
 
 from __future__ import annotations
 import json
-import math
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -170,366 +169,6 @@ class _ContextGraphAccumulator:
         _append_unique(relation.evidence_ids, evidence_id)
 
 
-@dataclass(frozen=True, slots=True)
-class _CodeRelationIdentifiers:
-    family: str
-    relation_id: str
-    relation_kind: str
-    relation_name: str
-    source_resource: str
-    target_resource: str
-    resolved: str
-    confirmed: str
-    confidence: str
-    provenance: str
-
-
-@dataclass(frozen=True, slots=True)
-class _ValidatedCodeRelation:
-    source_resource: str
-    target_resource: str
-    relation_kind: str
-    method: EvidenceMethod
-    provenance: tuple[str, ...]
-    confidence: float
-
-
-_CODE_RELATION_SOURCE_TABLES = {
-    "reference": "code_references",
-    "dependency": "dependencies",
-}
-_CODE_RELATION_OPTIONAL_PROVENANCE = (
-    "code_relation_scope",
-    "code_relation_version_spec",
-)
-
-
-def _json_string(value: str) -> str:
-    return json.dumps(value, ensure_ascii=False, allow_nan=False)
-
-
-def _normalize_snippet(snippet: str | None) -> str | None:
-    if snippet is None:
-        return None
-    normalized = " ".join(snippet.split())
-    return normalized or None
-
-
-def _clip_visible(value: str, limit: int = MAX_NOTICE_CHARACTERS) -> str:
-    normalized = " ".join(value.split())
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[: limit - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
-
-
-def _locator_payload(evidence: EvidenceRef) -> dict[str, object]:
-    locator: dict[str, object] = {}
-    for name in (
-        "page",
-        "start_line",
-        "end_line",
-        "sheet",
-        "cell_range",
-        "start_ms",
-        "end_ms",
-        "coordinate_space",
-        "start_char",
-        "end_char",
-        "symbol",
-        "section_kind",
-        "section_id",
-        "generation",
-    ):
-        value = getattr(evidence, name)
-        if value is not None:
-            locator[name] = value
-    if evidence.bounding_box is not None:
-        locator["bounding_box"] = list(evidence.bounding_box)
-    if evidence.identifiers:
-        locator["identifiers"] = [
-            {"namespace": namespace, "value": value} for namespace, value in evidence.identifiers
-        ]
-    return locator
-
-
-def _citation_target(hit: KnowledgeHit) -> dict[str, object]:
-    provenance: dict[str, object] = {
-        "evidence_method": hit.evidence.method.value,
-    }
-    for name in ("extractor", "extractor_version", "generation"):
-        value = getattr(hit.evidence, name)
-        if value is not None:
-            provenance[name] = value
-    target: dict[str, object] = {
-        "evidence_id": hit.evidence.evidence_id,
-        "locator": _locator_payload(hit.evidence),
-        "owner": hit.resource.owner,
-        "processing_signature": hit.revision.processing_signature,
-        "provenance": provenance,
-        "resource_id": hit.resource.resource_id,
-        "revision_state": hit.revision.state.value,
-        "revision_id": hit.revision.revision_id,
-        "source_kind": hit.resource.source_kind,
-    }
-    if hit.resource.current_path is not None:
-        target["current_path"] = hit.resource.current_path
-    if hit.resource.disposition is not None:
-        target["resource_disposition"] = hit.resource.disposition.value
-    if hit.revision.generation is not None:
-        target["revision_generation"] = hit.revision.generation
-    if hit.revision.observed_at_utc is not None:
-        target["revision_observed_at_utc"] = hit.revision.observed_at_utc
-    return target
-
-
-def _render_entry(entry: _ContextEntry) -> str:
-    reason_payload: dict[str, object] = {
-        "reasons": list(entry.hit.reasons),
-        "retrieval_rank": entry.hit.rank,
-    }
-    return "\n".join(
-        (
-            f"[{entry.citation_id}] target={canonical_json(_citation_target(entry.hit))}",
-            f"why={canonical_json(reason_payload)}",
-            f"snippet={entry.rendered_snippet}",
-        )
-    )
-
-
-def _new_entry(citation_id: str, hit: KnowledgeHit) -> _ContextEntry:
-    snippet = _normalize_snippet(hit.evidence.snippet)
-    if snippet is None:
-        return _ContextEntry(
-            citation_id=citation_id,
-            hit=hit,
-            normalized_snippet=None,
-            snippet_state="unavailable",
-            rendered_snippet="[not available from owner]",
-        )
-    return _ContextEntry(
-        citation_id=citation_id,
-        hit=hit,
-        normalized_snippet=snippet,
-        snippet_state="budget_omitted",
-        rendered_snippet="[omitted: character budget]",
-    )
-
-
-def _ordered_unique_hits(
-    hits: tuple[KnowledgeHit, ...],
-) -> tuple[tuple[KnowledgeHit, ...], int]:
-    bounded = hits[:MAX_CONTEXT_INPUT_HITS]
-    ordered = sorted(
-        bounded,
-        key=lambda hit: (
-            hit.rank,
-            hit.resource.resource_id,
-            hit.revision.revision_id,
-            hit.evidence.evidence_id,
-        ),
-    )
-    result: list[KnowledgeHit] = []
-    seen: set[str] = set()
-    for hit in ordered:
-        key = hit.evidence.evidence_id
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(hit)
-    omitted_as_duplicate_or_overflow = len(hits) - len(result)
-    return tuple(result), omitted_as_duplicate_or_overflow
-
-
-def _append_unique(values: list[str], value: str) -> None:
-    if value not in values:
-        values.append(value)
-
-
-def _stable_graph_id(prefix: str, identity: dict[str, object]) -> str:
-    fingerprint = fingerprint_text(canonical_json(identity))
-    return (
-        f"{prefix}-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
-    )
-
-
-def _identifiers_by_namespace(
-    identifiers: tuple[tuple[str, str], ...],
-) -> dict[str, list[str]]:
-    grouped: dict[str, list[str]] = {}
-    for namespace, value in identifiers:
-        grouped.setdefault(namespace.casefold(), []).append(value)
-    return grouped
-
-
-def _single_identifier(
-    identifiers_by_namespace: dict[str, list[str]],
-    namespace: str,
-) -> str | None:
-    values = identifiers_by_namespace.get(namespace)
-    if values is None or len(values) != 1:
-        return None
-    return values[0]
-
-
-def _required_code_relation_identifiers(
-    identifiers_by_namespace: dict[str, list[str]],
-) -> _CodeRelationIdentifiers | None:
-    family = _single_identifier(identifiers_by_namespace, "code_relation_family")
-    relation_id = _single_identifier(identifiers_by_namespace, "code_relation_id")
-    relation_kind = _single_identifier(identifiers_by_namespace, "code_relation_kind")
-    relation_name = _single_identifier(identifiers_by_namespace, "code_relation_name")
-    source_resource = _single_identifier(
-        identifiers_by_namespace,
-        "code_relation_source_resource",
-    )
-    target_resource = _single_identifier(
-        identifiers_by_namespace,
-        "code_relation_target_resource",
-    )
-    resolved = _single_identifier(identifiers_by_namespace, "code_relation_resolved")
-    confirmed = _single_identifier(
-        identifiers_by_namespace,
-        "code_relation_confirmed",
-    )
-    confidence = _single_identifier(
-        identifiers_by_namespace,
-        "code_relation_confidence",
-    )
-    provenance = _single_identifier(
-        identifiers_by_namespace,
-        "code_relation_provenance",
-    )
-    if (
-        family is None
-        or relation_id is None
-        or relation_kind is None
-        or relation_name is None
-        or source_resource is None
-        or target_resource is None
-        or resolved is None
-        or confirmed is None
-        or confidence is None
-        or provenance is None
-    ):
-        return None
-    return _CodeRelationIdentifiers(
-        family=family,
-        relation_id=relation_id,
-        relation_kind=relation_kind,
-        relation_name=relation_name,
-        source_resource=source_resource,
-        target_resource=target_resource,
-        resolved=resolved,
-        confirmed=confirmed,
-        confidence=confidence,
-        provenance=provenance,
-    )
-
-
-def _canonical_code_relation_source(section_id: str | None) -> tuple[str, str] | None:
-    if section_id is None:
-        return None
-    source_table, separator, source_row_id = section_id.partition(":")
-    if separator != ":" or not source_row_id.isdecimal():
-        return None
-    if source_row_id != str(int(source_row_id)) or int(source_row_id) < 1:
-        return None
-    return source_table, source_row_id
-
-
-def _parse_code_relation_confirmation(raw_value: str) -> bool | None:
-    normalized = raw_value.casefold()
-    if normalized == "true":
-        return True
-    if normalized == "false":
-        return False
-    return None
-
-
-def _parse_code_relation_confidence(raw_value: str) -> float | None:
-    try:
-        confidence = float(raw_value)
-    except (OverflowError, ValueError):
-        return None
-    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
-        return None
-    return confidence
-
-
-def _validated_code_relation(hit: KnowledgeHit) -> _ValidatedCodeRelation | None:
-    identifiers_by_namespace = _identifiers_by_namespace(hit.evidence.identifiers)
-    identifiers = _required_code_relation_identifiers(identifiers_by_namespace)
-    source = _canonical_code_relation_source(hit.evidence.section_id)
-    if identifiers is None or source is None:
-        return None
-    confirmed = _parse_code_relation_confirmation(identifiers.confirmed)
-    confidence = _parse_code_relation_confidence(identifiers.confidence)
-    if confirmed is None or confidence is None:
-        return None
-    source_table, source_row_id = source
-    method = EvidenceMethod.STRUCTURAL if confirmed is True else EvidenceMethod.INFERRED
-    expected_source_table = _CODE_RELATION_SOURCE_TABLES.get(identifiers.family)
-    consistent = (
-        identifiers.relation_id == hit.evidence.section_id,
-        identifiers.source_resource == hit.resource.resource_id,
-        identifiers.target_resource != identifiers.source_resource,
-        identifiers.resolved.casefold() == "true",
-        source_table == expected_source_table,
-        hit.evidence.method is method,
-    )
-    if not all(consistent):
-        return None
-    provenance = [
-        f"code:{source_table}:{source_row_id}",
-        f"analyzer:{identifiers.provenance}",
-        f"name:{identifiers.relation_name}",
-    ]
-    for namespace in _CODE_RELATION_OPTIONAL_PROVENANCE:
-        optional_value = _single_identifier(identifiers_by_namespace, namespace)
-        if optional_value is not None:
-            provenance.append(f"{namespace}:{optional_value}")
-    return _ValidatedCodeRelation(
-        source_resource=identifiers.source_resource,
-        target_resource=identifiers.target_resource,
-        relation_kind=f"code_{identifiers.family}:{identifiers.relation_kind}",
-        method=method,
-        provenance=tuple(provenance),
-        confidence=confidence,
-    )
-
-
-def _accumulate_code_relation(
-    graph: _ContextGraphAccumulator,
-    hit: KnowledgeHit,
-) -> None:
-    relation = _validated_code_relation(hit)
-    if relation is None:
-        return
-    evidence_id = hit.evidence.evidence_id
-    resource_id = hit.resource.resource_id
-    source_key = graph.add_entity(
-        entity_kind="resource",
-        label=relation.source_resource,
-        evidence_id=evidence_id,
-        resource_id=resource_id,
-    )
-    target_key = graph.add_entity(
-        entity_kind="resource_reference",
-        label=relation.target_resource,
-        evidence_id=evidence_id,
-        resource_id=relation.target_resource,
-    )
-    graph.add_relation(
-        source_key=source_key,
-        target_key=target_key,
-        relation_kind=relation.relation_kind,
-        method=relation.method,
-        provenance=relation.provenance,
-        confidence=relation.confidence,
-        evidence_id=evidence_id,
-    )
-
-
 def _accumulate_entry_identifiers(
     graph: _ContextGraphAccumulator,
     hit: KnowledgeHit,
@@ -538,10 +177,6 @@ def _accumulate_entry_identifiers(
     resource_id = hit.resource.resource_id
     for namespace, value in hit.evidence.identifiers:
         normalized_namespace = namespace.casefold()
-        if hit.evidence.section_kind == "code_relation" and normalized_namespace.startswith(
-            "code_relation_"
-        ):
-            continue
         if normalized_namespace != "planned_duplicate_of":
             graph.add_entity(
                 entity_kind=f"identifier:{namespace}",
@@ -578,15 +213,6 @@ def _accumulate_context_entry(
     entry: _ContextEntry,
 ) -> None:
     hit = entry.hit
-    if hit.evidence.symbol is not None:
-        graph.add_entity(
-            entity_kind="code_symbol",
-            label=hit.evidence.symbol,
-            evidence_id=hit.evidence.evidence_id,
-            resource_id=hit.resource.resource_id,
-        )
-    if hit.evidence.section_kind == "code_relation":
-        _accumulate_code_relation(graph, hit)
     _accumulate_entry_identifiers(graph, hit)
 
 
@@ -660,6 +286,140 @@ def _derive_context_graph(
     entity_ids, entity_refs = _materialize_context_entities(graph.entities)
     relation_refs = _materialize_context_relations(graph.relations, entity_ids)
     return entity_refs, relation_refs
+
+
+def _json_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False, allow_nan=False)
+
+
+def _normalize_snippet(snippet: str | None) -> str | None:
+    if snippet is None:
+        return None
+    normalized = " ".join(snippet.split())
+    return normalized or None
+
+
+def _clip_visible(value: str, limit: int = MAX_NOTICE_CHARACTERS) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+
+
+def _locator_payload(evidence: EvidenceRef) -> dict[str, object]:
+    locator: dict[str, object] = {}
+    for name in (
+        "page",
+        "start_line",
+        "end_line",
+        "sheet",
+        "cell_range",
+        "start_ms",
+        "end_ms",
+        "coordinate_space",
+        "start_char",
+        "end_char",
+        "section_kind",
+        "section_id",
+        "generation",
+    ):
+        value = getattr(evidence, name)
+        if value is not None:
+            locator[name] = value
+    if evidence.bounding_box is not None:
+        locator["bounding_box"] = list(evidence.bounding_box)
+    if evidence.identifiers:
+        locator["identifiers"] = [
+            {"namespace": namespace, "value": value}
+            for namespace, value in evidence.identifiers
+        ]
+    return locator
+
+
+def _citation_target(hit: KnowledgeHit) -> dict[str, object]:
+    provenance: dict[str, object] = {"evidence_method": hit.evidence.method.value}
+    for name in ("extractor", "extractor_version", "generation"):
+        value = getattr(hit.evidence, name)
+        if value is not None:
+            provenance[name] = value
+    target: dict[str, object] = {
+        "evidence_id": hit.evidence.evidence_id,
+        "locator": _locator_payload(hit.evidence),
+        "owner": hit.resource.owner,
+        "processing_signature": hit.revision.processing_signature,
+        "provenance": provenance,
+        "resource_id": hit.resource.resource_id,
+        "revision_state": hit.revision.state.value,
+        "revision_id": hit.revision.revision_id,
+        "source_kind": hit.resource.source_kind,
+    }
+    if hit.resource.current_path is not None:
+        target["current_path"] = hit.resource.current_path
+    if hit.resource.disposition is not None:
+        target["resource_disposition"] = hit.resource.disposition.value
+    if hit.revision.generation is not None:
+        target["revision_generation"] = hit.revision.generation
+    if hit.revision.observed_at_utc is not None:
+        target["revision_observed_at_utc"] = hit.revision.observed_at_utc
+    return target
+
+
+def _render_entry(entry: _ContextEntry) -> str:
+    reason_payload: dict[str, object] = {
+        "reasons": list(entry.hit.reasons),
+        "retrieval_rank": entry.hit.rank,
+    }
+    return "\n".join(
+        (
+            f"[{entry.citation_id}] target={canonical_json(_citation_target(entry.hit))}",
+            f"why={canonical_json(reason_payload)}",
+            f"snippet={entry.rendered_snippet}",
+        )
+    )
+
+
+def _new_entry(citation_id: str, hit: KnowledgeHit) -> _ContextEntry:
+    snippet = _normalize_snippet(hit.evidence.snippet)
+    if snippet is None:
+        return _ContextEntry(citation_id, hit, None, "unavailable", "[not available from owner]")
+    return _ContextEntry(citation_id, hit, snippet, "budget_omitted", "[omitted: character budget]")
+
+
+def _ordered_unique_hits(
+    hits: tuple[KnowledgeHit, ...],
+) -> tuple[tuple[KnowledgeHit, ...], int]:
+    bounded = hits[:MAX_CONTEXT_INPUT_HITS]
+    ordered = sorted(
+        bounded,
+        key=lambda hit: (
+            hit.rank,
+            hit.resource.resource_id,
+            hit.revision.revision_id,
+            hit.evidence.evidence_id,
+        ),
+    )
+    result: list[KnowledgeHit] = []
+    seen: set[str] = set()
+    for hit in ordered:
+        key = hit.evidence.evidence_id
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(hit)
+    return tuple(result), len(hits) - len(result)
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
+
+
+def _stable_graph_id(prefix: str, identity: dict[str, object]) -> str:
+    fingerprint = fingerprint_text(canonical_json(identity))
+    return (
+        f"{prefix}-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:"
+        f"{fingerprint.xxh3_64_guard}"
+    )
 
 
 # endregion [02]

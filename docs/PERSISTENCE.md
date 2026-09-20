@@ -17,7 +17,7 @@ release o modelo.
 Cada tabla admitida declara su rol, fuente de reconstrucción, retención,
 selector de dependencias y frontera de durabilidad. El mapa versionado es único;
 el factory reset no convierte una tabla desconocida en descartable ni cambia la
-autoridad del owner. Los trece SQLite conservan su distribución física y
+autoridad del owner. Los doce SQLite conservan su distribución física y
 Knowledge sigue componiendo snapshots de esos owners.
 
 El factory reset no crea backup, snapshot SQL, plan, digest ni receipt durable
@@ -51,7 +51,6 @@ nombre de base, versión esperada y modo de captura Knowledge:
 | video | `video.sqlite3` |
 | image | `image.sqlite3` |
 | semantic | `semantic.sqlite3` |
-| code | `code.sqlite3` |
 | archive | `archive.sqlite3` |
 | text | `text.sqlite3` |
 
@@ -110,16 +109,6 @@ Dedup lee los metadatos de las pruebas en lotes acotados sobre su misma conexió
 y observaciones TEMP actuales. Los recuentos completos y la procedencia del hash
 se separan de la muestra limitada de alias, sin ordenar todas sus rutas
 ni conservar autoridad después de cambiar el tamaño de candidatos.
-
-Code v9 añade bloques derivados compartidos y manifiestos completos para sus
-generaciones v2. La migración preserva el ledger v1 y los lectores de Knowledge
-aceptan las formas exactas v7/v8 sin migrarlas. La política de lifecycle
-clasifica las seis tablas nuevas como derivadas; los heads y localizadores
-históricos conservan su política operacional y de retención.
-La evidencia de validación de bloques dentro de una publicación es transitoria:
-su presupuesto contabilizado es de 16 MiB y la reutilización exige una nueva
-comparación exacta de filas y tipos. No cambia el esquema, la autoridad de las
-tablas originales, los digests ni la validación de lectores de generaciones.
 
 ## Frontera durable de acciones físicas
 

@@ -59,7 +59,6 @@ class OperationalOwner(StrEnum):
     AUDIO = "audio"
     VIDEO = "video"
     IMAGE = "image"
-    CODE = "code"
     FRAMEWORK = "framework"
     FEDERATED = "federated"
     NONE = "none"

@@ -61,7 +61,6 @@ if TYPE_CHECKING:
     )
     from neocortex.api.read_api import (
         asset_health_payload as asset_health_payload,
-        code_search_payload as code_search_payload,
         context_payload as context_payload,
         evidence_payload as evidence_payload,
         lineage_payload as lineage_payload,
@@ -82,16 +81,6 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary as AudioRouteSummary
     from neocortex.capabilities.formats.audio.route import AudioRoute as AudioRoute
-    from neocortex.code.code_contracts import CodeRelationEndpoint as CodeRelationEndpoint
-    from neocortex.code.code_contracts import CodeRouteConfig as CodeRouteConfig
-    from neocortex.code.code_contracts import CodeRouteSummary as CodeRouteSummary
-    from neocortex.code.code_contracts import CodeSearchHit as CodeSearchHit
-    from neocortex.code.code_contracts import CodeSearchQuery as CodeSearchQuery
-    from neocortex.code.code_contracts import CodeSearchRelation as CodeSearchRelation
-    from neocortex.code.ingestion.code_projects import list_projects as list_projects
-    from neocortex.code.ingestion.code_projects import reconstruct_project as reconstruct_project
-    from neocortex.code.code_route import CodeRoute as CodeRoute
-    from neocortex.code.search.code_search import search_code as search_code
     from neocortex.platform.content_types import DetectedType as DetectedType
     from neocortex.platform.content_types import detect_content_type as detect_content_type
     from neocortex.capabilities.formats.docx.route import DocxRoute as DocxRoute
@@ -239,13 +228,6 @@ __all__ = [  # noqa: RUF022
     "CurationScanOutput",
     "CurationSourceHead",
     "CurationVerifyOutput",
-    "CodeRelationEndpoint",
-    "CodeRoute",
-    "CodeRouteConfig",
-    "CodeRouteSummary",
-    "CodeSearchHit",
-    "CodeSearchQuery",
-    "CodeSearchRelation",
     "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "DetectedType",
     "DerivationRef",
@@ -295,9 +277,6 @@ __all__ = [  # noqa: RUF022
     "StageDescriptor",
     "detect_content_type",
     "verify_pdf_state",
-    "list_projects",
-    "reconstruct_project",
-    "search_code",
     "curation_plan_payload",
     "curation_review_payload",
     "curation_decide_payload",
@@ -320,7 +299,6 @@ __all__ = [  # noqa: RUF022
     "evidence_payload",
     "operational_query_payload",
     "asset_health_payload",
-    "code_search_payload",
     "lineage_payload",
     "knowledge_search_projection_payload",
     "ContextBundle",
@@ -431,13 +409,6 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "AudioRouteConfig": ("neocortex.capabilities.formats.audio.models", "AudioRouteConfig"),
     "AudioRouteSummary": ("neocortex.capabilities.formats.audio.models", "AudioRouteSummary"),
     "CapabilityFailure": ("neocortex.semantic.derivation_contracts", "CapabilityFailure"),
-    "CodeRelationEndpoint": ("neocortex.code.code_contracts", "CodeRelationEndpoint"),
-    "CodeRoute": ("neocortex.code.code_route", "CodeRoute"),
-    "CodeRouteConfig": ("neocortex.code.code_contracts", "CodeRouteConfig"),
-    "CodeRouteSummary": ("neocortex.code.code_contracts", "CodeRouteSummary"),
-    "CodeSearchHit": ("neocortex.code.code_contracts", "CodeSearchHit"),
-    "CodeSearchQuery": ("neocortex.code.code_contracts", "CodeSearchQuery"),
-    "CodeSearchRelation": ("neocortex.code.code_contracts", "CodeSearchRelation"),
     "DERIVATION_CONTRACT_SCHEMA_VERSION": (
         "neocortex.semantic.derivation_contracts",
         "DERIVATION_CONTRACT_SCHEMA_VERSION",
@@ -514,9 +485,6 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "StageDescriptor": ("neocortex.semantic.derivation_contracts", "StageDescriptor"),
     "detect_content_type": ("neocortex.platform.content_types", "detect_content_type"),
     "verify_pdf_state": ("neocortex.capabilities.formats.pdf.pdf_admin", "verify_pdf_state"),
-    "list_projects": ("neocortex.code.ingestion.code_projects", "list_projects"),
-    "reconstruct_project": ("neocortex.code.ingestion.code_projects", "reconstruct_project"),
-    "search_code": ("neocortex.code.search.code_search", "search_code"),
     "CONTENT_DIAGNOSTICS_SCHEMA": (
         "neocortex.api.content_diagnostics_api",
         "CONTENT_DIAGNOSTICS_SCHEMA",
@@ -615,7 +583,6 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "operational_query_payload",
     ),
     "asset_health_payload": ("neocortex.api.read_api", "asset_health_payload"),
-    "code_search_payload": ("neocortex.api.read_api", "code_search_payload"),
     "lineage_payload": ("neocortex.api.read_api", "lineage_payload"),
     "knowledge_search_projection_payload": (
         "neocortex.api.read_api",

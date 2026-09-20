@@ -52,7 +52,6 @@ def _snapshot(*, catalog_heads: bool = True) -> KnowledgeSnapshot:
             OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
             OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
             OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-            OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
             OwnerSnapshot(
                 "catalog",
                 OwnerAvailability.AVAILABLE,

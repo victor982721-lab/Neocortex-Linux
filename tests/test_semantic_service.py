@@ -1643,16 +1643,11 @@ def test_text_retrieval_calibration_abstains_below_exact_owner_floors() -> None:
         source_kind="pdf",
         score=0.419999,
     )
-    code_hit, code_resolved = _calibrated_ranking_hit(
-        2,
-        source_kind="code",
-        score=0.419999,
-    )
     ranking = service.SemanticRanking(
         name="semantic_text",
-        hits=(pdf_hit, code_hit),
-        resolved=(pdf_resolved, code_resolved),
-        scanned=2,
+        hits=(pdf_hit,),
+        resolved=(pdf_resolved,),
+        scanned=1,
         complete=True,
     )
 
@@ -1666,11 +1661,10 @@ def test_text_retrieval_calibration_abstains_below_exact_owner_floors() -> None:
     metadata = calibrated.provenance["retrieval_abstention"]
     assert metadata["status"] == "applied"
     assert metadata["query_abstained"] is True
-    assert metadata["rejected_by_source_kind"] == {"pdf": 1, "code": 1}
+    assert metadata["rejected_by_source_kind"] == {"pdf": 1}
     assert metadata["score_floor_by_source_kind"] == {
         "archive": 0.42,
         "audio": 0.42,
-        "code": 0.42,
         "docx": 0.42,
         "image": 0.42,
         "odt": 0.42,
@@ -1783,27 +1777,22 @@ def test_text_retrieval_calibration_keeps_boundaries_and_unknown_contracts() -> 
         source_kind="pdf",
         score=0.42,
     )
-    code_hit, code_resolved = _calibrated_ranking_hit(
-        2,
-        source_kind="code",
-        score=0.42,
-    )
     docx_hit, docx_resolved = _calibrated_ranking_hit(
-        3,
+        2,
         source_kind="docx",
         score=-0.25,
     )
     fixture_hit, fixture_resolved = _calibrated_ranking_hit(
-        4,
+        3,
         source_kind="pdf",
         score=-0.50,
         backend="semantic-service-fixture",
     )
     ranking = service.SemanticRanking(
         name="semantic_text",
-        hits=(pdf_hit, code_hit, docx_hit, fixture_hit),
-        resolved=(pdf_resolved, code_resolved, docx_resolved, fixture_resolved),
-        scanned=4,
+        hits=(pdf_hit, docx_hit, fixture_hit),
+        resolved=(pdf_resolved, docx_resolved, fixture_resolved),
+        scanned=3,
         complete=True,
     )
 
@@ -1812,10 +1801,10 @@ def test_text_retrieval_calibration_keeps_boundaries_and_unknown_contracts() -> 
         selected_model=service.multilingual_text_model(),
     )
 
-    assert calibrated.hits == (pdf_hit, code_hit, fixture_hit)
+    assert calibrated.hits == (pdf_hit, fixture_hit)
     metadata = calibrated.provenance["retrieval_abstention"]
     assert metadata["status"] == "partial"
-    assert metadata["calibrated_hits"] == 3
+    assert metadata["calibrated_hits"] == 2
     assert metadata["uncalibrated_by_reason"] == {
         "backend_not_calibrated": 1,
     }

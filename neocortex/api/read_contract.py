@@ -68,7 +68,6 @@ class ReadOperation(StrEnum):
     SEARCH = "search"
     CONTEXT = "context"
     EVIDENCE = "evidence"
-    INSPECT_CODE = "inspect_code"
     REVIEW = "review"
     LINEAGE = "lineage"
     ASSET_HEALTH = "asset_health"
@@ -116,13 +115,6 @@ READ_OPERATION_DESCRIPTORS: dict[ReadOperation, ReadOperationDescriptor] = {
         ReadOperation.EVIDENCE,
         READ_CONTRACT_SCHEMA,
         "neocortex_evidence",
-        query=True,
-        limit=True,
-    ),
-    ReadOperation.INSPECT_CODE: ReadOperationDescriptor(
-        ReadOperation.INSPECT_CODE,
-        READ_CONTRACT_SCHEMA,
-        "neocortex_scoped_code_search",
         query=True,
         limit=True,
     ),
@@ -224,10 +216,6 @@ class ContextOutput(ReadEnvelopePayload, total=False):
 
 class EvidenceOutput(ReadEnvelopePayload, total=False):
     """Compatibility alias for the evidence envelope."""
-
-
-class CodeSearchOutput(ReadEnvelopePayload, total=False):
-    """Compatibility alias for the code-search envelope."""
 
 
 class ReviewOutput(ReadEnvelopePayload, total=False):
@@ -683,7 +671,6 @@ __all__ = [
     "READ_OPERATION_DESCRIPTORS",
     "VALUE_REVIEW_SCHEMA",
     "AssetHealthOutput",
-    "CodeSearchOutput",
     "ContextOutput",
     "EvidenceOutput",
     "LineageOutput",

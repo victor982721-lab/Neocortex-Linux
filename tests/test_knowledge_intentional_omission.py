@@ -30,7 +30,7 @@ pytestmark = pytest.mark.capability("base", "inference")
 _AMBIGUOUS_REASON = "ambiguous_query_requires_text_evidence"
 _TEXTUAL_REASON = "textual_query_routed_away_from_clip"
 _OWNERS = ("inventory", "framework", "catalog", "pdf", "docx", "office", "audio",
-           "image", "semantic", "code", "archive", "text", "video")
+           "image", "semantic", "archive", "text", "video")
 _OMISSION_JSON = """{
   "name": "semantic_image", "channel": "semantic", "available": true,
   "complete": true, "executed": false, "returned": 0, "rows_scanned": 0,
@@ -51,7 +51,7 @@ def _all_available_snapshot() -> KnowledgeSnapshot:
         captured_monotonic_ns=1,
         owners=tuple(OwnerSnapshot(owner, OwnerAvailability.AVAILABLE, 1, 1) for owner in _OWNERS),
     )
-    assert len(snapshot.owners) == 13
+    assert len(snapshot.owners) == 12
     assert all(owner.state is OwnerAvailability.AVAILABLE for owner in snapshot.owners)
     return snapshot
 

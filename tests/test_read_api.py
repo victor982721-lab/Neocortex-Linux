@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from neocortex.api.cli.cli_knowledge import KnowledgeExitCode
-from neocortex.code.code_contracts import CodeSearchHit
 from neocortex.knowledge.knowledge_contracts import (
     KnowledgeCompleteness,
     OwnerAvailability,
@@ -318,42 +317,6 @@ def test_ambiguous_citation_alias_never_selects_an_arbitrary_evidence(
     }
 
 
-def test_code_search_is_bounded_labelled_and_read_only(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    binding = read_api.ScopeBinding(read_api.ReadScope.PERSONAL, tmp_path / "personal")
-    monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: (binding,))
-    monkeypatch.setattr(
-        read_api,
-        "search_code",
-        lambda path, query: (
-            CodeSearchHit(
-                path="neocortex/interface/entrypoint.py",
-                project="Neocortex",
-                language="python",
-                artifact_kind="source",
-                symbol="entrypoint",
-                signature="def entrypoint(...)",
-                start_line=1,
-                end_line=4,
-                snippet="def entrypoint",
-                score=0.5,
-                match_types=("symbol",),
-                evidence=("symbol:function",),
-                version_id=1,
-                observed_size=100,
-                observed_mtime_ns=2,
-                analysis_status="complete",
-            ),
-        ),
-    )
-
-    payload = read_api.code_search_payload("entrypoint", limit=4)
-
-    assert payload["read_only"] is True
-    assert payload["limit_per_scope"] == 4
-    assert payload["scopes"][0]["hits"][0]["symbol"] == "entrypoint"
 
 
 def test_lineage_uses_only_fixed_scope_roots_and_keeps_results_independent(
@@ -434,10 +397,6 @@ def test_asset_health_uses_stable_identity_and_fixed_scopes_without_creating_sta
         (
             lambda: read_api.context_payload("x", max_characters=1_000_001),
             "max_characters must be between",
-        ),
-        (
-            lambda: read_api.code_search_payload("x", modes=("unknown",)),
-            "unsupported",
         ),
         (lambda: read_api.lineage_payload(" "), "identifier cannot be blank"),
         (

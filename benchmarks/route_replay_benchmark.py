@@ -328,10 +328,6 @@ def _command(
         "1",
         "--video-ocr",
         "never",
-        "--code-max-count",
-        "50",
-        "--code-project-root",
-        str(corpus / "base" / "code"),
     )
 
 

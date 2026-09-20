@@ -57,32 +57,8 @@ def test_ready_partial_semantic_head_is_not_reported_as_published(capsys) -> Non
     assert "PUBLICADO" not in output
 
 
-def test_partial_code_has_an_explicit_raw_exit_cause(capsys) -> None:
-    from neocortex.api.cli.cli_reporting import _print_code_report
-    from neocortex.code.code_contracts import CodeRouteSummary
-
-    code = CodeRouteSummary(candidates=1, partial=1, errors=0)
-    result = SimpleNamespace(code=code, route_results={"code": code})
-    _print_code_report(result)
-    _print_catalog_reports(result)
-    output = capsys.readouterr().out
-    assert "code_partial=1" in output and 'issues={"partial":1}' in output
-    assert "next_action=inspect_owner_diagnostics_in_same_state" in output
 
 
-def test_code_and_audio_replay_are_explicit_without_retranscription(capsys) -> None:
-    from neocortex.code.code_contracts import CodeRouteSummary
-    from neocortex.capabilities.formats.audio.models import AudioRouteSummary
-
-    result = SimpleNamespace(route_results={
-        "code": CodeRouteSummary(candidates=3, processed=0, cache_hits=3),
-        "audio": AudioRouteSummary(candidates=2, processed=2, cache_hits=2, transcribed=2),
-    })
-    _print_catalog_reports(result)
-    lines = capsys.readouterr().out.splitlines()
-    for route in ("code", "audio"):
-        line = next(x for x in lines if x.startswith(f"ROUTE_REPLAY route={route}"))
-        assert "new_work=0 evidence=observado" in line
 
 
 def _actions(*, apply_actions: bool = False, **values: int) -> SimpleNamespace:

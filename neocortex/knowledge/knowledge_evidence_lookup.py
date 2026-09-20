@@ -83,8 +83,6 @@ def _owner_revision(row: sqlite3.Row, owner: str) -> dict[str, object]:
             revision["ocr_text_truncated"] = bool(row["ocr_text_truncated"])
         if "processing_signature" in row.keys():
             revision["processing_signature"] = row["processing_signature"] or "unprocessed"
-    if owner == "code" and "version_id" in row.keys():
-        revision["version_id"] = row["version_id"]
     return revision
 
 
@@ -96,7 +94,6 @@ def _owner_record(
         "docx": {"complete", "partial"}, "office": {"complete"}, "archive": {"indexed"},
         "audio": {"complete", "no_speech"}, "video": {"complete", "partial"},
         "image": {"done", "partial"},
-        "code": {"current"},
     }
     if owner == "archive":
         rows = read_rows(connection.execute(
@@ -110,20 +107,6 @@ def _owner_record(
     elif owner == "image":
         rows = read_rows(connection.execute(
             "SELECT * FROM images WHERE file_key=? LIMIT 2", (file_key,),
-        ))
-    elif owner == "code":
-        volume, separator, physical_file = file_key.partition(":")
-        if not separator or not volume or not physical_file:
-            raise EvidenceLookupError("invalid_evidence_reference")
-        rows = read_rows(connection.execute(
-            """SELECT f.volume_id,f.physical_file_id,f.current_path AS path,
-                      f.status,f.last_seen_run_id,v.version_id,v.size,v.mtime_ns,
-                      v.birthtime_ns,v.processing_signature,v.analysis_status,
-                      v.text_chars,v.language
-               FROM files f JOIN file_versions v ON v.version_id=f.current_version_id
-               WHERE f.volume_id=? AND f.physical_file_id=? AND f.status='current'
-                 AND v.invalidated_ns IS NULL LIMIT 2""",
-            (volume, physical_file),
         ))
     else:
         rows = read_rows(connection.execute(
@@ -139,8 +122,6 @@ def _owner_record(
     if owner == "video" and source_kind != "video":
         raise EvidenceLookupError("owner_revision_changed")
     if owner == "image" and source_kind not in {"image", "image_ocr"}:
-        raise EvidenceLookupError("owner_revision_changed")
-    if owner == "code" and source_kind != "code":
         raise EvidenceLookupError("owner_revision_changed")
     if owner == "archive":
         if row["container_status"] not in {"complete", "partial"}:
@@ -362,23 +343,6 @@ def _validate_owner_locator(
             raise EvidenceLookupError("unsupported_evidence_lookup")
         if row["ocr_text_zlib"] is None or row["ocr_text_chars"] is None:
             raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
-    elif owner == "code":
-        if not resolved.section_kind or not resolved.section_kind.startswith("code_"):
-            raise EvidenceLookupError("unsupported_evidence_lookup")
-        if resolved.section_id is None or not resolved.section_id.isdecimal():
-            raise EvidenceLookupError("invalid_evidence_reference")
-        rows = read_rows(connection.execute(
-            """SELECT start_line,end_line,symbol_id,text FROM code_chunks
-               WHERE version_id=? AND chunk_index=? LIMIT 2""",
-            (row["version_id"], int(resolved.section_id)),
-        ))
-        if len(rows) != 1:
-            raise EvidenceLookupError("evidence_locator_changed")
-        actual = rows[0]
-        provenance = resolved.section_provenance
-        for name in ("start_line", "end_line"):
-            if provenance.get(name) is not None and provenance.get(name) != actual[name]:
-                raise EvidenceLookupError("evidence_locator_changed")
 
 
 def _semantic_fragment(
@@ -604,7 +568,7 @@ def lookup_owner_evidence(
     owner = source.get("owner")
     source_kind = source.get("source_kind")
     if not isinstance(owner, str) or owner not in {
-        "text", "pdf", "docx", "office", "archive", "audio", "video", "image", "code",
+        "text", "pdf", "docx", "office", "archive", "audio", "video", "image",
     }:
         raise EvidenceLookupError("unsupported_evidence_lookup")
     allowed_kinds = (

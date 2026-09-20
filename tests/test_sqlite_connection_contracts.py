@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from neocortex.capabilities.formats.audio import state as audio_state
-from neocortex.code import code_schema
 from neocortex.documents import document_catalog
 from neocortex.capabilities.formats.docx import state as docx_state
 from neocortex.capabilities.formats.image import state as image_state
@@ -43,12 +42,6 @@ _CASES = (
         audio_state,
         audio_state.initialize_audio_state,
         audio_state.audio_database,
-    ),
-    _ConnectionCase(
-        "code",
-        code_schema,
-        code_schema.initialize_code_state,
-        code_schema.code_database,
     ),
     _ConnectionCase(
         "document-catalog",

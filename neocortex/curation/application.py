@@ -697,7 +697,12 @@ class PosixRenameBackend:
 
     name = "posix-link-unlink-no-replace-v1"
 
-    def apply(self, candidate: ApplyCandidate) -> BackendOutcome:
+    def apply(
+        self,
+        candidate: ApplyCandidate,
+        *,
+        before_syscall: Callable[[], None] | None = None,
+    ) -> BackendOutcome:
         effect = candidate.effect
         if effect.action not in {"move", "rename"} or effect.target_path is None:
             return BackendOutcome("blocked", "rename_action_requires_target")
@@ -706,6 +711,7 @@ class PosixRenameBackend:
         root_fd: int | None = None
         source_parent_fd: int | None = None
         target_parent_fd: int | None = None
+        source_fd: int | None = None
         effect_crossed = False
         try:
             _validate_effect_paths(candidate.root, effect)
@@ -721,6 +727,33 @@ class PosixRenameBackend:
             target_parts = target.relative_to(candidate.root).parts
             source_parent_fd, source_name = _open_parent_dirfd(root_fd, source_parts)
             target_parent_fd, target_name = _open_parent_dirfd(root_fd, target_parts)
+            source_fd = os.open(
+                source_name,
+                getattr(os, "O_PATH", os.O_RDONLY)
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=source_parent_fd,
+            )
+            source_metadata = os.fstat(source_fd)
+            if (
+                stat.S_ISLNK(source_metadata.st_mode)
+                or not stat.S_ISREG(source_metadata.st_mode)
+                or source_metadata.st_nlink != 1
+                or not stat_matches_snapshot(effect.source, source_metadata)
+            ):
+                raise CurationApplicationSnapshotChanged("rename source changed before syscall")
+            current_metadata = os.lstat(source)
+            if (
+                stat.S_ISLNK(current_metadata.st_mode)
+                or not stat.S_ISREG(current_metadata.st_mode)
+                or current_metadata.st_nlink != 1
+                or not stat_matches_snapshot(effect.source, current_metadata)
+                or (current_metadata.st_dev, current_metadata.st_ino)
+                != (source_metadata.st_dev, source_metadata.st_ino)
+            ):
+                raise CurationApplicationSnapshotChanged(
+                    "rename source changed immediately before syscall"
+                )
             libc = ctypes.CDLL(None, use_errno=True)
             renameat2 = getattr(libc, "renameat2", None)
             if renameat2 is None:
@@ -733,6 +766,8 @@ class PosixRenameBackend:
                 ctypes.c_uint,
             ]
             renameat2.restype = ctypes.c_int
+            if before_syscall is not None:
+                before_syscall()
             effect_crossed = True
             if (
                 renameat2(
@@ -747,11 +782,17 @@ class PosixRenameBackend:
                 effect_crossed = False
                 error_number = ctypes.get_errno()
                 if error_number == errno.EEXIST:
-                    return BackendOutcome("blocked", "destination_exists")
+                    return BackendOutcome(
+                        "recovery_required" if before_syscall is not None else "blocked",
+                        "destination_exists",
+                    )
                 if error_number == errno.EXDEV:
-                    return BackendOutcome("blocked", "exdev_same_filesystem_required")
+                    return BackendOutcome(
+                        "recovery_required" if before_syscall is not None else "blocked",
+                        "exdev_same_filesystem_required",
+                    )
                 return BackendOutcome(
-                    "blocked",
+                    "recovery_required" if before_syscall is not None else "blocked",
                     "rename_syscall_failed",
                     os.strerror(error_number),
                 )
@@ -784,7 +825,7 @@ class PosixRenameBackend:
                 )
             return BackendOutcome("blocked", "rename_interrupted_before_effect", type(exc).__name__)
         finally:
-            for fd in (source_parent_fd, target_parent_fd, root_fd):
+            for fd in (source_fd, source_parent_fd, target_parent_fd, root_fd):
                 if fd is not None:
                     try:
                         os.close(fd)
@@ -1012,7 +1053,7 @@ class KioTrashBackend:
                 target_path=None,
             )
             try:
-                # Keep the same physical admission contract as the
+                # Keep the same physical preflight contract as the
                 # grant-bound single-item route.  It is intentionally done
                 # once per item before the shared process, not in a second
                 # subprocess/preflight loop.

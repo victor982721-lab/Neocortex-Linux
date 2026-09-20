@@ -14,7 +14,6 @@ from .knowledge_planner_intents import (
     normalize_knowledge_query,
 )
 from .knowledge_planner_steps import (
-    CODE_FORMATS as _CODE_FORMATS,
     KNOWLEDGE_PLAN_V2_PREFIX as _KNOWLEDGE_PLAN_V2_PREFIX,
     KNOWLEDGE_PLAN_V3_PREFIX as _KNOWLEDGE_PLAN_V3_PREFIX,
     PlanLimits,
@@ -229,7 +228,6 @@ def _query_plan_signals(
     return infer_query_plan_signals(
         query,
         exact_terms=_exact_terms,
-        code_formats=_CODE_FORMATS,
         max_exact_terms=MAX_KNOWLEDGE_EXACT_TERMS,
     )
 

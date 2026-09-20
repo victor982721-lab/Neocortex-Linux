@@ -155,7 +155,6 @@ def test_project_metadata_separates_canonical_runtime_and_extras() -> None:
     assert "Pillow>=12.3,<13" in extras["semantic"]
     package_data = metadata_document["tool"]["setuptools"]["package-data"]
     assert package_data["neocortex"] == ["py.typed"]
-    assert "neocortex.code" not in package_data
     assert "_04_Nucleo_Operativo" not in package_data
     assert (PROJECT_ROOT / "neocortex" / "py.typed").is_file()
 
@@ -222,8 +221,6 @@ def test_missing_optional_runtimes_are_explicitly_unavailable_or_degraded() -> N
 
     assert statuses["docx"].state is CapabilityState.AVAILABLE
     assert statuses["office"].state is CapabilityState.AVAILABLE
-    assert statuses["code"].state is CapabilityState.AVAILABLE
-    assert statuses["code"].degradation_reasons == ()
     assert statuses["pdf"].state is CapabilityState.UNAVAILABLE
     assert "pdf_extractor_unavailable" in statuses["pdf"].degradation_reasons
     assert statuses["audio"].state is CapabilityState.UNAVAILABLE
@@ -241,7 +238,7 @@ def test_hash_accelerator_is_not_a_runtime_prerequisite() -> None:
         status.capability: status for status in _inspect_with({"packaging", "rich"})
     }
 
-    for name in ("docx", "office", "code", "text"):
+    for name in ("docx", "office", "text"):
         assert statuses[name].state is CapabilityState.AVAILABLE
         assert statuses[name].degradation_reasons == ()
         assert all(item.requirement.component != "xxhash" for item in statuses[name].components)
@@ -332,7 +329,6 @@ def test_semantic_facades_cold_import_no_owner_or_image_runtime() -> None:
 
         blocked_modules = {
             "neocortex.capabilities.formats.audio.state",
-            "neocortex.code.code_schema",
             "neocortex.capabilities.formats.docx.schema",
             "neocortex.capabilities.formats.docx.schema",
             "neocortex.capabilities.formats.image.state",
@@ -462,7 +458,6 @@ def test_base_surfaces_and_absent_knowledge_state_ignore_optional_engines(
         expected_owners = (
             "audio",
             "catalog",
-            "code",
             "docx",
             "framework",
             "image",

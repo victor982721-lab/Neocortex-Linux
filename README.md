@@ -31,32 +31,19 @@ proyectan visibilidad, sin borrar vectores ni diagnósticos.
 La ruta integrada conserva los owners y contratos existentes. `--all` selecciona
 las ocho rutas de contenido (`pdf`, `docx`, `office`, `archive`, `text`, `audio`,
 `video` e `image`). En `--all --apply` aplica primero la redlist determinista
-del Corpus, antes de dedupe, hashing, validación o extracción. Code se conserva como ruta explícita
-`--route code`, sin ejecutar el código observado. Un escaneo amplio requiere el opt-in explícito
-`--code-scope broad`; sus límites por formato
-permanecen efectivos y los límites globales sólo aparecen cuando se expresan de
-forma explícita: no se añade un techo global oculto y los flags repetibles siguen
-siendo acumulativos.
+del Corpus, antes de dedupe, hashing, validación o extracción. Los archivos sin
+extensión sólo se renombran cuando `content_types` aporta evidencia acotada y
+una extensión canónica; los desconocidos permanecen intactos. La redlist y la
+restauración de extensión comparten la misma frontera de root, identidad,
+no-reemplazo, recibo y recuperación.
 
-La admisión del corpus separa utilidad, interés y regenerabilidad antes de
-la extracción profunda. Los proyectos de código predeterminados son NeoCortex,
-MTF y bitácoras EPS, por sus raíces configuradas; un marcador encontrado no
-añade otro proyecto. El código ajeno queda como metadatos de inventario, no
-como texto para indexar indirectamente. Los documentos y datos útiles dentro
-de `AppData`, cachés o ZIP mixtos siguen procesándose; no se excluye un árbol
-completo sólo por su nombre.
+Los documentos y datos útiles dentro de `AppData`, cachés o ZIP mixtos siguen
+procesándose; no se excluye un árbol completo sólo por su nombre. Un miembro
+virtual de un archivo compuesto no se convierte en un objetivo físico: la
+redlist se aplica a archivos físicos del Corpus.
 
-`--all` prepara un plan de regenerables y `--apply` conserva el gate físico.
-Un nombre, extensión o score no basta: cada candidato requiere una copia
-exacta en un paquete local retenido o un caché de bytecode reproducido desde
-su fuente conservada, con identidad, presupuesto y prueba revalidados junto
-al efecto. Credenciales, licencias, fixtures, paquetes fuente y casos inciertos
-se conservan. La exclusión de procesamiento no equivale a eliminación. El
-resumen `CORPUS_ADMISSION` y el stage del lifecycle explican conteos, razones y
-cobertura acotada. Véase [operación](docs/OPERATIONS.md#curación-previa-del-corpus).
-
-El stage Semantic integrado considera también Archive, Code y Video cuando sus
-owners, heads y dependencias están disponibles. Una dependencia ausente degrada
+El stage Semantic integrado considera Archive y Video cuando sus owners,
+heads y dependencias están disponibles. Una dependencia ausente degrada
 la ruta afectada y deja resultado `partial`/`incomplete` con causa tipada; no
 oculta el trabajo independiente. La actualización del catálogo ocurre después
 de cada productor y conserva `protected`, `no_speech`, `no_audio` y
@@ -207,7 +194,6 @@ Neocortex status --scope all
 Neocortex search "consulta" --scope personal --limit 20
 Neocortex ask "consulta" --scope personal --limit 12
 Neocortex ask "consulta" --scope personal --characters 12000 --json
-Neocortex inspect code "consulta" --scope personal
 Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex curate plan --limit 20
 Neocortex --pdf-diagnostics 20 --diagnostics-json
@@ -425,8 +411,8 @@ Neocortex --root "$Root" --route pdf --max-count 25 --strict-exit-codes
 
 Repite el mismo comando y revisa cache, errores y tiempo antes de ampliar el
 alcance. `--max-count` limita PDFs, no el inventario completo. `--all` ejecuta
-las rutas de contenido registradas y excluye Code; no ejecuta el código observado
-ni reintroduce el antiguo autoanálisis del propio repositorio.
+las ocho rutas de contenido registradas; sus efectos sobre el Corpus requieren
+`--apply` y una raíz temporal durante la validación.
 
 ## Ruta de curación actual
 

@@ -13,7 +13,6 @@ from neocortex.persistence.sqlite_immutable import (
     SQLiteSnapshotBudgetExceeded,
     immutable_sqlite_database,
 )
-from neocortex.runtime.orchestration.route_registry import build_code_inventory_projection
 from neocortex.safety.route_filters import CandidateSelection
 
 
@@ -188,18 +187,3 @@ def test_projection_source_does_not_open_another_framework_connection(
         with state.route_candidate_snapshot(run_id=run_id) as snapshot:
             assert opened == [snapshot]
         assert not snapshot.exists()
-
-
-def test_code_projection_keeps_only_the_code_admission_boundary(tmp_path: Path) -> None:
-    code = FileSnapshot(str(tmp_path / "main.py"), 1, 1, 3, 4, -1)
-    marker = FileSnapshot(str(tmp_path / "pyproject.toml"), 1, 2, 3, 4, -1)
-    binary = FileSnapshot(str(tmp_path / "photo.bin"), 1, 3, 3, 4, -1)
-
-    class Owner:
-        def snapshots(self, scan_id: int):
-            assert scan_id == 9
-            return iter((code, marker, binary))
-
-    projection = build_code_inventory_projection(Owner(), 9)
-    assert projection.records == (code, marker)
-    assert tuple(projection.snapshots(9)) == (code, marker)

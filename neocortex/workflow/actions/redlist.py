@@ -2,7 +2,7 @@
 
 The redlist is deliberately metadata-only.  It is evaluated against a
 ``FileSnapshot`` before duplicate planning, content-type detection, or route
-execution.  A match is a policy decision, not a code/third-party inference.
+execution.  A match is a policy decision, not an external classifier result.
 """
 
 from __future__ import annotations
@@ -277,6 +277,7 @@ _REDLIST_TEXT = """
 .targets
 .test
 .tflite
+.timer
 .tmp
 .toml
 .ts
@@ -339,7 +340,7 @@ def redlist_match(path: str | Path) -> str | None:
     final suffix returned by :attr:`Path.suffix`.  Intermediate dotted version
     components (for example ``.1`` in ``0.1-report.xlsx``) are not extensions;
     otherwise short redlist tokens would incorrectly catch ordinary PDF,
-    image, spreadsheet, and text files.  No file content or code classifier is
+    image, spreadsheet, and text files.  No file content or external classifier is
     consulted.
     """
 

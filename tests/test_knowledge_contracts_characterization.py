@@ -447,10 +447,10 @@ def _contract_instances() -> dict[str, object]:
         contracts.ResourceDisposition.CANONICAL,
     )
     other_resource = contracts.ResourceRef(
-        "resource:code:0002",
-        "code",
-        "code",
-        current_path=r"C:\Corpus\control.py",
+        "resource:document:0002",
+        "document",
+        "document",
+        current_path=r"C:\Corpus\control.pdf",
         disposition=contracts.ResourceDisposition.CANONICAL,
     )
     revision = contracts.RevisionRef(
@@ -464,9 +464,9 @@ def _contract_instances() -> dict[str, object]:
     )
     other_revision = contracts.RevisionRef(
         other_resource.resource_id,
-        "revision:code:0002:3",
-        "code-route",
-        "code-v3:fixture",
+        "revision:document:0002:3",
+        "document-route",
+        "document-v3:fixture",
         3,
         contracts.RevisionState.CURRENT,
         "2026-07-30T12:00:01Z",
@@ -497,7 +497,7 @@ def _contract_instances() -> dict[str, object]:
         identifiers=(("serial", "Q52"), ("asset", "breaker")),
     )
     other_evidence = contracts.EvidenceRef(
-        "evidence:code:0002:line:41",
+        "evidence:document:0002:page:1",
         other_resource.resource_id,
         other_revision.revision_id,
         contracts.EvidenceMethod.STRUCTURAL,
@@ -505,7 +505,7 @@ def _contract_instances() -> dict[str, object]:
         end_line=55,
         symbol="control.validate_q52",
         snippet="def validate_q52(): ...",
-        extractor="python-ast",
+        extractor="document-fixture",
         extractor_version="3.13",
         generation=3,
         identifiers=(("serial", "Q52-A"),),
@@ -536,7 +536,7 @@ def _contract_instances() -> dict[str, object]:
         other_resource,
         other_revision,
         other_evidence,
-        (contracts.RankingSignal("code_exact", "rank", 1.0, 1),),
+        (contracts.RankingSignal("document_exact", "rank", 1.0, 1),),
         0.8,
         ("exact symbol",),
         confidence=0.8,
@@ -586,8 +586,8 @@ def _contract_instances() -> dict[str, object]:
         "evidence",
         ("exact", "relational"),
         ("Q52",),
-        ("document", "code"),
-        ("pdf", "py"),
+        ("document", "text"),
+        ("pdf", "txt"),
         "substation-alpha",
         "2026-01-01",
         "2026-07-30",
@@ -608,7 +608,7 @@ def _contract_instances() -> dict[str, object]:
     )
     other_entity = contracts.ContextEntityRef(
         "entity:function:validate-q52",
-        "code_symbol",
+        "document_section",
         "control.validate_q52",
         (evidence.evidence_id, other_evidence.evidence_id),
         (resource.resource_id, other_resource.resource_id),
@@ -619,7 +619,7 @@ def _contract_instances() -> dict[str, object]:
         entity.entity_id,
         "validates",
         contracts.EvidenceMethod.STRUCTURAL,
-        ("code:fixture:line:41",),
+        ("document:fixture:page:1",),
         (evidence.evidence_id, other_evidence.evidence_id),
         0.95,
     )
@@ -948,9 +948,9 @@ def test_context_bundle_payload_and_canonical_serialization_are_golden() -> None
     assert encoded == contracts._canonical_output(payload)
     assert "Área técnica" in encoded
     assert "\\u00c1" not in encoded
-    assert len(encoded.encode("utf-8")) == 7_940
+    assert len(encoded.encode("utf-8")) == 8_044
     assert hashlib.sha256(encoded.encode("utf-8")).hexdigest() == (
-        "388cf6147a9f3b2aea0f7b7678aca812aacafabb18230ce707d22378f03ca7ff"
+        "53952e6b1749afae43af11ab8fc3696db12c8500fb287df5f7d3e2bff748172b"
     )
 
 
@@ -958,8 +958,6 @@ def test_context_bundle_payload_and_canonical_serialization_are_golden() -> None
     "namespace",
     (
         "planned_duplicate_of",
-        "code_relation_source_resource",
-        "code_relation_target_resource",
     ),
 )
 def test_context_bundle_accepts_explicit_relationship_grounding(

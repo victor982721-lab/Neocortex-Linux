@@ -57,7 +57,6 @@ _LEXICAL_RANKINGS = ("fts_audio", "fts_docx", "fts_office", "fts_pdf")
 def _snapshot(
     *,
     semantic: OwnerAvailability = OwnerAvailability.ABSENT,
-    code: OwnerAvailability = OwnerAvailability.ABSENT,
 ) -> KnowledgeSnapshot:
     versions = {
         "pdf": 11,
@@ -65,13 +64,11 @@ def _snapshot(
         "office": 1,
         "audio": 1,
         "semantic": 6,
-        "code": 2,
         "catalog": 6,
         "inventory": 7,
     }
     states = {
         "semantic": semantic,
-        "code": code,
     }
     owners = tuple(
         OwnerSnapshot(
@@ -712,56 +709,6 @@ def test_final_top_k_window_does_not_turn_a_stable_search_into_exit_four(
     assert knowledge_search_exit_code(result) is KnowledgeExitCode.SUCCESS
 
 
-def test_code_only_required_semantic_failure_degrades_completeness(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_complete_lexical(monkeypatch)
-    monkeypatch.setattr(
-        knowledge_search,
-        "_semantic_rankings",
-        _ranking_stub(
-            (
-                _ranking(
-                    "semantic_text",
-                    "semantic",
-                    available=False,
-                    complete=False,
-                ),
-            )
-        ),
-    )
-
-    def complete_code(
-        *_args: object,
-        **_kwargs: object,
-    ) -> tuple[tuple[KnowledgeCandidate, ...], RankingExecution]:
-        return (), _ranking(
-            "code_structural",
-            "structural_code",
-            available=True,
-            complete=True,
-        )
-
-    monkeypatch.setattr(knowledge_search, "_code_ranking", complete_code)
-    plan = plan_knowledge_query(KnowledgeQuery("definition breaker", source_kinds=("code",)))
-    assert knowledge_search._required_direct_ranking_names(plan) == frozenset({"code_structural"})
-
-    result = execute_knowledge_search(
-        KnowledgeStatePaths.from_directory(tmp_path / "state"),
-        plan,
-        _snapshot(code=OwnerAvailability.AVAILABLE),
-    )
-
-    semantic_step = next(step for step in plan.steps if step.channel == "semantic")
-    assert semantic_step.required
-    assert not result.complete
-    assert result.warnings == (
-        "ranking_partial:semantic_text:fixture_modality_unavailable",
-        "ranking_unavailable:semantic_text",
-    )
-
-
 def test_exact_truncated_without_known_omissions_is_still_incomplete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -826,53 +773,6 @@ def test_exact_truncated_without_known_omissions_is_still_incomplete(
     assert result.truncated
     assert result.omitted_candidates == 0
     assert not result.complete
-
-
-def test_required_direct_ranking_cannot_be_substituted_within_channel(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_complete_lexical(monkeypatch)
-    monkeypatch.setattr(
-        knowledge_search,
-        "_semantic_rankings",
-        _ranking_stub(
-            (
-                _ranking(
-                    "semantic_text",
-                    "semantic",
-                    available=True,
-                    complete=True,
-                ),
-            )
-        ),
-    )
-
-    def sibling_code_ranking(
-        *_args: object,
-        **_kwargs: object,
-    ) -> tuple[tuple[KnowledgeCandidate, ...], RankingExecution]:
-        return (), _ranking(
-            "code_relations",
-            "structural_code",
-            available=True,
-            complete=True,
-        )
-
-    monkeypatch.setattr(knowledge_search, "_code_ranking", sibling_code_ranking)
-    plan = plan_knowledge_query(KnowledgeQuery("definition breaker", source_kinds=("code",)))
-
-    result = execute_knowledge_search(
-        KnowledgeStatePaths.from_directory(tmp_path / "state"),
-        plan,
-        _snapshot(
-            semantic=OwnerAvailability.AVAILABLE,
-            code=OwnerAvailability.AVAILABLE,
-        ),
-    )
-
-    assert not result.complete
-    assert result.warnings == ("ranking_unavailable:code_structural",)
 
 
 def test_semantic_outer_failure_reports_optional_planned_image_ranking(

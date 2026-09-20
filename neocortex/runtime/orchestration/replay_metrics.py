@@ -20,9 +20,9 @@ _CAPABILITIES = frozenset({"phase_resume", "safe_replay", "not_resumable"})
 # ``cache_hits``.  It is still reused work, not new extraction work.
 _CACHED_ERROR_NOT_IN_CACHE_HITS = frozenset({"docx", "image"})
 
-# Text and Code already count only cache-miss work in ``processed``.  The other
-# built-ins count selected candidates and expose cache hits as a subset.
-_PROCESSED_IS_NEW_WORK = frozenset({"text", "code"})
+# Text counts only cache-miss work in ``processed``.  The other built-ins count
+# selected candidates and expose cache hits as a subset.
+_PROCESSED_IS_NEW_WORK = frozenset({"text"})
 
 
 def _counter(value: object) -> int:

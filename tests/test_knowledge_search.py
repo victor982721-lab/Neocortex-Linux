@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import zlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,15 +23,6 @@ from neocortex.capabilities.formats.archive.state import (
     archive_database,
     initialize_archive_state,
 )
-from neocortex.code.code_contracts import (
-    CodeRelationEndpoint,
-    CodeRouteConfig,
-    CodeSearchHit,
-    CodeSearchQuery,
-    CodeSearchRelation,
-)
-from neocortex.code.ingestion.code_detection import DETECTOR_VERSION
-from neocortex.code.code_route import CodeRoute
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
@@ -161,25 +152,6 @@ def test_knowledge_search_returns_timestamped_video_ocr_evidence(tmp_path: Path)
     assert video.evidence.identifiers == (("neocortex.video.timestamp", "00:00:02.500"),)
     assert video.resource.physical_identity is not None
     assert video.revision.processing_signature == "fixture-video-v1"
-
-
-class _CodeInventory:
-    def __init__(self, snapshot: FileSnapshot) -> None:
-        self.snapshot = snapshot
-
-    def snapshots(self, _scan_id: int) -> Iterator[FileSnapshot]:
-        return iter((self.snapshot,))
-
-
-class _CodeFramework:
-    def begin_route_phase(self, *args: object, **kwargs: object) -> None:
-        del args, kwargs
-
-    def complete_route_phase(self, *args: object, **kwargs: object) -> None:
-        del args, kwargs
-
-    def fail_route_phase(self, *args: object, **kwargs: object) -> None:
-        del args, kwargs
 
 
 def _candidate(
@@ -1121,7 +1093,6 @@ def test_search_reuses_real_fts_owners_and_preserves_two_pdf_pages(
         OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
         OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
     )
@@ -1169,7 +1140,6 @@ def test_search_returns_archive_member_with_explicit_nested_zip_evidence(
         OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("archive", OwnerAvailability.AVAILABLE, 1, 1),
         OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
         OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
     )
@@ -1236,7 +1206,6 @@ def test_real_lexical_and_semantic_sqlite_share_physical_resource_identity(
                 ),
             ),
         ),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
         OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
     )
@@ -1329,7 +1298,6 @@ def test_knowledge_discovery_uses_title_only_as_grounded_resource_signal(
                 ),
             ),
         ),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
         OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
     )
@@ -1470,7 +1438,6 @@ def test_missing_semantic_cache_preserves_lexical_and_creates_no_artifacts(
                 ),
             ),
         ),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
         OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
     )
@@ -1509,7 +1476,6 @@ def test_legacy_decimal_file_key_aligns_with_canonical_physical_resource(
         OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
         OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
     )
@@ -1537,7 +1503,6 @@ def test_linux_birthtime_sentinel_claims_posix_physical_identity(
         OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
         OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
     )
@@ -1568,7 +1533,6 @@ def test_unverified_inventory_plan_is_exposed_but_never_filters_evidence(
         OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
         OwnerSnapshot(
             "inventory",
@@ -1678,7 +1642,6 @@ def test_catalog_head_constrains_all_rankings_and_aligns_physical_resource(
         OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot(
             "catalog",
             OwnerAvailability.AVAILABLE,
@@ -1758,7 +1721,6 @@ def test_unsupported_content_date_filter_abstains_instead_of_using_mtime(
         OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot(
             "catalog",
             OwnerAvailability.AVAILABLE,
@@ -1784,81 +1746,6 @@ def test_unsupported_content_date_filter_abstains_instead_of_using_mtime(
     catalog = next(ranking for ranking in result.rankings if ranking.name == "catalog_metadata")
     assert not catalog.complete
     assert catalog.reason == "catalog_content_date_filter_unsupported"
-
-
-def test_search_reuses_real_structured_code_owner(tmp_path: Path) -> None:
-    source = tmp_path / "breaker.py"
-    source.write_text(
-        "def calculate_breaker(value: int) -> int:\n    return value + 1\n",
-        encoding="utf-8",
-    )
-    state = tmp_path / "state"
-    config = CodeRouteConfig(
-        state_path=state / "code.sqlite3",
-        dedup_path=state / "dedup.sqlite3",
-        chunk_chars=1_024,
-    )
-    source_snapshot = _file_snapshot(source)
-    CodeRoute(
-        config,
-        _CodeInventory(source_snapshot),
-        _CodeFramework(),
-        1,
-        1,
-    ).run()
-    snapshot = _snapshot(
-        OwnerSnapshot("code", OwnerAvailability.AVAILABLE, 2, 2),
-        OwnerSnapshot("pdf", OwnerAvailability.ABSENT, 11),
-        OwnerSnapshot("docx", OwnerAvailability.ABSENT, 5),
-        OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
-        OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
-        OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
-    )
-    query = KnowledgeQuery(
-        "definition calculate_breaker",
-        source_kinds=("code",),
-        limit=5,
-    )
-
-    result = execute_knowledge_search(
-        KnowledgeStatePaths.from_directory(state),
-        plan_knowledge_query(query),
-        snapshot,
-    )
-
-    assert result.hits
-    hit = next(hit for hit in result.hits if hit.resource.source_kind == "code")
-    assert hit.resource.resource_id == (
-        f"resource:file:{source_snapshot.volume_id}:"
-        f"{source_snapshot.file_id}:{source_snapshot.birthtime_ns}"
-    )
-    assert hit.evidence.start_line == 1
-    assert hit.evidence.symbol is not None
-    assert hit.revision.processing_signature.startswith(
-        f"{config.processing_signature}|artifact-detector={DETECTOR_VERSION}|code-analyzers-v1:"
-    )
-    assert next(
-        ranking for ranking in result.rankings if ranking.name == "code_structural"
-    ).executed
-    assert not result.complete
-    assert "ranking_unavailable:semantic_text" in result.warnings
-
-    with sqlite3.connect(state / "code.sqlite3") as connection:
-        connection.execute("UPDATE file_versions SET birthtime_ns=-1")
-    unresolved = execute_knowledge_search(
-        KnowledgeStatePaths.from_directory(state),
-        plan_knowledge_query(query),
-        snapshot,
-    )
-    unresolved_hit = next(hit for hit in unresolved.hits if hit.resource.source_kind == "code")
-    assert unresolved_hit.resource.resource_id == (
-        f"resource:file:{source_snapshot.volume_id}:{source_snapshot.file_id}:-1"
-    )
-    assert unresolved_hit.resource.physical_identity is not None
-    assert unresolved_hit.resource.physical_identity.scheme == ("posix_device_inode_birthtime")
-    assert "physical_identity_unresolved" not in unresolved_hit.warnings
 
 
 def test_inventory_linux_birthtime_sentinel_uses_posix_namespace(
@@ -1897,7 +1784,6 @@ def test_inventory_linux_birthtime_sentinel_uses_posix_namespace(
         OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
         OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
         OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
     )
 
@@ -1957,11 +1843,6 @@ def test_explicit_filters_keep_exact_inventory_aliases_and_real_image_ocr() -> N
         source_kind="file",
         owner="inventory",
     )
-    inventory_python = candidate(
-        path="C:/src/control.py",
-        source_kind="file",
-        owner="inventory",
-    )
     image_ocr = candidate(
         path="C:/images/panel.webp",
         source_kind="image",
@@ -1972,14 +1853,6 @@ def test_explicit_filters_keep_exact_inventory_aliases_and_real_image_ocr() -> N
     assert knowledge_search_module._matches_explicit_source_filters(
         inventory_pdf,
         plan_knowledge_query(KnowledgeQuery("report.pdf", source_kinds=("pdf",))),
-    )
-    assert knowledge_search_module._matches_explicit_source_filters(
-        inventory_python,
-        plan_knowledge_query(KnowledgeQuery("control.py", source_kinds=("code",))),
-    )
-    assert knowledge_search_module._matches_explicit_source_filters(
-        inventory_python,
-        plan_knowledge_query(KnowledgeQuery("control.py", formats=("python",))),
     )
     assert knowledge_search_module._matches_explicit_source_filters(
         image_ocr,
@@ -2142,169 +2015,6 @@ def test_lexical_execution_uses_the_planned_candidate_limit(
     assert rankings == {}
     assert reports == []
     assert observed_limits == [step.candidate_limit + 1]
-
-
-def test_code_execution_uses_the_planned_candidate_limit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    observed_limits: list[int] = []
-
-    def code_search_fixture(
-        _path: Path,
-        query: CodeSearchQuery,
-        **_kwargs: object,
-    ) -> tuple[object, ...]:
-        observed_limits.append(query.limit)
-        return ()
-
-    monkeypatch.setattr(knowledge_search_module, "search_code", code_search_fixture)
-    monkeypatch.setattr(
-        knowledge_search_module,
-        "_code_version_metadata",
-        lambda *_args, **_kwargs: {},
-    )
-    plan = plan_knowledge_query(KnowledgeQuery("definition breaker", formats=("py",), limit=1))
-    step = next(value for value in plan.steps if value.channel == "structural_code")
-
-    candidates, report = knowledge_search_module._code_ranking(
-        KnowledgeStatePaths.from_directory(tmp_path / "state"),
-        plan,
-        _snapshot(OwnerSnapshot("code", OwnerAvailability.AVAILABLE, 2, 2)),
-    )
-
-    assert candidates == ()
-    assert report.complete
-    assert observed_limits == [step.candidate_limit + 1]
-
-
-def test_code_candidate_limit_bounds_relation_processing_as_complete_top_k(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plan = plan_knowledge_query(KnowledgeQuery("definition breaker", formats=("py",), limit=1))
-    step = next(value for value in plan.steps if value.channel == "structural_code")
-    source = CodeRelationEndpoint(1, "C:/src/breaker.py")
-    relations = tuple(
-        CodeSearchRelation(
-            "dependency",
-            "python_import",
-            f"dependency_{index}",
-            source,
-            None,
-            None,
-            False,
-            True,
-            0.9,
-            "fixture",
-            "dependencies",
-            index,
-        )
-        for index in range(1, 9)
-    )
-    hit = CodeSearchHit(
-        "C:/src/breaker.py",
-        None,
-        "python",
-        "source",
-        None,
-        None,
-        1,
-        1,
-        "breaker fixture",
-        1.0,
-        ("literal",),
-        ("literal:breaker",),
-        1,
-        100,
-        200,
-        "complete",
-        relations,
-    )
-    base = _candidate(
-        evidence_id="code-base",
-        section_id="1",
-        start_char=0,
-        end_char=10,
-        ranking="code_structural",
-        source_rank=1,
-    )
-    observed_version_ids: list[int] = []
-    processed_relations: list[int] = []
-
-    def code_search_fixture(
-        _path: Path,
-        query: CodeSearchQuery,
-        **_kwargs: object,
-    ) -> tuple[CodeSearchHit, ...]:
-        assert query.limit == step.candidate_limit + 1
-        return (hit,)
-
-    def metadata_fixture(
-        _path: Path,
-        version_ids: tuple[int, ...],
-        **_kwargs: object,
-    ) -> dict[int, dict[str, str]]:
-        observed_version_ids.extend(version_ids)
-        return {
-            1: {
-                "analyzer_id": "fixture",
-                "analyzer_version": "1",
-                "processing_signature": "fixture-v1",
-            }
-        }
-
-    def relation_fixture(
-        _metadata: object,
-        *,
-        source_rank: int,
-        hit: CodeSearchHit,
-        relation: CodeSearchRelation,
-    ) -> tuple[KnowledgeCandidate, bool]:
-        del hit
-        processed_relations.append(relation.source_row_id)
-        return (
-            _candidate(
-                evidence_id=f"code-relation-{relation.source_row_id}",
-                section_id=str(relation.source_row_id + 1),
-                start_char=0,
-                end_char=10,
-                ranking="code_structural",
-                source_rank=source_rank,
-            ),
-            False,
-        )
-
-    monkeypatch.setattr(knowledge_search_module, "search_code", code_search_fixture)
-    monkeypatch.setattr(
-        knowledge_search_module,
-        "_code_version_metadata",
-        metadata_fixture,
-    )
-    monkeypatch.setattr(
-        knowledge_search_module,
-        "_code_resource_revision",
-        lambda *_args, **_kwargs: (base.resource, base.revision, ()),
-    )
-    monkeypatch.setattr(
-        knowledge_search_module,
-        "_code_relation_candidate",
-        relation_fixture,
-    )
-
-    candidates, report = knowledge_search_module._code_ranking(
-        KnowledgeStatePaths.from_directory(tmp_path / "state"),
-        plan,
-        _snapshot(OwnerSnapshot("code", OwnerAvailability.AVAILABLE, 2, 2)),
-    )
-
-    assert len(candidates) == step.candidate_limit
-    assert processed_relations == [1, 2, 3]
-    assert len(observed_version_ids) == step.candidate_limit + 1
-    assert report.rows_scanned == step.candidate_limit + 1
-    assert report.complete
-    assert report.reason is None
-    assert report.result_window_full
 
 
 def test_exact_execution_passes_the_planned_candidate_limit(

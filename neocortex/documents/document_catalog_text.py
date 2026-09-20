@@ -86,44 +86,6 @@ def _load_leading_text(
                 if video_prefix.remaining == 0:
                     break
         return video_prefix.finish()
-    if document.source_kind == "code":
-        # Code keeps the current file version and may retain either the
-        # bounded source blob or chunk rows, depending on the analyzer.  The
-        # fallback preserves useful path/symbol evidence without inventing a
-        # complete source when the producer only published text-only output.
-        raw_file_id = document.file_key.removeprefix("code:")
-        try:
-            file_id = int(raw_file_id)
-        except ValueError as exc:
-            raise RuntimeError("code catalog identity is malformed") from exc
-        row = connection.execute(
-            """SELECT v.version_id,v.text_zlib IS NOT NULL AS has_text FROM files AS f
-            JOIN file_versions AS v ON v.version_id=f.current_version_id
-            WHERE f.file_id=? AND f.status='current'""",
-            (file_id,),
-        ).fetchone()
-        if row is None:
-            return ""
-        if row["has_text"]:
-            return _read_compressed_text_prefix(
-                connection, "file_versions", "text_zlib", "version_id=?", (int(row["version_id"]),), max_text_chars,
-                cancellation=cancellation,
-            )
-        code_prefix = _TextPrefix(max_text_chars)
-        encoding = _sqlite_text_encoding(connection)
-        for chunk in connection.execute(
-            """SELECT substr(CAST(text AS BLOB),1,?) FROM code_chunks WHERE version_id=?
-            ORDER BY chunk_index""",
-            (max_text_chars * 4 + 4, int(row["version_id"])),
-        ):
-            if cancellation is not None:
-                cancellation.checkpoint()
-            text = _decode_sqlite_text_prefix(chunk[0], encoding, max_text_chars)
-            if text:
-                code_prefix.append(text)
-                if code_prefix.remaining == 0:
-                    break
-        return code_prefix.finish()
     if document.source_kind == "image":
         return _read_compressed_text_prefix(
             connection, "images", "ocr_text_zlib", "file_key=?", (document.file_key,), max_text_chars,

@@ -13,7 +13,6 @@ todo este catálogo como una lista de trabajos pendientes.
 | [Runtime y persistencia](subprojects/platform-state.md) | [`neocortex/runtime`](../neocortex/runtime/AGENTS.md), [`neocortex/persistence`](../neocortex/persistence/AGENTS.md) | resources, lifecycle, owners, fences, migraciones |
 | [Inventario y catálogo](subprojects/inventory-catalog.md) | [`neocortex/deduplication`](../neocortex/deduplication/AGENTS.md), [`neocortex/documents`](../neocortex/documents/AGENTS.md) | identidad, catálogo, duplicados, ámbito y planificación |
 | [Ingesta de formatos](subprojects/formats.md) | [`neocortex/capabilities`](../neocortex/capabilities/AGENTS.md) | rutas, extracción, límites y cobertura |
-| [Code como contenido](subprojects/code-content.md) | [`neocortex/code`](../neocortex/code/AGENTS.md) | lenguajes, proyectos, símbolos y relaciones |
 | [Semantic y Knowledge](subprojects/retrieval-context.md) | [`neocortex/semantic`](../neocortex/semantic/AGENTS.md), [`neocortex/knowledge`](../neocortex/knowledge/AGENTS.md) | publicación, recuperación, citas y contexto |
 | [Curación y efectos](subprojects/curation-effects.md) | [`neocortex/curation`](../neocortex/curation/AGENTS.md), [`neocortex/workflow`](../neocortex/workflow/AGENTS.md) | review, grants, aplicación, verificación y recuperación |
 | [Interfaces públicas](subprojects/interfaces.md) | [`neocortex/api`](../neocortex/api/AGENTS.md), [`neocortex/interface`](../neocortex/interface/AGENTS.md) | CLI, API/SDK, GUI y MCP |
@@ -35,7 +34,7 @@ procedencia y sus caches, sin asumir la autoridad de los owners que la consumen.
 `neocortex.semantic.semantic_models` define `TextSourceRecord`; el adaptador Video
 consume ese DTO directamente y `semantic_sources` conserva su reexport compatible.
 Estas separaciones siguen responsabilidades y consumidores concretos, no cuotas
-de líneas. Las fachadas y los ocho dominios del mapa mantienen sus rutas.
+de líneas. Las fachadas y los siete dominios del mapa mantienen sus rutas.
 
 Los tests heredan el AGENTS de `tests`; sus contratos de comportamiento están
 en la ficha del dominio bajo prueba. No desplaces fixtures ni módulos para que
@@ -66,7 +65,6 @@ Las fichas y contratos siguientes son la memoria operativa del monorepositorio; 
 | Runtime y persistencia | `docs/subprojects/platform-state.md`, `docs/PERSISTENCE.md` |
 | Inventario y catálogo | `docs/subprojects/inventory-catalog.md` |
 | Ingesta de formatos | `docs/subprojects/formats.md` |
-| Code como contenido | `docs/subprojects/code-content.md` |
 | Semantic y Knowledge | `docs/subprojects/retrieval-context.md`, `docs/KNOWLEDGE.md` |
 | Curación y efectos | `docs/subprojects/curation-effects.md` |
 | Interfaces públicas | `docs/subprojects/interfaces.md` |

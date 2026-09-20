@@ -19,7 +19,6 @@ BUILTIN_ROUTE_ORDER = (
     "audio",
     "video",
     "image",
-    "code",
 )
 ORGANIZABLE_ROUTE_NAMES = frozenset({"pdf", "docx", "office", "text", "audio"})
 

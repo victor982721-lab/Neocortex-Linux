@@ -20,7 +20,6 @@ from neocortex.deduplication.persistence import ddl as inventory_ddl
 from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.persistence import framework_schema as framework_schema_module
 from neocortex.capabilities.formats.archive.state import initialize_archive_state
-from neocortex.code.code_schema import initialize_code_state
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.knowledge.knowledge_contracts import (
     OwnerAvailability,
@@ -136,7 +135,6 @@ def _published_fixture(state: Path) -> None:
             (model.model_signature, generation),
         )
 
-    initialize_code_state(state / "code.sqlite3")
 
 
 def _legacy_read_compatible_fixture(
@@ -488,101 +486,6 @@ def test_snapshot_cancellation_rolls_back_and_closes_readonly_connection(
     assert not inventory.with_name(f"{inventory.name}-journal").exists()
 
 
-@pytest.mark.parametrize("cancel_on_observation", (1, 2))
-def test_snapshot_sqlite_progress_interrupts_long_owner_query(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cancel_on_observation: int,
-) -> None:
-    class QueryCancelled(RuntimeError):
-        pass
-
-    state = tmp_path / "state"
-    state.mkdir()
-    code = state / "code.sqlite3"
-    initialize_code_state(code)
-    code_before = code.read_bytes()
-    original_observation = knowledge_snapshot._logical_observation
-    real_connect_readonly = knowledge_snapshot._connect_readonly
-    opened: list[sqlite3.Connection] = []
-    entered_long_query = False
-    query_completed = False
-    observation_calls = 0
-    progress_calls = 0
-    cancellation = QueryCancelled("cancel inside snapshot SQLite query")
-
-    def track_readonly_connection(
-        path: Path,
-        *,
-        immutable: bool = False,
-    ) -> sqlite3.Connection:
-        connection = real_connect_readonly(path, immutable=immutable)
-        opened.append(connection)
-        return connection
-
-    def long_observation(connection: sqlite3.Connection, spec: Any) -> Any:
-        nonlocal entered_long_query, observation_calls, query_completed
-        if spec.owner == "code":
-            observation_calls += 1
-        if spec.owner == "code" and observation_calls == cancel_on_observation:
-            entered_long_query = True
-            connection.execute(
-                """WITH RECURSIVE sequence(value) AS (
-                SELECT 1
-                UNION ALL
-                SELECT value + 1 FROM sequence WHERE value < 100000
-                )
-                SELECT SUM(value) FROM sequence"""
-            ).fetchone()
-            query_completed = True
-        return original_observation(connection, spec)
-
-    def cancel_long_query() -> None:
-        nonlocal progress_calls
-        if not entered_long_query:
-            return
-        progress_calls += 1
-        if progress_calls == 1:
-            raise cancellation
-
-    monkeypatch.setattr(
-        knowledge_snapshot,
-        "_connect_readonly",
-        track_readonly_connection,
-    )
-    monkeypatch.setattr(
-        knowledge_snapshot,
-        "_logical_observation",
-        long_observation,
-    )
-
-    with pytest.raises(QueryCancelled) as raised:
-        collect_knowledge_snapshot(
-            KnowledgeStatePaths.from_directory(state),
-            source_version="0.7.0",
-            cancellation_check=cancel_long_query,
-        )
-
-    assert raised.value is cancellation
-    cause = raised.value.__cause__
-    assert isinstance(cause, sqlite3.OperationalError)
-    assert getattr(cause, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT
-    assert entered_long_query
-    assert not query_completed
-    assert observation_calls == cancel_on_observation
-    assert progress_calls == 1
-    assert len(opened) == cancel_on_observation
-    for opened_connection in opened:
-        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-            opened_connection.execute("SELECT 1")
-    with closing(sqlite3.connect(code, timeout=1)) as connection, connection:
-        assert int(connection.execute("PRAGMA query_only").fetchone()[0]) == 0
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute("ROLLBACK")
-    assert code.read_bytes() == code_before
-    assert not code.with_name(f"{code.name}-journal").exists()
-
-
 def test_state_paths_reject_existing_root_with_missing_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -721,7 +624,6 @@ def test_snapshot_collects_real_heads_and_marks_absent_owners(tmp_path: Path) ->
     assert _owner(snapshot, "catalog").publications[0].scope == "pdf"
     assert _owner(snapshot, "semantic").publications[0].model_signature == ("snapshot-model-v1")
     assert snapshot.active_models[0].vector_space == "snapshot-space-v1"
-    assert _owner(snapshot, "code").watermarks
     assert _owner(snapshot, "pdf").state is OwnerAvailability.ABSENT
     assert not (state / "pdf.sqlite3").exists()
 
@@ -753,30 +655,6 @@ def test_snapshot_fixture_closes_writers_before_gc_during_capture(tmp_path: Path
     assert collected_during_capture
     assert snapshot.consistency is SnapshotConsistency.STABLE
     assert snapshot.attempts == 1
-
-
-def test_quiescent_snapshot_does_not_require_temporary_copy_budget(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from neocortex.persistence import sqlite_immutable
-
-    state = tmp_path / "state"
-    state.mkdir()
-    database = state / "code.sqlite3"
-    initialize_code_state(database)
-    before = database.read_bytes()
-    assert len(before) > 1
-    monkeypatch.setattr(sqlite_immutable, "DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES", 1)
-
-    snapshot = collect_knowledge_snapshot(
-        KnowledgeStatePaths.from_directory(state),
-        source_version="0.7.0",
-    )
-
-    assert snapshot.consistency is SnapshotConsistency.STABLE
-    assert _owner(snapshot, "code").state is OwnerAvailability.AVAILABLE
-    assert database.read_bytes() == before
 
 
 def test_snapshot_exposes_existing_video_owner_without_creating_absent_state(
@@ -1029,150 +907,6 @@ def test_snapshot_distinguishes_absent_future_and_corrupt_without_mutation(
     assert not (state / "dedup.sqlite3").exists()
 
 
-def test_snapshot_retries_once_after_external_owner_change(tmp_path: Path) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    code = state / "code.sqlite3"
-    initialize_code_state(code)
-    changed = False
-
-    def mutate(owner: str, attempt: int) -> None:
-        nonlocal changed
-        if owner != "code" or attempt != 1 or changed:
-            return
-        changed = True
-        with closing(sqlite3.connect(code)) as connection, connection:
-            connection.execute(
-                """INSERT INTO analysis_runs(
-                framework_run_id,scan_id,processing_signature,status,started_ns)
-                VALUES(1,1,'fixture','completed',1)"""
-            )
-
-    snapshot = collect_knowledge_snapshot(
-        KnowledgeStatePaths.from_directory(state),
-        source_version="0.7.0",
-        _between_observations=mutate,
-    )
-
-    assert snapshot.consistency is SnapshotConsistency.STABLE
-    assert snapshot.attempts == 2
-
-
-def test_snapshot_retries_after_commit_without_logical_watermark_change(
-    tmp_path: Path,
-) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    code = state / "code.sqlite3"
-    initialize_code_state(code)
-    changed = False
-
-    def mutate_metadata(owner: str, attempt: int) -> None:
-        nonlocal changed
-        if owner != "code" or attempt != 1 or changed:
-            return
-        changed = True
-        with closing(sqlite3.connect(code)) as connection, connection:
-            connection.execute("INSERT INTO metadata(key,value) VALUES('snapshot_probe','1')")
-
-    snapshot = collect_knowledge_snapshot(
-        KnowledgeStatePaths.from_directory(state),
-        source_version="0.7.2",
-        _between_observations=mutate_metadata,
-    )
-
-    assert snapshot.consistency is SnapshotConsistency.STABLE
-    assert snapshot.attempts == 2
-    assert changed
-
-
-def test_snapshot_observes_cancellation_before_global_retry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class Cancelled(RuntimeError):
-        pass
-
-    state = tmp_path / "state"
-    state.mkdir()
-    code = state / "code.sqlite3"
-    initialize_code_state(code)
-    changed = False
-    retry_pending = False
-    original_changed_owners = knowledge_snapshot._changed_vector_owners
-
-    def mutate(owner: str, attempt: int) -> None:
-        nonlocal changed
-        if owner != "code" or attempt != 1 or changed:
-            return
-        changed = True
-        with closing(sqlite3.connect(code)) as connection, connection:
-            connection.execute(
-                """INSERT INTO analysis_runs(
-                framework_run_id,scan_id,processing_signature,status,started_ns)
-                VALUES(1,1,'fixture','completed',1)"""
-            )
-
-    def mark_retry(*args: Any, **kwargs: Any) -> frozenset[str]:
-        nonlocal retry_pending
-        changed_owners = original_changed_owners(*args, **kwargs)
-        retry_pending = bool(changed_owners)
-        return changed_owners
-
-    def cancel_retry() -> None:
-        if retry_pending:
-            raise Cancelled("cancel before retry")
-
-    monkeypatch.setattr(
-        knowledge_snapshot,
-        "_changed_vector_owners",
-        mark_retry,
-    )
-
-    with pytest.raises(Cancelled, match="before retry"):
-        collect_knowledge_snapshot(
-            KnowledgeStatePaths.from_directory(state),
-            source_version="0.7.0",
-            cancellation_check=cancel_retry,
-            _between_observations=mutate,
-        )
-
-    assert changed
-    assert retry_pending
-
-
-def test_snapshot_reports_changed_after_second_bounded_attempt(tmp_path: Path) -> None:
-    state = tmp_path / "state"
-    state.mkdir()
-    code = state / "code.sqlite3"
-    initialize_code_state(code)
-    writes = 0
-
-    def mutate(owner: str, _attempt: int) -> None:
-        nonlocal writes
-        if owner != "code":
-            return
-        writes += 1
-        with closing(sqlite3.connect(code)) as connection, connection:
-            connection.execute(
-                """INSERT INTO analysis_runs(
-                framework_run_id,scan_id,processing_signature,status,started_ns)
-                VALUES(1,?,'fixture','completed',?)""",
-                (writes, writes),
-            )
-
-    snapshot = collect_knowledge_snapshot(
-        KnowledgeStatePaths.from_directory(state),
-        source_version="0.7.0",
-        _between_observations=mutate,
-    )
-
-    assert snapshot.consistency is SnapshotConsistency.SNAPSHOT_CHANGED
-    assert snapshot.attempts == 2
-    assert "code" in snapshot.changed_owners
-    assert writes == 2
-
-
 def test_snapshot_retries_when_inventory_duplicate_plan_is_cleared(
     tmp_path: Path,
 ) -> None:
@@ -1269,9 +1003,9 @@ def test_snapshot_retries_when_later_owner_changes_captured_inventory(
     inventory = state / "dedup.sqlite3"
     changed = False
 
-    def mutate_inventory_from_code(owner: str, attempt: int) -> None:
+    def mutate_inventory_from_catalog(owner: str, attempt: int) -> None:
         nonlocal changed
-        if owner != "code" or attempt != 1 or changed:
+        if owner != "catalog" or attempt != 1 or changed:
             return
         changed = True
         _set_duplicate_plan_summary(
@@ -1285,7 +1019,7 @@ def test_snapshot_retries_when_later_owner_changes_captured_inventory(
     snapshot = collect_knowledge_snapshot(
         KnowledgeStatePaths.from_directory(state),
         source_version="0.7.0",
-        _between_observations=mutate_inventory_from_code,
+        _between_observations=mutate_inventory_from_catalog,
     )
 
     assert snapshot.consistency is SnapshotConsistency.STABLE
@@ -1304,9 +1038,9 @@ def test_snapshot_reports_cross_owner_skew_after_second_attempt(
     inventory = state / "dedup.sqlite3"
     writes = 0
 
-    def keep_changing_inventory_from_code(owner: str, _attempt: int) -> None:
+    def keep_changing_inventory_from_catalog(owner: str, _attempt: int) -> None:
         nonlocal writes
-        if owner != "code":
+        if owner != "catalog":
             return
         writes += 1
         _set_duplicate_plan_summary(
@@ -1320,7 +1054,7 @@ def test_snapshot_reports_cross_owner_skew_after_second_attempt(
     snapshot = collect_knowledge_snapshot(
         KnowledgeStatePaths.from_directory(state),
         source_version="0.7.0",
-        _between_observations=keep_changing_inventory_from_code,
+        _between_observations=keep_changing_inventory_from_catalog,
     )
     inventory_snapshot = _owner(snapshot, "inventory")
 

@@ -1,4 +1,4 @@
-"""Fresh, fenced observations of the Semantic and Code publication heads.
+"""Fresh, fenced observations of the Semantic publication heads.
 
 This module is deliberately a reader-only bridge.  It does not read the
 cross-owner epoch marker: the owner databases are the only source that can
@@ -6,11 +6,10 @@ prove the current head set.  Each owner is opened through
 ``SQLiteReadSession`` and its source fence is checked again before the
 observation is returned.
 
-Semantic has one durable head per model signature.  Code has named graph
-heads and a current projection of Semantic links in the existing Code owner.
-The public ``StateOwnerHead`` therefore contains an aggregate revision and a
-canonical digest of the complete published set, rather than just the largest
-generation identifier.
+Semantic has one durable head per model signature.  The public
+``StateOwnerHead`` therefore contains an aggregate revision and a canonical
+digest of the complete published set, rather than just the largest generation
+identifier.
 """
 
 from __future__ import annotations
@@ -26,12 +25,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from neocortex.code.code_graph_generations import CodeGraphGenerationStore
-from neocortex.code.code_schema import (
-    CODE_SCHEMA_VERSION,
-    _read_version,
-    validate_code_schema,
-)
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteImmutableFence,
@@ -52,11 +45,8 @@ from .semantic_schema import (
 
 
 SEMANTIC_PUBLICATION_HEADS_PROTOCOL = "neocortex.semantic-publication-heads/v1"
-CODE_PUBLICATION_HEADS_PROTOCOL = "neocortex.code-publication-heads/v1"
 
 MAX_SEMANTIC_PUBLICATION_HEADS = 1_024
-MAX_CODE_GRAPH_HEADS = 1_024
-MAX_ACTIVE_CODE_LINKS = 100_000
 MAX_APPLICATION_OBJECTS = 512
 MAX_JSON_BYTES = 256 * 1024
 MAX_AGGREGATE_DIGEST_BYTES = 64 * 1024 * 1024
@@ -66,7 +56,6 @@ SQL_PROGRESS_OPCODES = 1_000
 
 _EXPECTED_SCHEMA_VERSIONS = {
     "semantic": SEMANTIC_SCHEMA_VERSION,
-    "code": CODE_SCHEMA_VERSION,
 }
 
 
@@ -86,13 +75,8 @@ class PublicationHeadsDriftError(PublicationHeadsError):
     """An owner changed while its fresh observation was being assembled."""
 
 
-class PublicationHeadsRepairRequired(PublicationHeadsError):
-    """A normal interrupted projection needs the bounded Code repair pass."""
-
-
 # Keep descriptive aliases available to callers that name the Semantic bridge
-# or the integrated boundary explicitly.  They intentionally share one base
-# contract so a caller can catch either the focused or aggregate error.
+# or the integrated boundary explicitly.
 SemanticPublicationHeadsError = PublicationHeadsError
 IntegratedOwnerHeadsError = PublicationHeadsError
 
@@ -134,27 +118,8 @@ class _SemanticObservation:
     capture: _OwnerCapture
 
 
-@dataclass(frozen=True, slots=True)
-class _CodeHead:
-    head_name: str
-    generation_id: str
-    generation_digest: str
-    revision: int
-    updated_ns: int
-
-
-@dataclass(frozen=True, slots=True)
-class _CodeLink:
-    chunk_id: int
-    semantic_item_id: str
-    model_signature: str
-    vector_space: str
-    generation_id: int
-    provenance: dict[str, object]
-
-
 class _ObservationControls:
-    """One cooperative budget shared by the Semantic and Code owner reads."""
+    """One cooperative budget shared by bounded Semantic owner reads."""
 
     def __init__(
         self,
@@ -346,22 +311,14 @@ def _empty_owner_head(owner: str, *, schema_version: int | None = None) -> State
     if expected_schema is None:
         raise PublicationHeadsSchemaError(f"unknown empty owner: {owner}")
     selected_schema = expected_schema if schema_version is None else schema_version
-    if owner == "semantic":
-        allowed_schemas = {7, 8, 9, expected_schema}
-    else:
-        allowed_schemas = {expected_schema}
+    allowed_schemas = {7, 8, 9, expected_schema}
     if selected_schema not in allowed_schemas:
         raise PublicationHeadsSchemaError(
             f"empty {owner} schema differs from the expected owner schema"
         )
-    protocol = (
-        SEMANTIC_PUBLICATION_HEADS_PROTOCOL
-        if owner == "semantic"
-        else CODE_PUBLICATION_HEADS_PROTOCOL
-    )
     digest = _digest_payload(
         {
-            "contract": protocol,
+            "contract": SEMANTIC_PUBLICATION_HEADS_PROTOCOL,
             "owner": owner,
             "schema_version": selected_schema,
             "heads": [],
@@ -741,310 +698,21 @@ def _observe_semantic(
     )
 
 
-def _code_schema(
-    connection: sqlite3.Connection,
-    controls: _ObservationControls | None = None,
-) -> int | None:
-    if controls is not None:
-        controls.checkpoint()
-    try:
-        objects = _application_objects(connection, controls)
-        if not objects:
-            pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if pragma_version != 0:
-                raise PublicationHeadsSchemaError(
-                    f"Code empty database declares an unsupported schema: {pragma_version!r}"
-                )
-            return None
-        version = _read_version(connection)
-        if version != CODE_SCHEMA_VERSION:
-            raise PublicationHeadsSchemaError(
-                f"Code schema is not the current publication schema: {version!r}"
-            )
-        validate_code_schema(connection)
-    except PublicationHeadsError:
-        raise
-    except (RuntimeError, sqlite3.DatabaseError, ValueError) as exc:
-        if controls is not None:
-            controls.raise_sql_failure_or_checkpoint(exc)
-        raise PublicationHeadsSchemaError("Code schema contract is invalid") from exc
-    return CODE_SCHEMA_VERSION
-
-
-def _read_code_graph_heads(
-    connection: sqlite3.Connection,
-    controls: _ObservationControls | None = None,
-) -> tuple[_CodeHead, ...]:
-    try:
-        store = CodeGraphGenerationStore(connection)
-    except Exception as exc:
-        if controls is not None:
-            controls.raise_sql_failure_or_checkpoint(exc)
-        raise PublicationHeadsSchemaError("Code graph schema contract is invalid") from exc
-    rows = connection.execute(
-        """SELECT head_name,generation_id,generation_digest,revision,updated_ns
-        FROM graph_heads ORDER BY head_name LIMIT ?""",
-        (MAX_CODE_GRAPH_HEADS + 1,),
-    ).fetchall()
-    if len(rows) > MAX_CODE_GRAPH_HEADS:
-        raise PublicationHeadsSchemaError("Code graph heads exceed their bound")
-    result: list[_CodeHead] = []
-    for row in rows:
-        if controls is not None:
-            controls.checkpoint()
-        head_name = _required_text(row["head_name"], label="Code graph head name")
-        generation_id = _required_text(
-            row["generation_id"], label="Code graph generation identifier"
-        )
-        generation_digest = _required_text(
-            row["generation_digest"], label="Code graph generation digest"
-        )
-        revision = _required_integer(row["revision"], label="Code graph head revision", minimum=1)
-        updated_ns = _required_integer(
-            row["updated_ns"], label="Code graph head timestamp", minimum=1
-        )
-        head = store.get_head(head_name)
-        if head is None or (
-            head.generation_id,
-            head.generation_digest,
-            head.revision,
-            head.updated_ns,
-        ) != (generation_id, generation_digest, revision, updated_ns):
-            raise PublicationHeadsSchemaError("Code graph head changed during observation")
-        generation = store.get_generation(generation_id)
-        if generation is None or generation.status != "published":
-            raise PublicationHeadsSchemaError(
-                f"Code graph head points at a non-published generation: {generation_id}"
-            )
-        if generation.generation_digest != generation_digest:
-            raise PublicationHeadsSchemaError("Code graph generation digest differs from head")
-        if generation.completed_ns is None or generation.completed_ns <= 0:
-            raise PublicationHeadsSchemaError("Code published generation timestamp is invalid")
-        snapshot = connection.execute(
-            "SELECT status,input_digest,input_count FROM graph_input_snapshots "
-            "WHERE snapshot_id=?",
-            (generation.snapshot_id,),
-        ).fetchone()
-        if snapshot is None or snapshot["status"] != "sealed":
-            raise PublicationHeadsSchemaError(
-                f"Code graph generation snapshot is not sealed: {generation_id}"
-            )
-        _required_text(snapshot["input_digest"], label="Code graph input digest")
-        _required_integer(snapshot["input_count"], label="Code graph input count")
-        source_run_id = generation.metadata.get("source_run_id")
-        if source_run_id is not None:
-            source_run_id = _required_integer(
-                source_run_id, label="Code graph source run", minimum=1
-            )
-            try:
-                store.validate_source_run_id(source_run_id)
-            except Exception as exc:
-                raise PublicationHeadsSchemaError(
-                    f"Code graph source run is not a completed producer: {generation_id}"
-                ) from exc
-        result.append(
-            _CodeHead(head_name, generation_id, generation_digest, revision, updated_ns)
-        )
-    return tuple(result)
-
-
-def _read_current_code_links(
-    connection: sqlite3.Connection,
-    semantic_heads: tuple[_SemanticHead, ...],
-    controls: _ObservationControls | None = None,
-) -> tuple[_CodeLink, ...]:
-    expected = {
-        (head.model_signature, head.generation_id): head.vector_space
-        for head in semantic_heads
-    }
-    rows = connection.execute(
-        """SELECT e.chunk_id,e.semantic_item_id,e.model_signature,e.vector_space,
-            e.generation_id,e.active,e.provenance_json,
-            CASE WHEN c.chunk_id IS NOT NULL
-                AND v.version_id IS NOT NULL
-                AND f.current_version_id=v.version_id
-                AND f.status='current'
-                AND v.invalidated_ns IS NULL THEN 1 ELSE 0 END AS is_current
-        FROM embedding_links e
-        LEFT JOIN code_chunks c ON c.chunk_id=e.chunk_id
-        LEFT JOIN file_versions v ON v.version_id=c.version_id
-        LEFT JOIN files f ON f.current_version_id=v.version_id
-        WHERE e.active=1
-        ORDER BY e.model_signature,e.generation_id,e.chunk_id,e.semantic_item_id
-        LIMIT ?""",
-        (MAX_ACTIVE_CODE_LINKS + 1,),
-    ).fetchall()
-    if len(rows) > MAX_ACTIVE_CODE_LINKS:
-        raise PublicationHeadsSchemaError("active Code Semantic links exceed their bound")
-    result: list[_CodeLink] = []
-    seen: set[tuple[int, str, int]] = set()
-    for row in rows:
-        if controls is not None:
-            controls.checkpoint()
-        if _required_integer(row["active"], label="Code Semantic link active flag") != 1:
-            raise PublicationHeadsSchemaError("Code Semantic link active flag is invalid")
-        chunk_id = _required_integer(row["chunk_id"], label="Code Semantic chunk", minimum=1)
-        semantic_item_id = _required_text(
-            row["semantic_item_id"], label="Code Semantic item identity"
-        )
-        model_signature = _required_text(
-            row["model_signature"], label="Code Semantic model signature"
-        )
-        vector_space = _required_text(row["vector_space"], label="Code Semantic vector space")
-        generation_id = _required_integer(
-            row["generation_id"], label="Code Semantic generation", minimum=1
-        )
-        key = (chunk_id, model_signature, generation_id)
-        if key in seen:
-            raise PublicationHeadsSchemaError("Code Semantic links are not unique")
-        seen.add(key)
-        provenance = _canonical_object(
-            row["provenance_json"], label="Code Semantic link provenance"
-        )
-        expected_space = expected.get((model_signature, generation_id))
-        if expected_space is None:
-            raise PublicationHeadsRepairRequired(
-                "active Code Semantic link has no matching published Semantic head"
-            )
-        if vector_space != expected_space:
-            raise PublicationHeadsSchemaError(
-                "active Code Semantic link vector space differs from its Semantic head"
-            )
-        if _required_integer(row["is_current"], label="Code Semantic current flag") != 1:
-            raise PublicationHeadsRepairRequired(
-                "active Code Semantic link does not resolve to a current Code chunk"
-            )
-        result.append(
-            _CodeLink(
-                chunk_id,
-                semantic_item_id,
-                model_signature,
-                vector_space,
-                generation_id,
-                provenance,
-            )
-        )
-    return tuple(result)
-
-
-def _code_owner_head(
-    graph_heads: tuple[_CodeHead, ...],
-    links: tuple[_CodeLink, ...],
-    *,
-    schema_version: int,
-) -> StateOwnerHead:
-    if not graph_heads and not links:
-        return _empty_owner_head("code", schema_version=schema_version)
-    payload = {
-        "contract": CODE_PUBLICATION_HEADS_PROTOCOL,
-        "owner": "code",
-        "schema_version": schema_version,
-        "graph_heads": [
-            {
-                "head_name": head.head_name,
-                "generation_id": head.generation_id,
-                "generation_digest": head.generation_digest,
-                "revision": head.revision,
-                "updated_ns": head.updated_ns,
-            }
-            for head in graph_heads
-        ],
-        "embedding_links": [
-            {
-                "chunk_id": link.chunk_id,
-                "semantic_item_id": link.semantic_item_id,
-                "model_signature": link.model_signature,
-                "vector_space": link.vector_space,
-                "generation_id": link.generation_id,
-                "provenance": link.provenance,
-            }
-            for link in links
-        ],
-    }
-    return StateOwnerHead(
-        owner="code",
-        revision=max((head.revision for head in graph_heads), default=0),
-        digest_sha256=_digest_payload(payload, label="Code publication heads"),
-        schema_version=schema_version,
-    )
-
-
-def _observe_code(
-    state_directory: Path,
-    semantic: _SemanticObservation,
-    controls: _ObservationControls,
-) -> tuple[StateOwnerHead, _OwnerCapture]:
-    path = state_directory / "code.sqlite3"
-    controls.checkpoint()
-    empty_capture = _empty_or_absent_capture(path)
-    if empty_capture is not None:
-        controls.checkpoint()
-        _verify_capture(empty_capture)
-        controls.checkpoint()
-        return (
-            _empty_owner_head("code", schema_version=CODE_SCHEMA_VERSION),
-            empty_capture,
-        )
-    try:
-        controls.checkpoint()
-        mode = preferred_sqlite_read_mode(path)
-        session = SQLiteReadSession(
-            path,
-            mode=mode,
-            timeout_seconds=READ_TIMEOUT_SECONDS,
-            max_attempts=2,
-            budget=controls.session_budget(),
-        )
-        with session as connection:
-            with _sql_progress(connection, controls):
-                connection.execute("BEGIN")
-                schema_version = _code_schema(connection, controls)
-                if schema_version is None:
-                    graph_heads: tuple[_CodeHead, ...] = ()
-                    links: tuple[_CodeLink, ...] = ()
-                else:
-                    graph_heads = _read_code_graph_heads(connection, controls)
-                    links = _read_current_code_links(
-                        connection,
-                        semantic.semantic_heads,
-                        controls,
-                    )
-                capture = _OwnerCapture(path, session.source_fence, None, False)
-        _verify_capture(capture)
-        controls.checkpoint()
-    except PublicationHeadsError:
-        raise
-    except Exception as exc:
-        raise PublicationHeadsError(
-            f"Code publication heads could not be observed: {type(exc).__name__}"
-        ) from exc
-    if schema_version is None:
-        return _empty_owner_head("code", schema_version=CODE_SCHEMA_VERSION), capture
-    return _code_owner_head(graph_heads, links, schema_version=schema_version), capture
-
-
 def observe_integrated_owner_heads(
     state_directory: Path,
     *,
-    include_code: bool = False,
     snapshot_budget: SQLiteSnapshotBudget | None = None,
     deadline_monotonic: float | None = None,
     cancellation_check: Callable[[], bool | None] | None = None,
 ) -> tuple[StateOwnerHead, ...]:
-    """Observe fresh Semantic (and optionally Code) owner heads.
+    """Observe the fresh Semantic owner head through a bounded read-only fence.
 
-    The result is one aggregate ``StateOwnerHead`` per requested owner.  A
-    missing or truly empty database is represented by revision ``0`` and the
-    stable owner/schema-specific empty-set digest.  A malformed, partial,
-    future, or drifting owner raises ``PublicationHeadsError`` instead; no
-    publication epoch JSON is consulted and no database is created or
-    migrated.  ``snapshot_budget`` bounds detached SQLite preparation;
-    ``deadline_monotonic`` and ``cancellation_check`` are shared across both
-    owner reads and are also installed as SQLite progress checkpoints.
+    A missing or truly empty database is represented by revision ``0`` and the
+    stable Semantic empty-set digest.  A malformed, partial, future, or
+    drifting owner raises ``PublicationHeadsError``; no database is created or
+    migrated.
     """
 
-    if not isinstance(include_code, bool):
-        raise TypeError("include_code must be a boolean")
     controls = _ObservationControls(
         snapshot_budget,
         deadline_monotonic=deadline_monotonic,
@@ -1052,15 +720,7 @@ def observe_integrated_owner_heads(
     )
     selected = _state_directory(state_directory)
     semantic = _observe_semantic(selected, controls)
-    if not include_code:
-        return (semantic.owner_head,)
-    code_head, code_capture = _observe_code(selected, semantic, controls)
-    # Code links are authenticated against the Semantic set read earlier;
-    # prove that set did not drift while the second owner was read.
-    _verify_capture(semantic.capture)
-    _verify_capture(code_capture)
-    controls.checkpoint()
-    return semantic.owner_head, code_head
+    return (semantic.owner_head,)
 
 
 def observe_semantic_generation_heads(
@@ -1082,17 +742,13 @@ def observe_semantic_generation_heads(
 
 
 __all__ = [
-    "CODE_PUBLICATION_HEADS_PROTOCOL",
-    "MAX_ACTIVE_CODE_LINKS",
     "MAX_AGGREGATE_DIGEST_BYTES",
     "MAX_APPLICATION_OBJECTS",
-    "MAX_CODE_GRAPH_HEADS",
     "MAX_SEMANTIC_PUBLICATION_HEADS",
     "SEMANTIC_PUBLICATION_HEADS_PROTOCOL",
     "IntegratedOwnerHeadsError",
     "PublicationHeadsDriftError",
     "PublicationHeadsError",
-    "PublicationHeadsRepairRequired",
     "PublicationHeadsSchemaError",
     "PublicationHeadsStateError",
     "SemanticPublicationHeadsError",

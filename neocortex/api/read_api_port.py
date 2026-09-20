@@ -2,7 +2,7 @@
 
 Only the fixed-scope public adapter should consume this module.  Keeping the
 cross-package contract here prevents ``neocortex.api.read_api`` from depending on
-the internal layout of the Knowledge, Code and path owners.
+the internal layout of the Knowledge and path owners.
 """
 
 from __future__ import annotations
@@ -15,8 +15,6 @@ from neocortex.api.status_codes import (
     knowledge_context_exit_code,
     knowledge_search_exit_code,
 )
-from neocortex.code.code_contracts import CodeSearchQuery
-from neocortex.code.search.code_search import available_search_modes, search_code
 from neocortex.knowledge.knowledge_contracts import (
     KnowledgeCompleteness,
     KnowledgeSnapshot,
@@ -82,7 +80,6 @@ def inspect_knowledge_asset_health(
 
 
 __all__ = (
-    "CodeSearchQuery",
     "KnowledgeCompleteness",
     "KnowledgeExitCode",
     "KnowledgeQuery",
@@ -92,12 +89,10 @@ __all__ = (
     "OwnerAvailability",
     "RetrievalMode",
     "SnapshotConsistency",
-    "available_search_modes",
     "default_state_directory",
     "inspect_derivation_lineage",
     "inspect_knowledge_asset_health",
     "knowledge_context_exit_code",
     "knowledge_search_exit_code",
-    "search_code",
     "validate_knowledge_asset_resource_id",
 )

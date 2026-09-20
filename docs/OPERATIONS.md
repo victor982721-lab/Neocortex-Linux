@@ -316,19 +316,16 @@ La corrida debe publicar el manifest antes de workers y mostrar los stages
 `finalize`. La ausencia de Audio/Whisper, FFmpeg, un modelo u otra herramienta
 se registra como `unavailable`/`blocked` y deja `incomplete`; no se corrige
 relajando fences ni se presenta como cobertura completa. El stage Semantic se
-coordina dentro del run y considera Archive, Code y Video cuando sus owners,
-heads y dependencias están disponibles; `--semantic-source` sigue permitiendo
+coordina dentro del run y considera Archive y Video cuando sus owners, heads y
+dependencias están disponibles; `--semantic-source` sigue permitiendo
 acotar explícitamente el conjunto. Una ausencia afecta la ruta dependiente sin
 ocultar las rutas independientes.
 
 ## Ampliación controlada
 
 Después de validar un foco, amplía sólo sobre la raíz temporal. `--all` es una
-operación amplia, no el primer smoke: selecciona las rutas de contenido
-registradas y **excluye Code**. Code se solicita únicamente con `--route code`.
-Registra las copias de proyectos que quieras procesar con
-`--code-project-root PATH`; sólo usa `--code-scope broad` cuando quieras asumir
-explícitamente una exploración amplia dentro de la raíz elegida.
+operación amplia, no el primer smoke: selecciona las ocho rutas de contenido
+registradas.
 El flujo `--all --apply` aplica primero la redlist explícita del Corpus, sólo por
 metadata/ruta y de forma case-insensitive, antes de dedupe, hashing, validación
 de tipos o extracción. Las coincidencias se envían a Papelera con
@@ -339,8 +336,10 @@ frontera física.
 La fuente de verdad de esa política vive en
 `neocortex.workflow.actions.redlist`: cada entrada se compara contra el
 basename exacto o el sufijo final de `Path.suffix` (los puntos intermedios de
-versiones no cuentan), sin leer payload ni invocar
-clasificadores de Code. El pre-filtro conserva `policy_digest`, token de
+versiones no cuentan), sin leer payload ni invocar clasificadores heurísticos.
+Los archivos sin extensión se inspeccionan sólo con el detector bounded de
+firmas: evidencia fuerte permite restaurar una extensión canónica y evidencia
+insuficiente conserva el nombre. El pre-filtro conserva `policy_digest`, token de
 redlist, identidad y receipt en `file_actions`; un fallo parcial o
 `recovery_required` aborta antes de dedupe y no reintenta la acción.
 
@@ -349,7 +348,7 @@ sobre el piloto temporal y prueba las rutas de contenido (`pdf`, `docx`, `office
 `archive`, `text`, `audio`, `video`, `image`) bajo el mismo presupuesto. El
 stage Semantic integrado se ejecuta con `--all`; sus fuentes pueden acotarse con
 `--semantic-source` y la preparación de modelos continúa siendo explícita.
-Code requiere `--route code` separado. `--all` no añade techos globales implícitos;
+`--all` no añade techos globales implícitos;
 sus límites globales y los límites por formato son acumulativos cuando se
 expresan. La validación C0–C7 y la instalación deben repetirse desde el SHA final
 de esta oleada antes de declararse cerradas.
@@ -358,39 +357,20 @@ Una corrida sin `--apply` no modifica originales, pero sí escribe inventario,
 cachés, planes y publicaciones. Distingue siempre consulta read-only, producción
 de estado y efecto sobre corpus.
 
-### Curación previa del corpus
+### Redlist y restauración de extensión
 
-La selección normal de Code usa exclusivamente las raíces configuradas de
-NeoCortex, MTF y bitácoras EPS. `--code-project-root` reemplaza la lista para una
-ejecución; repítelo por cada raíz interesada. Los marcadores de proyectos ajenos
-no amplían esa lista. Declarar interés tampoco amplía el corpus ni permite
-ingerir árboles internos protegidos.
+La redlist es la única política de descarte temprano: sus entradas explícitas se
+comparan por metadata/ruta, de forma case-insensitive, antes de hashing y rutas.
+Un archivo redlisted cruza la frontera KIO sólo con `--apply`; sin esa bandera se
+publica como plan y no se modifica. Los archivos físicos fuera del root efectivo,
+los cambios de identidad y los destinos ambiguos se conservan fail-closed.
 
-La clasificación individual distingue `process`, `metadata_only` y `sensitive`.
-Fuente/script ajeno y metadatos reconocidos de paquetes/cachés no llegan a OCR,
-parsers profundos o embeddings por otras rutas. Un JSON, CSV, documento o ZIP
-útil no se descarta por estar dentro de `AppData`, `vendor` o una carpeta de
-caché. Archive aplica la misma política por miembro después de sus verificaciones
-CRC/tamaño y antes de extraer texto; conserva el localizador virtual sin fabricar
-contenido ni identidad física. Cambiar la política invalida su replay.
-
-La prueba de regenerabilidad admite casos concretos: miembro idéntico en un
-wheel, nupkg o paquete npm local retenido, con metadata y layout comprobados;
-o `.pyc` compatible con el runtime actual, reproducido por compilación de una
-copia privada y acotada del `.py` conservado, sin ejecutar código. Versiones de
-bytecode no compatibles, fuentes ausentes/cambiadas, evidencia ambigua o límites
-agotados se conservan. No se descarga un sustituto ni se interpreta “se puede
-instalar otra vez” como prueba. Los originales, licencias, fixtures y credenciales
-no se convierten en Papelera por esta política.
-
-La selección mantiene límites por corrida y por prueba. `CORPUS_ADMISSION` y
-el stage `corpus-admission` conservan política, conteos, razones, ejemplos acotados
-y límites alcanzados; bytes reservados no son una medición de E/S física.
-`regeneration_unproven` significa conservado sin prueba, no basura confirmada.
-El status terminal puede leerse mediante la interfaz pública habitual. No abrir
-SQLite viva para observarlo. Resume/route-only exige la misma política de admisión
-y rechaza entradas antiguas sin ese contrato: no cambia silenciosamente intereses
-ni reconstruye candidatos bajo otro ámbito.
+La restauración de extensión usa `detect_content_type()` con límites bounded.
+Sólo una firma fuerte permite proponer un sufijo canónico; no se adivina `.bin`,
+no se interpreta texto débil como formato y un destino existente no se reemplaza.
+El rename seguro usa el backend POSIX no-replace, revalida identidad y registra
+receipt/recovery. Los miembros virtuales de ZIP/RAR no son objetivos físicos y un
+archivo contenedor no se modifica por el nombre de un miembro.
 
 Las rutas reutilizan extracción válida para reparar FTS y derivados sin repetir
 OCR, transcripción o análisis íntegros. Los reintentos sólo proceden con
@@ -435,9 +415,7 @@ a la nueva petición y se mantienen acumulados dentro de ella, incluyendo el
 tiempo del preflight. Se reutiliza lo válido y se reconstruyen los derivados
 necesarios, sin mover originales, exigir copias de recuperación de las bases ni
 promover generaciones parciales.
-Un enlace Code obsoleto tras una interrupción o cambio de archivo se desactiva
-una sola vez y se reconstruye en el flujo normal. Schema futuro, manifest ajeno
-o corrupto y drift real no se convierten en éxito.
+Schema futuro, manifest ajeno o corrupto y drift real no se convierten en éxito.
 
 ## Watcher
 
@@ -469,9 +447,9 @@ para aparentar una reconfiguración del modelo en ejecución.
 `ROUTE_REPLAY` separa trabajo nuevo de observaciones reutilizadas; por ejemplo,
 `transcribed` conserva su significado histórico de audios con transcripción y
 no implica llamadas nuevas al motor. `ROUTE_COVERAGE` identifica parciales y
-errores con el siguiente paso de diagnóstico. Code puede conservar contenido
-HTML mediante `generic-lexical-fallback` y declarar estructura parcial: no se
-eleva a análisis completo ni se añade un parser para ocultar esa limitación.
+errores con el siguiente paso de diagnóstico. Una ruta de contenido puede
+declarar extracción parcial sin convertirla en éxito completo ni añadir un
+parser para ocultar esa limitación.
 
 Video acota el muestreo por la duración del stream y sus intervalos; un título
 no es un fotograma ni recibe un timestamp inventado. Las marcas de muestreo no
@@ -548,15 +526,15 @@ de workers o threads no debe obligar a extraer de nuevo documentos válidos.
 
 Para subprocesses sin TTY, `NEOCORTEX_PROGRESS_STREAM=1` reutiliza `LineProgress`
 en stderr con flush; stdout queda reservado a la salida de la operación.
-Indica `--root`, `--state-directory` y, para Code, `--code-project-root`; HOME/XDG
+Indica `--root` y `--state-directory`; HOME/XDG
 pueden apuntar a un directorio temporal. Los owners crean estado nuevo sin bases
 productivas. Consulta las SQLite sólo después del estado terminal, mediante
 `SQLiteReadSession` y los contratos públicos de publicación.
 
 Compara cobertura, contenido, errores, procedencia y replay, no bytes idénticos
 de bases entre entornos: rutas, tiempos e identidades físicas pueden variar,
-mientras backend, versión y fingerprint deben permanecer explícitos. Escoger
-`--route text,code` limita expresamente una ejecución, no redefine `--all` ni
+mientras backend, versión y fingerprint deben permanecer explícitos. Elegir un
+subconjunto de rutas limita expresamente una ejecución, no redefine `--all` ni
 convierte una generación parcial en una publicación completa.
 
 El ledger `neocortex.run-budget/v1` reserva por stage/ruta/unidad de forma
@@ -583,7 +561,7 @@ FFmpeg/FFprobe y otros binarios se detectan antes de iniciar la ruta;
 una ausencia se reporta como cobertura o bloqueo, no como éxito vacío.
 
 Semantic pesado no descarga modelos automáticamente durante `--all`. El selector
-integrado considera Archive, Code y Video cuando sus fuentes y heads están
+integrado considera Archive y Video cuando sus fuentes y heads están
 disponibles; `--semantic-source` puede acotar la selección. Un modelo o herramienta
 ausente produce `unavailable`/`blocked` y cobertura `partial`/`incomplete`, no
 éxito vacío. La preparación de modelos sigue siendo una operación separada,
@@ -847,11 +825,11 @@ Los límites explícitos se describen en [CLI](CLI.md#auditoría-histórica-expl
 ### Retención por owner y contabilidad física
 
 La retención C mantiene una sola autoridad por owner: Semantic, Catalog,
-Inventory, Framework y Code calculan reachability y protegen heads, builders,
+Inventory y Framework calculan reachability y protegen heads, builders,
 lineage, outbox, referencias cross-owner, checkpoints, planes y decisiones
 humanas. El planner común valida schema/FK, bloquea estados parciales o de
-recuperación y usa límites de profundidad/nodos; Code e Inventory conservan sus
-writers específicos y no se sustituyen por SQL genérico.
+recuperación y usa límites de profundidad/nodos; Inventory conserva su writer
+específico y no se sustituye por SQL genérico.
 
 `--retention-status` y `plan_retention(...)` siguen siendo **read-only**. Su
 salida separa `observed`, `eligible/proposed`, `retired=0` y

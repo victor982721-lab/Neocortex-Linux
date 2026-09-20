@@ -35,7 +35,6 @@ from neocortex.runtime.orchestration.run_status import list_run_status
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.orchestration.run_manifest import RunManifest
-from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
 
 
 # region [01] Route-only and resumable execution
@@ -66,16 +65,6 @@ def _bind_policy_checkpoint(
     return scan, boundary.effective_signature
 
 
-def _current_admission_configuration() -> dict[str, object]:
-    config = FrameworkConfig()
-    policy = CorpusAdmissionPolicy(
-        interested_roots=config.code_project_roots,
-        code_scope=config.code_candidate_scope,
-    )
-    return {
-        "corpus_admission": policy.to_dict(),
-        "corpus_admission_signature": policy.signature,
-    }
 
 
 def _source_run(
@@ -119,7 +108,7 @@ def _source_run(
                     root_identity=(1, 2, -1),
                     selected_routes=("probe",),
                     route_capabilities={"probe": "safe_replay"},
-                    configuration=_current_admission_configuration(),
+            configuration={},
                     budget={} if manifest_budget is None else dict(manifest_budget),
                 ).event_payload(),
             )
@@ -148,70 +137,8 @@ def _source_run(
     return run_id
 
 
-def _inventory_snapshot_source_run(
-    database: Path,
-    root: Path,
-    *,
-    resumable_route: str | None = None,
-) -> tuple[int, int]:
-    source_path = root / "module.py"
-    source_path.write_text("VALUE = 1\n", encoding="utf-8")
-    with DedupIndex(database.with_name("dedup.sqlite3")) as index:
-        scan, effective_signature = _bind_policy_checkpoint(
-            index,
-            database,
-            root,
-        )
-    with FrameworkState(database) as state:
-        run_id = state.begin_initial_run(
-            root,
-            JournalCursor("C:", 1, 10),
-            inventory_policy_signature=effective_signature,
-        )
-        state.publish_run_manifest(
-            run_id,
-            RunManifest(
-                run_id=run_id,
-                run_kind="initial",
-                root=str(root),
-                root_identity=(1, 2, -1),
-                selected_routes=("code",),
-                route_capabilities={"code": "safe_replay"},
-                configuration=_current_admission_configuration(),
-            ).event_payload(),
-        )
-        state.publish_initial_routing_snapshot(
-            run_id,
-            scan.scan_id,
-            0,
-            1,
-            "full",
-            0,
-        )
-        if resumable_route is None:
-            state.complete_initial_run(
-                run_id,
-                scan.scan_id,
-                JournalCursor("C:", 1, 11),
-                0,
-                1,
-                "full",
-            )
-        else:
-            state.begin_route_runs(run_id, (resumable_route,))
-    return run_id, scan.scan_id
 
 
-def _inventory_snapshot_adapter(
-    seen: list[tuple[int, tuple[str, ...]]],
-) -> RouteAdapter:
-    def execute(context):
-        with DedupIndex(context.config.dedup_database) as index:
-            paths = tuple(snapshot.path for snapshot in index.snapshots(context.scan_id))
-        seen.append((context.scan_id, paths))
-        return {"processed": len(paths)}
-
-    return RouteAdapter("code", execute, input_source="inventory_snapshot")
 
 
 class _RouteOnlyBoundaryDouble:
@@ -229,7 +156,7 @@ class _RouteOnlyStateDouble:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.recorded_details: dict[str, dict[str, object]] = {}
-        self._run_manifest = {"configuration": _current_admission_configuration()}
+        self._run_manifest = {"configuration": {}}
 
     def read_run_manifest(self, _run_id: int) -> dict[str, object]:
         return self._run_manifest
@@ -382,7 +309,7 @@ def test_locked_route_only_signature_phase_order_and_complete_result(
     )
     summaries: dict[str, object] = {
         name: SimpleNamespace(name=name)
-        for name in ("pdf", "docx", "office", "audio", "image", "code")
+        for name in ("pdf", "docx", "office", "audio", "image")
     }
     summaries["probe"] = SimpleNamespace(name="probe")
     resources = cast(GlobalResourceSummary, SimpleNamespace(name="resources"))
@@ -403,7 +330,6 @@ def test_locked_route_only_signature_phase_order_and_complete_result(
     assert result.office is summaries["office"]
     assert result.audio is summaries["audio"]
     assert result.image is summaries["image"]
-    assert result.code is summaries["code"]
     assert result.actions.apply_actions is False
     assert events == [
         "boundary.verify",
@@ -539,229 +465,14 @@ def test_route_only_reuses_retained_candidates_without_inventory(tmp_path) -> No
     assert actions == 0
 
 
-def test_route_only_inventory_snapshot_accepts_zero_mime_candidates(
-    tmp_path: Path,
-) -> None:
-    corpus = tmp_path / "corpus"
-    state_dir = tmp_path / "state"
-    corpus.mkdir()
-    state_dir.mkdir()
-    database = state_dir / "framework.sqlite3"
-    source, source_scan_id = _inventory_snapshot_source_run(database, corpus)
-    seen: list[tuple[int, tuple[str, ...]]] = []
-
-    result = FrameworkOrchestrator(
-        FrameworkConfig(
-            root=corpus,
-            state_directory=state_dir,
-            route="code",
-            route_only=True,
-            candidate_run_id=source,
-            heartbeat_interval_seconds=0.01,
-        ),
-        route_registry={"code": _inventory_snapshot_adapter(seen)},
-    ).run()
-
-    assert isinstance(result, RouteOnlyRunResult)
-    assert result.source_run_id == source
-    assert seen == [(source_scan_id, (str(corpus / "module.py"),))]
-    with closing(sqlite3.connect(database)) as connection, connection:
-        target_candidates = connection.execute(
-            "SELECT COUNT(*) FROM route_candidates WHERE run_id=?",
-            (result.run_id,),
-        ).fetchone()[0]
-        details = json.loads(
-            connection.execute(
-                """SELECT details_json FROM run_events WHERE run_id=?
-                AND phase='run' AND message='Ejecución aislada de rutas iniciada'""",
-                (result.run_id,),
-            ).fetchone()[0]
-        )
-    assert target_candidates == 0
-    assert details["source_candidate_rows"] == 0
-    assert details["candidate_rows"] == 0
-    assert details["route_input_sources"] == {"code": "inventory_snapshot"}
 
 
-def test_implicit_inventory_route_uses_newest_durable_scan_not_stale_candidates(
-    tmp_path: Path,
-) -> None:
-    corpus = tmp_path / "corpus"
-    state_dir = tmp_path / "state"
-    corpus.mkdir()
-    state_dir.mkdir()
-    database = state_dir / "framework.sqlite3"
-    stale_candidate_run = _source_run(database, corpus)
-    newest_run, newest_scan_id = _inventory_snapshot_source_run(database, corpus)
-    seen: list[tuple[int, tuple[str, ...]]] = []
-
-    result = FrameworkOrchestrator(
-        FrameworkConfig(
-            root=corpus,
-            state_directory=state_dir,
-            route="code",
-            route_only=True,
-            heartbeat_interval_seconds=0.01,
-        ),
-        route_registry={"code": _inventory_snapshot_adapter(seen)},
-    ).run()
-
-    assert isinstance(result, RouteOnlyRunResult)
-    assert stale_candidate_run < newest_run
-    assert result.source_run_id == newest_run
-    assert seen == [
-        (
-            newest_scan_id,
-            (str(corpus / "module.py"), str(corpus / "one.pdf")),
-        )
-    ]
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM route_candidates WHERE run_id=?",
-                (stale_candidate_run,),
-            ).fetchone()[0]
-            == 1
-        )
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM route_candidates WHERE run_id=?",
-                (result.run_id,),
-            ).fetchone()[0]
-            == 0
-        )
 
 
-def test_failed_inventory_route_preserves_retained_mime_candidates(
-    tmp_path: Path,
-) -> None:
-    corpus = tmp_path / "corpus"
-    state_dir = tmp_path / "state"
-    corpus.mkdir()
-    state_dir.mkdir()
-    database = state_dir / "framework.sqlite3"
-    retained_candidate_run = _source_run(database, corpus)
-    newest_run, _ = _inventory_snapshot_source_run(database, corpus)
-
-    def fail(_context):
-        raise RuntimeError("inventory route failed")
-
-    with pytest.raises(RouteExecutionError, match="inventory route failed"):
-        FrameworkOrchestrator(
-            FrameworkConfig(
-                root=corpus,
-                state_directory=state_dir,
-                route="code",
-                route_only=True,
-                heartbeat_interval_seconds=0.01,
-            ),
-            route_registry={
-                "code": RouteAdapter(
-                    "code",
-                    fail,
-                    input_source="inventory_snapshot",
-                )
-            },
-        ).run()
-
-    assert retained_candidate_run < newest_run
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM route_candidates WHERE run_id=?",
-                (retained_candidate_run,),
-            ).fetchone()[0]
-            == 1
-        )
-        assert (
-            connection.execute(
-                "SELECT status FROM initial_runs ORDER BY run_id DESC LIMIT 1"
-            ).fetchone()[0]
-            == "failed"
-        )
 
 
-def test_implicit_mime_route_does_not_fallback_to_stale_candidate_run(
-    tmp_path: Path,
-) -> None:
-    corpus = tmp_path / "corpus"
-    state_dir = tmp_path / "state"
-    corpus.mkdir()
-    state_dir.mkdir()
-    database = state_dir / "framework.sqlite3"
-    stale_candidate_run = _source_run(database, corpus)
-    newest_run, _ = _inventory_snapshot_source_run(database, corpus)
-    executed = False
-
-    def execute(_context):
-        nonlocal executed
-        executed = True
-        return {"processed": 0}
-
-    with pytest.raises(
-        ValueError,
-        match=rf"run {newest_run} has no retained routing candidates",
-    ):
-        FrameworkOrchestrator(
-            FrameworkConfig(
-                root=corpus,
-                state_directory=state_dir,
-                route="probe",
-                route_only=True,
-            ),
-            route_registry={"probe": RouteAdapter("probe", execute)},
-        ).run()
-
-    assert stale_candidate_run < newest_run
-    assert executed is False
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 2
 
 
-@pytest.mark.parametrize(
-    "route",
-    ("probe", "code,probe"),
-    ids=("mime-only", "mixed-inventory-and-mime"),
-)
-def test_route_candidate_inputs_fail_closed_on_zero_mime_candidates(
-    tmp_path: Path,
-    route: str,
-) -> None:
-    corpus = tmp_path / "corpus"
-    state_dir = tmp_path / "state"
-    corpus.mkdir()
-    state_dir.mkdir()
-    database = state_dir / "framework.sqlite3"
-    source, _ = _inventory_snapshot_source_run(database, corpus)
-    executed: list[int] = []
-
-    def execute(context):
-        executed.append(context.run_id)
-        return {"processed": 0}
-
-    registry = {
-        "code": RouteAdapter(
-            "code",
-            execute,
-            input_source="inventory_snapshot",
-        ),
-        "probe": RouteAdapter("probe", execute),
-    }
-    with pytest.raises(ValueError, match="no retained routing candidates"):
-        FrameworkOrchestrator(
-            FrameworkConfig(
-                root=corpus,
-                state_directory=state_dir,
-                route=route,
-                route_only=True,
-                candidate_run_id=source,
-            ),
-            route_registry=registry,
-        ).run()
-
-    assert executed == []
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
 def test_resume_infers_interrupted_route_and_preserves_phase_evidence(
@@ -819,185 +530,8 @@ def test_resume_infers_interrupted_route_and_preserves_phase_evidence(
     assert source_status == "interrupted"
 
 
-def test_resume_infers_inventory_route_with_zero_mime_candidates(
-    tmp_path: Path,
-) -> None:
-    corpus = tmp_path / "corpus"
-    state_dir = tmp_path / "state"
-    corpus.mkdir()
-    state_dir.mkdir()
-    database = state_dir / "framework.sqlite3"
-    source, source_scan_id = _inventory_snapshot_source_run(
-        database,
-        corpus,
-        resumable_route="code",
-    )
-    seen: list[tuple[int, tuple[str, ...]]] = []
-
-    result = FrameworkOrchestrator(
-        FrameworkConfig(
-            root=corpus,
-            state_directory=state_dir,
-            route="none",
-            route_only=True,
-            resume_run_id=source,
-            heartbeat_interval_seconds=0.01,
-        ),
-        route_registry={"code": _inventory_snapshot_adapter(seen)},
-    ).run()
-
-    assert isinstance(result, RouteOnlyRunResult)
-    assert result.source_run_id == source
-    assert seen == [(source_scan_id, (str(corpus / "module.py"),))]
-    with closing(sqlite3.connect(database)) as connection, connection:
-        source_status = connection.execute(
-            "SELECT status FROM initial_runs WHERE run_id=?",
-            (source,),
-        ).fetchone()[0]
-    assert source_status == "interrupted"
 
 
-@pytest.mark.parametrize("collect_during_snapshot", [False, True])
-def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    collect_during_snapshot: bool,
-) -> None:
-    corpus = tmp_path / "corpus"
-    state_dir = tmp_path / "state"
-    corpus.mkdir()
-    state_dir.mkdir()
-    source_path = corpus / "one.pdf"
-    source_path.write_bytes(b"%PDF-1.4\n")
-    with DedupIndex(state_dir / "dedup.sqlite3") as index:
-        scan, effective_signature = _bind_policy_checkpoint(
-            index,
-            state_dir / "framework.sqlite3",
-            corpus,
-        )
-    snapshot = FileSnapshot(
-        str(source_path),
-        source_path.stat().st_dev,
-        source_path.stat().st_ino,
-        source_path.stat().st_size,
-        source_path.stat().st_mtime_ns,
-        getattr(
-            source_path.stat(),
-            "st_birthtime_ns",
-            source_path.stat().st_ctime_ns,
-        ),
-    )
-    with FrameworkState(state_dir / "framework.sqlite3") as state:
-        source_run = state.begin_initial_run(
-            corpus,
-            JournalCursor("C:", 1, 10),
-            inventory_policy_signature=effective_signature,
-        )
-        state.store_route_candidates(
-            source_run,
-            (("application/pdf", snapshot),),
-        )
-        state.record_event(
-            source_run,
-            "info",
-            "inventory",
-            "Inventario preparado",
-            {
-                "mode": "full",
-                "scan_id": scan.scan_id,
-                "files": scan.files_seen,
-                "reconciliation_records": 0,
-                "attempts": 1,
-            },
-        )
-    with closing(sqlite3.connect(state_dir / "framework.sqlite3")) as connection, connection:
-        now = time.time_ns()
-        connection.execute(
-            """INSERT INTO route_runs(
-            run_id,route_name,status,started_ns,current_phase,heartbeat_ns)
-            VALUES(?,?,'running',?,'extraction',?)""",
-            (source_run, "probe", now, now),
-        )
-
-    seen: list[str] = []
-    collected_during_snapshot = False
-
-    if collect_during_snapshot:
-        from neocortex.persistence import framework_state_writer as writer_module
-
-        original_projection = writer_module._project_route_candidate_view
-
-        def collect_during_projection(source, target, budget, *, run_id):
-            nonlocal collected_during_snapshot
-            if not collected_during_snapshot:
-                collected_during_snapshot = True
-                gc.collect()
-            return original_projection(source, target, budget, run_id=run_id)
-
-        # Fixture writers must already be closed when cyclic collection runs
-        # inside the owner-pinned projection acquisition window.
-        monkeypatch.setattr(
-            writer_module,
-            "_project_route_candidate_view",
-            collect_during_projection,
-        )
-
-    def execute(context):
-        seen.extend(
-            item.path
-            for item in context.framework_state.iter_route_candidates(
-                context.run_id,
-                "application/pdf",
-            )
-        )
-        return {"processed": len(seen)}
-
-    mismatch_root = tmp_path / "another-corpus"
-    mismatch_root.mkdir()
-    with pytest.raises(ValueError, match="incompatible corpus admission policy"):
-        FrameworkOrchestrator(
-            FrameworkConfig(
-                root=mismatch_root,
-                state_directory=state_dir,
-                route="none",
-                route_only=True,
-                resume_run_id=source_run,
-            ),
-            route_registry={"probe": RouteAdapter("probe", execute)},
-        ).run()
-    with closing(sqlite3.connect(state_dir / "framework.sqlite3")) as connection, connection:
-        assert (
-            connection.execute(
-                "SELECT scan_id FROM initial_runs WHERE run_id=?",
-                (source_run,),
-            ).fetchone()[0]
-            is None
-        )
-
-    with pytest.raises(ValueError, match="incompatible corpus admission policy"):
-        FrameworkOrchestrator(
-            FrameworkConfig(
-                root=corpus,
-                state_directory=state_dir,
-                route="none",
-                route_only=True,
-                resume_run_id=source_run,
-                # Recovery uses the productive heartbeat default, not a 100 Hz
-                # writer racing every bounded SQLite snapshot copy.
-            ),
-            route_registry={"probe": RouteAdapter("probe", execute)},
-        ).run()
-
-    assert seen == []
-    assert collected_during_snapshot is False
-    with closing(sqlite3.connect(state_dir / "framework.sqlite3")) as connection, connection:
-        source_row = connection.execute(
-            "SELECT status,scan_id FROM initial_runs WHERE run_id=?",
-            (source_run,),
-        ).fetchone()
-    # A legacy source has no admission manifest; the new replay gate rejects
-    # it before inventory recovery or a new operational run is created.
-    assert source_row == ("running", None)
 
 
 # endregion [01]
@@ -1295,42 +829,6 @@ def test_route_only_rejects_inconsistent_bound_inventory_scan(
         assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
-def test_explicit_route_source_with_legacy_policy_fails_before_new_run(
-    tmp_path: Path,
-) -> None:
-    corpus = tmp_path / "corpus"
-    state_dir = tmp_path / "state"
-    corpus.mkdir()
-    state_dir.mkdir()
-    framework_database = state_dir / "framework.sqlite3"
-    source_run = _source_run(
-        framework_database,
-        corpus,
-        persist_policy=False,
-    )
-
-    executed = False
-
-    def execute(_context):
-        nonlocal executed
-        executed = True
-        return {"processed": 0}
-
-    with pytest.raises(ValueError, match="incompatible corpus admission policy"):
-        FrameworkOrchestrator(
-            FrameworkConfig(
-                root=corpus,
-                state_directory=state_dir,
-                route="probe",
-                route_only=True,
-                candidate_run_id=source_run,
-            ),
-            route_registry={"probe": RouteAdapter("probe", execute)},
-        ).run()
-
-    assert not executed
-    with closing(sqlite3.connect(framework_database)) as connection, connection:
-        assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
 # endregion [02]

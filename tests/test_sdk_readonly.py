@@ -113,7 +113,6 @@ READ_EXPORTS = (
     "evidence_payload",
     "operational_query_payload",
     "asset_health_payload",
-    "code_search_payload",
     "lineage_payload",
     "knowledge_search_projection_payload",
 )
@@ -376,7 +375,7 @@ def test_sdk_status_tolerates_absent_optional_engines_without_creating_state(
         )
         snapshot = service.status()
         states = {owner.state.value for owner in snapshot.owners}
-        if len(snapshot.owners) != 11 or states != {"absent"}:
+        if len(snapshot.owners) != 10 or states != {"absent"}:
             raise SystemExit(f"unexpected absent-state snapshot: {states!r}")
         if state_directory.exists():
             raise SystemExit("SDK status created missing state")
@@ -417,7 +416,6 @@ def test_sdk_knowledge_paths_preserve_legacy_constructor_without_video(
         audio=state / "audio.sqlite3",
         image=state / "image.sqlite3",
         semantic=state / "semantic.sqlite3",
-        code=state / "code.sqlite3",
     )
 
     assert paths.video is None
@@ -432,7 +430,6 @@ def test_sdk_knowledge_paths_preserve_legacy_constructor_without_video(
         "audio",
         "image",
         "semantic",
-        "code",
     }
     assert {owner.state.value for owner in snapshot.owners} == {"absent"}
     assert not state.exists()

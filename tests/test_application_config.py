@@ -17,7 +17,6 @@ import neocortex.runtime.config.application_config_projections as runtime_projec
 from neocortex.api.public import ApplicationConfig, FrameworkConfig
 from neocortex.runtime.config.application_config import (
     archive_route_config_from_application,
-    code_route_config_from_application,
     docx_route_config_from_application,
     global_resource_limits_from_application,
     pdf_route_config_from_application,
@@ -27,7 +26,6 @@ from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
 from neocortex.api.cli.cli_config import framework_config_from_args
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
-from neocortex.code.code_contracts import CodeRouteConfig
 from neocortex.capabilities.formats.docx.models import DocxRouteConfig
 from neocortex.runtime.control.global_resources import GlobalResourceLimits
 from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
@@ -36,7 +34,6 @@ from neocortex.safety.route_filters import CandidateSelection
 from neocortex.runtime.orchestration.route_registry import (
     RouteAdapter,
     archive_route_config_from_framework,
-    code_route_config_from_framework,
     docx_route_config_from_framework,
     pdf_route_config_from_framework,
     text_route_config_from_framework,
@@ -50,7 +47,7 @@ from neocortex.capabilities.formats.text.text_route import TextRouteConfig
 def test_application_config_preserves_the_product_dataclass() -> None:
     assert ApplicationConfig is FrameworkConfig
     application_fields = fields(ApplicationConfig)
-    assert len(application_fields) == 181
+    assert len(application_fields) == 168
     assert {item.name for item in application_fields if item.kw_only} == {
         "dedup_keep_paths",
         "dedup_prefer_roots",
@@ -58,12 +55,9 @@ def test_application_config_preserves_the_product_dataclass() -> None:
         "run_max_bytes",
         "run_time_budget_seconds",
         "retry_recoverable_errors",
-        "code_third_party_policy",
     }
     field_names = {item.name for item in application_fields}
     assert {
-        "code_candidate_scope",
-        "code_project_roots",
         "archive_max_depth",
         "archive_max_members",
         "archive_max_total_uncompressed_bytes",
@@ -90,8 +84,6 @@ def test_application_config_preserves_the_product_dataclass() -> None:
             "deep_mutation_symbol",
             "deep_mutation_max_mutants",
             "deep_mutation_timeout_seconds",
-            "code_validation_baseline",
-            "code_validation_time_budget_seconds",
         }
     )
     base = Path("synthetic-application-config")
@@ -110,7 +102,6 @@ def test_application_config_preserves_the_product_dataclass() -> None:
     assert type(canonical) is FrameworkConfig
     assert original.root == base / "requested-root"
     assert canonical.framework_database == (base / "canonical-state" / "framework.sqlite3")
-    assert canonical.code_database == base / "canonical-state" / "code.sqlite3"
     assert canonical.archive_database == base / "canonical-state" / "archive.sqlite3"
     assert canonical.text_database == base / "canonical-state" / "text.sqlite3"
     assert canonical.video_database == base / "canonical-state" / "video.sqlite3"
@@ -124,12 +115,12 @@ def test_application_config_preserves_all_174_legacy_positional_slots() -> None:
         for name, parameter in parameters.items()
         if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     )
-    assert len(positional) == 174
-    # Baseline 0f18 runtime/models.py, all 174 field names in declaration order.
+    assert len(positional) == 162
+    # Current runtime/models.py positional field names in declaration order.
     # The independent digest detects a renamed/reordered old slot anywhere,
     # rather than merely checking the first six arguments.
     assert hashlib.sha256("\n".join(positional).encode()).hexdigest() == (
-        "4a6cc7d9fa4d9dbae2d7f30ec48396e0886bf866b5271f6e80c6b77545fefe73"
+        "fe464d9f8a97f4e83cf108cc0cc6eaf8de984b1f698440f7070860e3c19689c8"
     )
     values = tuple(object() for _ in positional)
     config = ApplicationConfig(*values)
@@ -168,9 +159,6 @@ def test_application_facade_reexports_the_runtime_projections() -> None:
     assert (
         archive_route_config_from_application
         is runtime_projections.archive_route_config_from_application
-    )
-    assert (
-        code_route_config_from_application is runtime_projections.code_route_config_from_application
     )
     assert (
         docx_route_config_from_application is runtime_projections.docx_route_config_from_application
@@ -257,87 +245,10 @@ def test_archive_projection_preserves_recursive_limits_and_selection() -> None:
     assert archive_route_config_from_framework(config) == expected
 
 
-def test_default_code_projection_uses_current_canonical_paths() -> None:
-    requested = ApplicationConfig(
-        state_directory=Path("requested-code-state"),
-    )
-    canonical = replace(
-        requested,
-        state_directory=Path("canonical-code-state"),
-    )
-
-    projected = code_route_config_from_application(canonical)
-    expected = CodeRouteConfig(
-        state_path=Path("canonical-code-state") / "code.sqlite3",
-        dedup_path=Path("canonical-code-state") / "dedup.sqlite3",
-        candidate_scope="projects",
-        explicit_project_roots=canonical.code_project_roots,
-        include_generated=False,
-        include_vendored=False,
-    )
-
-    assert requested.code_database == Path("requested-code-state") / "code.sqlite3"
-    assert projected == expected
-    assert projected.processing_signature == expected.processing_signature
 
 
-def test_code_projection_preserves_every_override_and_signature_input() -> None:
-    selection = CandidateSelection(
-        statuses=("error",),
-        error_types=("PermissionError",),
-        recommendations=("retry",),
-        paths=(r"C:\Corpus\sample.py",),
-    )
-    config = ApplicationConfig(
-        state_directory=Path("overridden-code-state"),
-        selection=selection,
-        code_max_file_bytes=9_000_000,
-        code_max_documents=17,
-        code_max_text_chars=345_678,
-        code_chunk_chars=4_096,
-        code_retry_errors=True,
-        code_cache_validation="full",
-        code_candidate_scope="broad",
-        code_include_generated=False,
-        code_include_vendored=False,
-        code_complexity_warning=23,
-        code_function_lines_warning=321,
-    )
-    expected = CodeRouteConfig(
-        state_path=Path("overridden-code-state") / "code.sqlite3",
-        dedup_path=Path("overridden-code-state") / "dedup.sqlite3",
-        max_file_bytes=9_000_000,
-        max_documents=17,
-        max_text_chars=345_678,
-        chunk_chars=4_096,
-        retry_errors=True,
-        cache_validation="full",
-        candidate_scope="broad",
-        explicit_project_roots=config.code_project_roots,
-        include_generated=False,
-        include_vendored=False,
-        complexity_warning=23,
-        function_lines_warning=321,
-        selection=selection,
-    )
-
-    projected = code_route_config_from_application(config)
-
-    assert projected == expected
-    assert projected.processing_signature == expected.processing_signature
 
 
-def test_route_registry_preserves_the_legacy_code_projection_name() -> None:
-    config = ApplicationConfig(state_directory=Path("legacy-code-state"))
-
-    with patch(
-        "neocortex.runtime.config.application_config_projections.code_route_config_from_application",
-        wraps=code_route_config_from_application,
-    ) as projection:
-        legacy = code_route_config_from_framework(config)
-
-    projection.assert_called_once_with(config)
-    assert legacy == code_route_config_from_application(config)
 
 
 def test_default_pdf_and_docx_projections_use_current_canonical_paths() -> None:

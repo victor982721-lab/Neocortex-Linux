@@ -94,8 +94,7 @@ Procesamiento:
   --dedupe-json         emite el contrato JSON específico de --dedupe
   --version             muestra la identidad de la instalación activa
 
-Usa `Neocortex COMMAND --help` para una operación concreta. Las banderas
-heredadas (incluido `--code-project-root PATH`) siguen disponibles; `--help`
+Usa `Neocortex COMMAND --help` para una operación concreta. `--help`
 no inicia inventario ni crea estado.
 """
     )

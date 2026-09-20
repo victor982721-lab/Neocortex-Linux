@@ -145,25 +145,6 @@ def test_log_filename_or_word_alone_is_not_a_log_role() -> None:
     assert result.primary_kind == "reporte_anomalias"
 
 
-def test_code_source_kind_cannot_be_promoted_to_a_document_report() -> None:
-    result = classify_document(
-        DocumentSignals(
-            "code",
-            "/fixture/analyzer.py",
-            "complete",
-            title="analyzer.py",
-            metadata="language=python artifact_kind=script",
-            leading_text='"""FAT/SAT report parser"""\ndef parse_report(text):\n    return text',
-        )
-    )
-    assert result.primary_kind == result.document_role == "codigo"
-    assert result.taxonomy_status == "outside_taxonomy"
-    assert result.role_evidence == (
-        "source_kind:code",
-        "metadata:language=python",
-        "metadata:artifact_kind=script",
-    )
-    assert "role_vs_mention:reporte_fat_sat" in result.contradictions
 
 
 @pytest.mark.parametrize("heading", ("Reporte de incidente", "Incident Report"))

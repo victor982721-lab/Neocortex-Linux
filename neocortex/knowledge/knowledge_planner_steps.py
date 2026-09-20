@@ -12,20 +12,15 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol, TypeVar
 
-from neocortex.code.ingestion.code_detection import LANGUAGE_EXTENSIONS
 # endregion [01]
 
 # region [02] Implementación
 
 
-CODE_FORMATS = frozenset(
-    {extension.removeprefix(".") for extension in LANGUAGE_EXTENSIONS}
-    | set(LANGUAGE_EXTENSIONS.values())
-)
 _IMAGE_FORMATS = frozenset(
     {"avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp"}
 )
-_NON_LEXICAL_SOURCE_KINDS = frozenset({"code", "image", "image_ocr"})
+_NON_LEXICAL_SOURCE_KINDS = frozenset({"image", "image_ocr"})
 _CATALOG_SOURCE_KINDS = frozenset({"audio", "docx", "office", "pdf", "pptx", "xlsx"})
 _CATALOG_FORMATS = frozenset(
     {
@@ -165,7 +160,7 @@ def _is_lexical_required(
             source_kind not in _NON_LEXICAL_SOURCE_KINDS for source_kind in source_kinds
         )
         or any(
-            value not in CODE_FORMATS and value not in _IMAGE_FORMATS
+            value not in _IMAGE_FORMATS
             for value in format_keys
         )
     )
@@ -234,7 +229,7 @@ def canonical_retrieval_step_specs(
             RetrievalStepSpec(
                 "exact",
                 "exact_identifiers",
-                "query contains exact path, identifier, hash, serial or symbol syntax",
+                "query contains exact path, identifier, hash or serial syntax",
                 candidate_limit,
                 True,
             )
@@ -256,16 +251,6 @@ def canonical_retrieval_step_specs(
             semantic_rankings=semantic_rankings,
         )
     )
-    if "structural" in intents:
-        specs.append(
-            RetrievalStepSpec(
-                "structural_code",
-                "code_structural",
-                "query contains code or symbol structure",
-                candidate_limit,
-                True,
-            )
-        )
     if catalog:
         specs.append(
             RetrievalStepSpec(
@@ -363,7 +348,6 @@ _ALLOWED_RETRIEVAL_STEPS = frozenset(
         ("lexical", "owner_fts"),
         ("semantic", "semantic_text"),
         ("semantic", "semantic_image"),
-        ("structural_code", "code_structural"),
         ("catalog", "catalog_metadata"),
         ("relational", "verified_relations"),
         ("temporal", "published_history"),
@@ -962,7 +946,6 @@ def validate_knowledge_plan_v3(
 
 
 __all__ = (  # noqa: RUF022
-    "CODE_FORMATS",
     "KNOWLEDGE_PLAN_V2_PREFIX",
     "KNOWLEDGE_PLAN_V3_PREFIX",
     "KnowledgePlanLike",

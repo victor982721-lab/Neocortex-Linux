@@ -1,8 +1,7 @@
 """Owner-aware resource references, separate from physical effect identity.
 
 No decoder guesses a numeric radix from the characters in an identifier.  The
-producer supplies its codec, while historical Code rows without that evidence
-remain unresolved.  Resource and file identifiers are never replaced.
+producer supplies its codec, and resource/file identifiers are never replaced.
 """
 
 from __future__ import annotations
@@ -73,15 +72,6 @@ def physical_identity_from_components(
                 if type(value) is not int:
                     raise ValueError("expected an integer")
                 number = value
-            elif encoding == "code-owner-hex":
-                if (
-                    not isinstance(value, str)
-                    or not value
-                    or len(value) > 32
-                    or any(char not in "0123456789abcdefABCDEF" for char in value)
-                ):
-                    raise ValueError("expected an unprefixed hexadecimal Code component")
-                number = int(value, 16)
             elif encoding == FileIdentityEncoding.LEGACY_DECIMAL:
                 if (
                     not isinstance(value, str)
@@ -362,8 +352,8 @@ def legacy_resource_binding(
     """Read known legacy contracts without modifying their stored fields.
 
     Archive owner keys are valid logical references even when the old plan
-    omitted its container anchor. Code's untagged decimal/hex fields are not
-    guessed, and require a new owner-backed binding before physical use.
+    omitted its container anchor. Other source owners use their canonical
+    decimal identity fields.
     """
     if source_kind == "archive":
         if (
@@ -385,14 +375,6 @@ def legacy_resource_binding(
             birthtime_ns=birthtime_ns,
             size=size,
             mtime_ns=mtime_ns,
-        )
-    if source_kind == "code":
-        raise ResourceBindingError(
-            "legacy Code identity encoding requires an owner-backed binding",
-            field="volume_id,file_id",
-            encoding="unresolved",
-            value=[volume_id, file_id],
-            code="identity_encoding_unresolved",
         )
     identity = physical_identity_from_components(volume_id, file_id, encoding="legacy-decimal")
     return build_resource_binding(

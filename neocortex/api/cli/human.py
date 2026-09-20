@@ -21,7 +21,6 @@ from neocortex.api.read_contract import (
 from ..read_api import (
     ReadScope,
     asset_health_payload,
-    code_search_payload,
     context_payload,
     lineage_payload,
     operational_query_payload,
@@ -58,7 +57,6 @@ _DATABASE_STORE_CHOICES = (
     "video",
     "image",
     "semantic",
-    "code",
     "archive",
     "text",
 )
@@ -412,21 +410,6 @@ def build_human_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     inspect_commands = inspect.add_subparsers(dest="inspect_command", metavar="TIPO")
-    inspect_code = inspect_commands.add_parser(
-        "code",
-        help="busca símbolos, texto y relaciones en Code publicado",
-        allow_abbrev=False,
-    )
-    inspect_code.add_argument("query", metavar="CONSULTA")
-    _add_scope(inspect_code, default=ReadScope.PERSONAL)
-    inspect_code.add_argument("--limit", type=int, default=10, metavar="N")
-    inspect_code.add_argument(
-        "--mode",
-        action="append",
-        dest="modes",
-        help="canal Code; puede repetirse (por defecto: hybrid)",
-    )
-    inspect_code.add_argument("--json", action="store_true")
     inspect_lineage = inspect_commands.add_parser(
         "lineage",
         help="explica cómo se produjo una revisión o materialización",
@@ -1000,52 +983,6 @@ def _run_ask(args: argparse.Namespace) -> int:
                     _print(f"  Falta: {reason}")
             else:
                 _print("  No hay evidencia suficiente para responder.")
-    return _exit_code(payload)
-
-
-def _run_inspect_code(args: argparse.Namespace) -> int:
-    modes = tuple(args.modes or ("hybrid",))
-    try:
-        payload = code_search_payload(
-            args.query,
-            args.scope,
-            limit=args.limit,
-            modes=modes,
-        )
-    except ValueError as exc:
-        return _run_usage_error(
-            "inspect code",
-            ReadOperation.INSPECT_CODE,
-            args,
-            exc,
-            query=args.query,
-            limit=args.limit,
-            modes=modes,
-        )
-    if args.json:
-        _json(payload)
-        return _exit_code(payload)
-    _print(f"Inspección de código para: {payload['query']}")
-    for entry in _entries(payload):
-        hits = entry.get("hits")
-        if not isinstance(hits, list):
-            _render_scope_error(entry)
-            continue
-        _print(f"\n{_scope_label(entry.get('scope'))}: {len(hits)} coincidencias.")
-        for index, hit in enumerate(hits, start=1):
-            if not isinstance(hit, dict):
-                continue
-            symbol = f" · {hit['symbol']}" if hit.get("symbol") else ""
-            _print(
-                f"{index}. {hit.get('path', '-')}:{hit.get('start_line', '-')}-"
-                f"{hit.get('end_line', '-')}{symbol}"
-            )
-            _print(f"   {_single_line(hit.get('snippet'))}")
-            matches = hit.get("match_types")
-            if isinstance(matches, (list, tuple)):
-                _print("   Señales: " + ", ".join(str(value) for value in matches))
-        if not hits:
-            _print("  No se encontraron coincidencias en Code publicado.")
     return _exit_code(payload)
 
 
@@ -1717,8 +1654,6 @@ def run_human_command(arguments: Sequence[str]) -> int:
         and args.restore_command == "apply"
     ):
         return _run_curation_restore(args)
-    if args.command == "inspect" and args.inspect_command == "code":
-        return _run_inspect_code(args)
     if args.command == "inspect" and args.inspect_command == "lineage":
         return _run_inspect_lineage(args)
     if args.command == "review" and args.review_command == "value":

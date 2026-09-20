@@ -245,7 +245,7 @@ La preparación federa únicamente proyecciones bounded de owners ya definidos:
 | Fuente | Owner/procedencia | Límite de `hygiene` |
 |---|---|---|
 | Scratch registrado | `neocortex.runtime.scratch`; manifests `neocortex.scratch/v1` bajo `state/scratch` | Lee workspaces registrados y sus estados; no convierte `/tmp` ni temporales sin manifest en scratch propio. `failed-retained` y `recovery_required` se preservan. |
-| Retención | owner de cada catálogo, inventario, Framework, Semantic o Code mediante estado/plan read-only | Consume reachability, referencias y retención declarada; no ejecuta `DELETE`, `VACUUM`, compactación ni poda. Un `eligible` es una propuesta del owner, no espacio recuperado. |
+| Retención | owner de cada catálogo, inventario, Framework o Semantic mediante estado/plan read-only | Consume reachability, referencias y retención declarada; no ejecuta `DELETE`, `VACUUM`, compactación ni poda. Un `eligible` es una propuesta del owner, no espacio recuperado. |
 | Inventario de máquina | `neocortex.machine-inventory/v1` | Reutiliza metadata bounded, identidad, categoría y bytes observados; no abre SQLite, no lee payload y no añade acciones. |
 | Diagnóstico externo | `neocortex.external-maintenance/v1` con raíz y categoría explícitas | Observa el entorno externo sin inferir ownership de NeoCortex; no descubre HOME, no usa red/KIO/sudo ni llama cleaners. |
 
@@ -634,7 +634,6 @@ Neocortex search "consulta" --scope personal --limit 20
 Neocortex ask "consulta" --scope personal --limit 12
 Neocortex ask "¿Qué PDFs están protegidos?" --scope all --json
 Neocortex ask "¿Qué errores tienen mis archivos?" --scope personal --cursor TOKEN --json
-Neocortex inspect code "consulta" --scope personal
 Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex review value --scope personal --limit 50
 Neocortex --models-status --models-json
@@ -642,9 +641,8 @@ Neocortex databases status --json
 ```
 
 La ayuda contextual reutiliza el contrato de cada subcomando, por ejemplo
-`Neocortex help status`, `Neocortex help curate plan` y
-`Neocortex help inspect code`; las opciones se consultan en el propio comando
-con `--help`.
+`Neocortex help status` y `Neocortex help curate plan`; las opciones se
+consultan en el propio comando con `--help`.
 
 El contrato de la consulta operativa está descrito en
 [KNOWLEDGE_OPERATIONAL_QUERY.md](KNOWLEDGE_OPERATIONAL_QUERY.md).
@@ -664,7 +662,7 @@ Framework. No modifica corpus ni concede autorización.
 ## Procesamiento de contenido
 
 Las rutas registradas son `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
-`video`, `image` y `code`.
+`video` e `image`.
 
 ### Dedupe físico Linux
 
@@ -697,28 +695,13 @@ inputs durables y omite inventario, deduplicación, detección y acciones;
 `--candidate-run RUN_ID` elige el inventario y `--resume-run RUN_ID` reanuda
 fases incompletas.
 
-Cuando se proporciona una raíz explícita para Code, el alcance predeterminado
-`projects` exige que esa raíz coincida con un proyecto configurado; si no,
-NeoCortex se abstiene antes de crear estado y muestra cómo usar
-`--code-project-root PATH` o `--code-scope broad`.
-
-`--all` es la limpieza integrada del Corpus y **no selecciona Code**. El análisis
-Code sigue disponible sólo con `--route code` explícito; no convierte la raíz del
-Corpus en código candidato por inferencia. Los selectores `--code-project-root`
-y `--code-scope` sólo tienen efecto en esa ruta explícita.
-
-La procedencia de Code es una señal, no una prueba de autoría. `--all --apply`
-aplica primero la redlist determinista del Corpus, con comparación
-case-insensitive, root efectivo y auditoría por entrada, antes de dedupe,
-hashing, validación de tipos o rutas. Las coincidencias se envían a Papelera con
-el backend KIO receipt-bound; Code/regenerabilidad no participa en esa decisión.
-Los artefactos no coincidentes permanecen disponibles para las rutas de contenido.
-
-La observación integrada admite metadatos de copias de dependencias y cachés
-sin darles autorización de borrado. Mantiene raíces canónicas y VCS protegidos;
-no excluye un `AppData` mixto por nombre. El resumen `CORPUS_ADMISSION` y el stage
-homónimo explican procesados, excluidos de procesamiento, sensibles, pruebas
-de regeneración y cobertura limitada. Excluir no equivale a enviar a Papelera.
+`--all` ejecuta las ocho rutas registradas. Con `--all --apply` aplica primero la
+redlist determinista del Corpus, con comparación case-insensitive, root efectivo
+y auditoría por entrada, antes de dedupe, hashing, validación de tipos o rutas.
+Las coincidencias se envían a Papelera con el backend KIO receipt-bound; sin
+`--apply` sólo se publica el plan. Los archivos sin extensión pueden recuperar
+una extensión canónica cuando el detector bounded tiene evidencia fuerte; un
+destino existente, drift o una identidad fuera del root producen abstención.
 
 Ejemplo de una copia controlada:
 
@@ -772,16 +755,10 @@ fail-closed y no una corrida nueva por inferencia. El replay terminal expone
 
 Semantic pertenece al mismo lifecycle cuando se solicita `--all` o se reanuda
 un stage Semantic, pero el Semantic pesado continúa siendo opt-in. Archive y
-Video son fuentes Semantic explícitas; Code sólo puede ser fuente cuando se
-solicita explícitamente la ruta Code. `--all` coordina sus rutas de contenido
+Video son fuentes Semantic explícitas. `--all` coordina sus rutas de contenido
 sin indexarlas automáticamente como fuentes Semantic pesadas. Si falta Audio/Whisper, FFmpeg, un modelo u
 otra herramienta, la ruta o el stage conserva `unavailable`/`blocked` y el run
 queda `incomplete`, nunca éxito vacío ni skip silencioso.
-
-Por la misma frontera, `--all --semantic-source code` se rechaza: no convierte
-Code en una ruta implícita. Usa `--route code` para la ruta Code o, si sólo
-quieres indexar un cache Code ya publicado, una invocación Semantic explícita
-fuera de `--all` (`--semantic-index text --semantic-source code`).
 
 `read_run_status`, `lifecycle_status`, API, SDK y MCP deben devolver el envelope
 bounded `neocortex.lifecycle-envelope/v1`, con manifest/digest, stages, rutas,
@@ -799,7 +776,6 @@ Neocortex --status --status-json
 Neocortex --state-health --state-health-json
 Neocortex --knowledge-status --knowledge-json
 Neocortex --semantic-status
-Neocortex --code-status --code-json
 ```
 
 Los comandos distinguen `complete`, `partial`, `unavailable`, `blocked`, schemas
@@ -817,9 +793,6 @@ del launcher sin abrir el corpus ni producir estado.
 
 ```bash
 Neocortex --knowledge-search "consulta" --knowledge-json
-Neocortex --code-search "consulta" --code-search-mode hybrid --code-json
-Neocortex --code-projects --code-json
-Neocortex --code-reconstruct PROJECT_OR_ID --code-json
 Neocortex --semantic-index image --semantic-max-items 50
 Neocortex --semantic-image-calibrate /ruta/calibration.json \
   --semantic-model-cache /ruta/models/fastembed
@@ -958,7 +931,7 @@ Neocortex agent serve
 
 El servidor stdio expone 15 herramientas: consultas read-only como status, search, context,
 `lifecycle_status`, `content_diagnostics`, `operational_query`, `evidence`,
-`inspect_code`, `lineage`, `asset_health`, `curation_plan`, `curation_scan` y
+`lineage`, `asset_health`, `curation_plan`, `curation_scan` y
 `curation_verify`. También expone `curation_review` y `curation_decide`: pueden
 escribir únicamente eventos advisory de ReviewTask, están marcadas como no
 destructivas y mantienen `actions_authorized=false`. `evidence` puede recibir

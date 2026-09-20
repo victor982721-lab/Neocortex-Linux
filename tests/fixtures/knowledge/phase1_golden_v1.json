@@ -1,12 +1,11 @@
 {
   "schema_version": 1,
   "suite_id": "knowledge-phase1-executable-v1",
-  "description": "Seventeen input-only deterministic Phase-1 cases executed through live planning, fusion, context, and snapshot service seams.",
+  "description": "Fourteen input-only deterministic Phase-1 cases executed through live planning, fusion, context, and snapshot service seams.",
   "provenance": "scripted_candidates",
   "limitations": [
     "Scripted owner candidates exercise live planning, fusion, context, and service seams; they do not validate semantic model quality.",
-    "Candidate rankings are deterministic owner inputs; reported observations and telemetry are produced only by the executable runner.",
-    "The available_multihop case encodes scripted code-relation records before live ContextBundle compilation; it does not assert that production corpus adapters currently expose those relations."
+    "Candidate rankings are deterministic owner inputs; reported observations and telemetry are produced only by the executable runner."
   ],
   "cases": [
     {
@@ -31,7 +30,6 @@
         "catalog"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "success",
@@ -125,7 +123,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "success",
@@ -230,7 +227,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "success",
@@ -320,105 +316,6 @@
       "expected_contradictions": 0
     },
     {
-      "scenario_id": "chunk-two-of-three",
-      "category": "relevant_hit_chunk_2_of_3",
-      "query": "función que normaliza identificadores de activo",
-      "query_options": {
-        "source_kinds": [
-          "code"
-        ],
-        "formats": [
-          "py"
-        ],
-        "include_history": false
-      },
-      "limits": {
-        "limit": 5,
-        "max_per_resource": 3,
-        "min_section_distance": 0,
-        "max_vectors": 100
-      },
-      "required_plan_steps": [
-        "structural_code",
-        "semantic"
-      ],
-      "forbidden_plan_steps": [
-        "temporal"
-      ],
-      "expected_outcome": "success",
-      "expected_abstain": false,
-      "relevant_evidence": [
-        {
-          "evidence_id": "code:ids:normalize:chunk2",
-          "gain": 3,
-          "source_kind": "code",
-          "format": "py",
-          "revision_state": "current",
-          "locator": {
-            "kind": "section",
-            "value": "function:normalize_asset_id",
-            "section_index": 2,
-            "section_count": 3
-          }
-        }
-      ],
-      "expected_retrieved_ids": [
-        "code:ids:normalize:chunk2"
-      ],
-      "expected_citations": [
-        {
-          "evidence_id": "code:ids:normalize:chunk2",
-          "locator": {
-            "kind": "section",
-            "value": "function:normalize_asset_id",
-            "section_index": 2,
-            "section_count": 3
-          }
-        }
-      ],
-      "owner_conditions": [
-        {
-          "owner": "code",
-          "condition": "available",
-          "expected_schema_version": 2,
-          "observed_schema_version": 2
-        }
-      ],
-      "rankings": [
-        {
-          "name": "code_structural",
-          "channel": "structural_code",
-          "candidates": [
-            {
-              "evidence_id": "code:ids:normalize:chunk2",
-              "resource_id": "resource:code:identifiers",
-              "source_kind": "code",
-              "format": "py",
-              "revision_state": "current",
-              "locator": {
-                "kind": "section",
-                "value": "function:normalize_asset_id",
-                "section_index": 2,
-                "section_count": 3
-              },
-              "source_rank": 1,
-              "raw_score": 1,
-              "disposition": "canonical",
-              "snippet": "def normalize_asset_id(value: str) -> str:"
-            }
-          ]
-        }
-      ],
-      "claims": [],
-      "contradictions": [],
-      "relation_hops": [],
-      "snapshot_transition": null,
-      "expected_filtered_duplicates": 0,
-      "expected_excluded_revisions": 0,
-      "expected_omitted_by_limit": 0,
-      "expected_contradictions": 0
-    },
-    {
       "scenario_id": "multiple-evidence-one-resource",
       "category": "multiple_evidence_same_resource",
       "query": "hallazgos de aislamiento y recomendación de mantenimiento",
@@ -442,7 +339,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "success",
@@ -573,7 +469,6 @@
         "catalog"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "success",
@@ -718,160 +613,6 @@
       "expected_contradictions": 0
     },
     {
-      "scenario_id": "code-and-documentation",
-      "category": "code_and_documentation",
-      "query": "cómo se construye processing_signature en el código y la documentación",
-      "query_options": {
-        "source_kinds": [
-          "code",
-          "documentation"
-        ],
-        "formats": [
-          "py",
-          "md"
-        ],
-        "include_history": false
-      },
-      "limits": {
-        "limit": 5,
-        "max_per_resource": 3,
-        "min_section_distance": 0,
-        "max_vectors": 100
-      },
-      "required_plan_steps": [
-        "structural_code",
-        "lexical",
-        "semantic"
-      ],
-      "forbidden_plan_steps": [
-        "temporal"
-      ],
-      "expected_outcome": "success",
-      "expected_abstain": false,
-      "relevant_evidence": [
-        {
-          "evidence_id": "code:signature:lines84-99",
-          "gain": 3,
-          "source_kind": "code",
-          "format": "py",
-          "revision_state": "current",
-          "locator": {
-            "kind": "lines",
-            "value": "84-99"
-          }
-        },
-        {
-          "evidence_id": "docs:signature:section",
-          "gain": 2,
-          "source_kind": "documentation",
-          "format": "md",
-          "revision_state": "current",
-          "locator": {
-            "kind": "section",
-            "value": "processing-signature"
-          }
-        }
-      ],
-      "expected_retrieved_ids": [
-        "code:signature:lines84-99",
-        "docs:signature:section"
-      ],
-      "expected_citations": [
-        {
-          "evidence_id": "code:signature:lines84-99",
-          "locator": {
-            "kind": "lines",
-            "value": "84-99"
-          }
-        },
-        {
-          "evidence_id": "docs:signature:section",
-          "locator": {
-            "kind": "section",
-            "value": "processing-signature"
-          }
-        }
-      ],
-      "owner_conditions": [
-        {
-          "owner": "code",
-          "condition": "available",
-          "expected_schema_version": 2,
-          "observed_schema_version": 2
-        },
-        {
-          "owner": "framework",
-          "condition": "available",
-          "expected_schema_version": 19,
-          "observed_schema_version": 19
-        }
-      ],
-      "rankings": [
-        {
-          "name": "code_structural",
-          "channel": "structural_code",
-          "candidates": [
-            {
-              "evidence_id": "code:signature:lines84-99",
-              "resource_id": "resource:code:signatures",
-              "source_kind": "code",
-              "format": "py",
-              "revision_state": "current",
-              "locator": {
-                "kind": "lines",
-                "value": "84-99"
-              },
-              "source_rank": 1,
-              "raw_score": 0.93,
-              "disposition": "canonical",
-              "snippet": "processing_signature = build_signature(processor, version, options)",
-              "claim_id": "claim-signature"
-            }
-          ]
-        },
-        {
-          "name": "docs_fts",
-          "channel": "lexical",
-          "candidates": [
-            {
-              "evidence_id": "docs:signature:section",
-              "resource_id": "resource:docs:signatures",
-              "source_kind": "documentation",
-              "format": "md",
-              "revision_state": "current",
-              "locator": {
-                "kind": "section",
-                "value": "processing-signature"
-              },
-              "source_rank": 1,
-              "raw_score": 0.91,
-              "disposition": "canonical",
-              "snippet": "The processing signature records processor, version, and normalized options.",
-              "claim_id": "claim-signature"
-            }
-          ]
-        }
-      ],
-      "claims": [
-        {
-          "claim_id": "claim-signature",
-          "topic": "signature_components",
-          "value": "processor+version+options",
-          "evidence_ids": [
-            "code:signature:lines84-99",
-            "docs:signature:section"
-          ]
-        }
-      ],
-      "contradictions": [],
-      "relation_hops": [],
-      "snapshot_transition": null,
-      "expected_filtered_duplicates": 0,
-      "expected_excluded_revisions": 0,
-      "expected_omitted_by_limit": 0,
-      "expected_contradictions": 0
-    },
-    {
       "scenario_id": "current-over-superseded",
       "category": "current_vs_superseded",
       "query": "procedimiento actual de bloqueo",
@@ -895,7 +636,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "success",
@@ -1004,7 +744,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "success",
@@ -1114,7 +853,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "partial",
@@ -1244,148 +982,6 @@
       "expected_contradictions": 1
     },
     {
-      "scenario_id": "available-two-hop-chain",
-      "category": "available_multihop",
-      "query": "what calls B and what imports C relationship",
-      "query_options": {
-        "source_kinds": [
-          "code"
-        ],
-        "formats": [
-          "py"
-        ],
-        "include_history": false
-      },
-      "limits": {
-        "limit": 5,
-        "max_per_resource": 3,
-        "min_section_distance": 0,
-        "max_vectors": 100
-      },
-      "required_plan_steps": [
-        "lexical",
-        "semantic",
-        "structural_code",
-        "relational"
-      ],
-      "forbidden_plan_steps": [
-        "temporal"
-      ],
-      "expected_outcome": "success",
-      "expected_abstain": false,
-      "relevant_evidence": [
-        {
-          "evidence_id": "code:relation:a-calls-b",
-          "gain": 3,
-          "source_kind": "code",
-          "format": "py",
-          "revision_state": "current",
-          "locator": {
-            "kind": "relation",
-            "value": "code_references:1"
-          }
-        },
-        {
-          "evidence_id": "code:relation:b-imports-c",
-          "gain": 3,
-          "source_kind": "code",
-          "format": "py",
-          "revision_state": "current",
-          "locator": {
-            "kind": "relation",
-            "value": "dependencies:2"
-          }
-        }
-      ],
-      "expected_retrieved_ids": [
-        "code:relation:a-calls-b",
-        "code:relation:b-imports-c"
-      ],
-      "expected_citations": [
-        {
-          "evidence_id": "code:relation:a-calls-b",
-          "locator": {
-            "kind": "relation",
-            "value": "code_references:1"
-          }
-        },
-        {
-          "evidence_id": "code:relation:b-imports-c",
-          "locator": {
-            "kind": "relation",
-            "value": "dependencies:2"
-          }
-        }
-      ],
-      "owner_conditions": [
-        {
-          "owner": "code",
-          "condition": "available",
-          "expected_schema_version": 2,
-          "observed_schema_version": 2
-        }
-      ],
-      "rankings": [
-        {
-          "name": "code_relations",
-          "channel": "structural_code",
-          "candidates": [
-            {
-              "evidence_id": "code:relation:a-calls-b",
-              "resource_id": "resource:code:A",
-              "source_kind": "code",
-              "format": "py",
-              "revision_state": "current",
-              "locator": {
-                "kind": "relation",
-                "value": "code_references:1"
-              },
-              "source_rank": 1,
-              "raw_score": 1,
-              "disposition": "canonical",
-              "snippet": "A calls B."
-            },
-            {
-              "evidence_id": "code:relation:b-imports-c",
-              "resource_id": "resource:code:B",
-              "source_kind": "code",
-              "format": "py",
-              "revision_state": "current",
-              "locator": {
-                "kind": "relation",
-                "value": "dependencies:2"
-              },
-              "source_rank": 2,
-              "raw_score": 0.95,
-              "disposition": "canonical",
-              "snippet": "B imports C."
-            }
-          ]
-        }
-      ],
-      "claims": [],
-      "contradictions": [],
-      "relation_hops": [
-        {
-          "from_resource_id": "resource:code:A",
-          "relation": "code_reference:calls",
-          "to_resource_id": "resource:code:B",
-          "evidence_id": "code:relation:a-calls-b"
-        },
-        {
-          "from_resource_id": "resource:code:B",
-          "relation": "code_dependency:imports",
-          "to_resource_id": "resource:code:C",
-          "evidence_id": "code:relation:b-imports-c"
-        }
-      ],
-      "snapshot_transition": null,
-      "expected_filtered_duplicates": 0,
-      "expected_excluded_revisions": 0,
-      "expected_omitted_by_limit": 0,
-      "expected_contradictions": 0
-    },
-    {
       "scenario_id": "no-answer-abstention",
       "category": "no_answer",
       "query": "torque de la válvula inexistente ZZZ-9000",
@@ -1405,7 +1001,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "no_evidence",
@@ -1455,7 +1050,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "partial",
@@ -1596,9 +1190,7 @@
         "lexical",
         "semantic"
       ],
-      "forbidden_plan_steps": [
-        "structural_code"
-      ],
+      "forbidden_plan_steps": [],
       "expected_outcome": "snapshot_changed",
       "expected_abstain": true,
       "relevant_evidence": [],
@@ -1647,7 +1239,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "partial",
@@ -1692,7 +1283,6 @@
         "semantic"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "schema_incompatible",
@@ -1740,7 +1330,6 @@
         "catalog"
       ],
       "forbidden_plan_steps": [
-        "structural_code",
         "temporal"
       ],
       "expected_outcome": "partial",

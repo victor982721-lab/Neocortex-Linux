@@ -13,8 +13,6 @@ from typing import Protocol
 
 from .knowledge_planner_exact import (
     RELATIONAL_WORDS,
-    STRUCTURAL_WORDS,
-    SYMBOL_PATTERN,
     TEMPORAL_WORDS,
     TEMPORAL_YEAR_WORDS,
     has_temporal_year,
@@ -264,32 +262,6 @@ def normalize_knowledge_query(
     )
 
 
-def _has_explicit_code_context(
-    query: QueryLike,
-    words: frozenset[str],
-    code_formats: frozenset[str],
-) -> bool:
-    format_keys = tuple(value.removeprefix(".") for value in query.formats)
-    return (
-        "code" in query.source_kinds
-        or any(value in code_formats for value in format_keys)
-        or bool(words.intersection(STRUCTURAL_WORDS))
-    )
-
-
-def _has_qualified_code_name(
-    terms: tuple[str, ...],
-    *,
-    explicit_code_context: bool,
-) -> bool:
-    return explicit_code_context and any(
-        "/" not in term
-        and "\\" not in term
-        and SYMBOL_PATTERN.fullmatch(term) is not None
-        for term in terms
-    )
-
-
 def _has_temporal_intent(
     query: QueryLike,
     words: frozenset[str],
@@ -312,8 +284,6 @@ def _ordered_intents(
     path_present: bool,
     name_present: bool,
     terms_present: bool,
-    symbol_intent: bool,
-    structural: bool,
     explicit_filters: bool,
     relational: bool,
     temporal: bool,
@@ -323,13 +293,11 @@ def _ordered_intents(
         (path_present, "path"),
         (name_present, "name"),
         (terms_present, "identifier"),
-        (symbol_intent, "symbol"),
     ):
         if present:
             intents.append(name)
     intents.extend(("lexical", "semantic"))
     for present, name in (
-        (structural, "structural"),
         (explicit_filters, "filtered"),
         (relational, "relational"),
         (temporal, "temporal"),
@@ -343,14 +311,13 @@ def infer_query_plan_signals(
     query: QueryLike,
     *,
     exact_terms: Callable[[str], _ExactTerms],
-    code_formats: frozenset[str],
     max_exact_terms: int,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     (
         terms,
         path_present,
         name_present,
-        symbol_present,
+        _symbol_present,
         non_path_text,
         temporal_text,
     ) = exact_terms(query.text)
@@ -359,12 +326,6 @@ def infer_query_plan_signals(
             f"Knowledge query cannot contain more than {max_exact_terms} exact terms"
         )
     words = token_words(non_path_text)
-    explicit_code_context = _has_explicit_code_context(query, words, code_formats)
-    symbol_intent = symbol_present or _has_qualified_code_name(
-        terms,
-        explicit_code_context=explicit_code_context,
-    )
-    structural = symbol_intent or explicit_code_context
     relational = bool(words.intersection(RELATIONAL_WORDS))
     temporal = _has_temporal_intent(query, words, temporal_text)
     explicit_filters = bool(
@@ -378,8 +339,6 @@ def infer_query_plan_signals(
         path_present=path_present,
         name_present=name_present,
         terms_present=bool(terms),
-        symbol_intent=symbol_intent,
-        structural=structural,
         explicit_filters=explicit_filters,
         relational=relational,
         temporal=temporal,

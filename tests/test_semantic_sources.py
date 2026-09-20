@@ -495,70 +495,6 @@ def _create_office_text_state(state_directory: Path) -> str:
     return file_key
 
 
-def _create_code_text_state(state_directory: Path) -> str:
-    volume_id = "0000000000000001"
-    physical_file_id = "0000000000000002"
-    text = "def relay_trip() -> bool:\n    return True\n"
-    with sqlite3.connect(state_directory / "code.sqlite3") as connection:
-        connection.executescript(
-            """
-            CREATE TABLE files(
-                volume_id TEXT,physical_file_id TEXT,current_path TEXT,
-                current_version_id INTEGER,status TEXT,last_seen_run_id INTEGER
-            );
-            CREATE TABLE file_versions(
-                version_id INTEGER,size INTEGER,mtime_ns INTEGER,
-                birthtime_ns INTEGER,raw_xxh3_128 TEXT,
-                first_observed_run_id INTEGER,last_observed_run_id INTEGER,
-                text_xxh3_128 TEXT,text_chars INTEGER,processing_signature TEXT,
-                analysis_status TEXT,language TEXT,artifact_kind TEXT,
-                analyzer_id TEXT,analyzer_version TEXT,parser_kind TEXT,
-                invalidated_ns INTEGER
-            );
-            CREATE TABLE code_chunks(
-                version_id INTEGER,chunk_index INTEGER,kind TEXT,
-                start_line INTEGER,end_line INTEGER,text TEXT,symbol_id INTEGER
-            );
-            CREATE TABLE symbols(symbol_id INTEGER,qualified_name TEXT);
-            """
-        )
-        connection.execute(
-            "INSERT INTO files VALUES(?,?,?,?,?,?)",
-            (volume_id, physical_file_id, "C:/src/relay.py", 7, "current", 44),
-        )
-        connection.execute(
-            "INSERT INTO file_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                7,
-                222,
-                333,
-                444,
-                "a" * 32,
-                40,
-                43,
-                fingerprint_text(text).xxh3_128,
-                len(text),
-                "code-fixture-v1",
-                "complete",
-                "python",
-                "source",
-                "tree-sitter",
-                "0.25",
-                "tree-sitter",
-                None,
-            ),
-        )
-        connection.execute(
-            "INSERT INTO symbols VALUES(?,?)",
-            (9, "relay.relay_trip"),
-        )
-        connection.execute(
-            "INSERT INTO code_chunks VALUES(?,?,?,?,?,?,?)",
-            (7, 0, "symbol", 1, 2, text, 9),
-        )
-    return f"{volume_id}:{physical_file_id}"
-
-
 def _create_archive_text_state(state_directory: Path) -> str:
     file_key = "archive:member-fixture"
     text = "protección diferencial dentro de un ZIP anidado"
@@ -1050,7 +986,7 @@ def test_partial_text_sources_preserve_owner_status(
 # endregion [04]
 
 
-# region [05] Physical revisions for Office and code sources
+# region [05] Physical revisions for Office
 
 
 def test_office_source_preserves_physical_revision_and_route_run(
@@ -1071,26 +1007,6 @@ def test_office_source_preserves_physical_revision_and_route_run(
     }
 
 
-def test_code_source_preserves_physical_revision_version_and_runs(
-    tmp_path: Path,
-) -> None:
-    source_identity = _create_code_text_state(tmp_path)
-
-    records = tuple(iter_text_source_records(tmp_path, "code"))
-
-    assert len(records) == 1
-    assert records[0].item.source_identity == source_identity
-    assert records[0].item.source_revision == {
-        "version_id": 7,
-        "size": 222,
-        "mtime_ns": 333,
-        "birthtime_ns": 444,
-        "processing_signature": "code-fixture-v1",
-        "last_seen_run_id": 44,
-        "first_observed_run_id": 40,
-        "last_observed_run_id": 43,
-        "raw_content_xxh3_128": "a" * 32,
-    }
 
 
 # endregion [05]

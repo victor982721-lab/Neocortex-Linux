@@ -7,10 +7,8 @@
 from __future__ import annotations
 import argparse
 
-from neocortex.runtime.config.app_paths import default_code_project_roots
 from neocortex.runtime.models import FrameworkConfig
 from neocortex.safety.route_filters import CandidateSelection
-from .cli_code_surface import code_third_party_policy_from_args
 
 __all__ = ["framework_config_from_args"]
 
@@ -68,23 +66,6 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         global_cpu_slots=args.global_cpu_slots,
         global_max_cpu_load_percent=args.global_max_cpu_load_percent,
         global_resource_wait_timeout_seconds=(args.global_resource_wait_timeout),
-        code_max_file_bytes=args.code_max_file_bytes,
-        code_max_documents=args.code_max_documents,
-        code_max_text_chars=args.code_max_text_chars,
-        code_chunk_chars=args.code_chunk_chars,
-        code_retry_errors=args.retry_code_errors,
-        code_cache_validation=args.code_cache_validation,
-        code_candidate_scope=args.code_candidate_scope,
-        code_project_roots=(
-            default_code_project_roots()
-            if args.code_project_root is None
-            else tuple(args.code_project_root)
-        ),
-        code_include_generated=args.code_include_generated,
-        code_include_vendored=args.code_include_vendored,
-        code_third_party_policy=code_third_party_policy_from_args(args),
-        code_complexity_warning=args.code_complexity_warning,
-        code_function_lines_warning=args.code_function_lines_warning,
         image_workers=args.image_workers,
         image_max_file_bytes=args.image_max_file_bytes,
         image_max_documents=args.image_max_documents,

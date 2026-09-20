@@ -83,12 +83,6 @@ _DECLARATIONS: dict[str, dict[TableLifecycleRole, tuple[str, ...]]] = {
         'schema_metadata': ('metadata',),
         'derived': ('document_fts', 'document_fts_config', 'document_fts_content', 'document_fts_data', 'document_fts_docsize', 'document_fts_idx', 'documents', 'text_derivation_attempts', 'text_derivation_input_bindings', 'text_derivation_output_bindings', 'text_input_revisions', 'text_materialization_heads', 'text_materializations'),
     },
-    'code': {
-        'authoritative': ('code_experiment_receipts',),
-        'operational': ('analysis_runs', 'graph_generations', 'graph_heads'),
-        'schema_metadata': ('graph_generation_migrations', 'metadata', 'schema_migrations'),
-        'derived': ('code_chunks', 'code_fts', 'code_fts_config', 'code_fts_content', 'code_fts_data', 'code_fts_docsize', 'code_fts_idx', 'code_references', 'dependencies', 'diagnostics', 'embedding_links', 'external_findings', 'external_metrics', 'external_relations', 'external_run_contracts', 'external_run_counters', 'external_run_inputs', 'external_run_replays', 'external_tool_runs', 'file_versions', 'files', 'graph_batch_blocks', 'graph_batches', 'graph_checkpoints', 'graph_generation_metadata', 'graph_input_block_items', 'graph_input_blocks', 'graph_input_snapshots', 'graph_member_block_items', 'graph_member_blocks', 'graph_memberships', 'graph_snapshot_blocks', 'graph_snapshot_inputs', 'invalidation_history', 'metrics', 'project_edges', 'project_memberships', 'projects', 'symbols', 'version_relations'),
-    },
 }
 
 def owner_lifecycle_rules(owner: str) -> tuple[TableLifecycleRule, ...]:

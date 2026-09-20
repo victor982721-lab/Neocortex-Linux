@@ -32,11 +32,6 @@ from neocortex.capabilities.formats.archive import state as archive_state
 from neocortex.capabilities.formats.docx.schema import validate_docx_schema
 from neocortex.capabilities.formats.office import state as office_state
 from neocortex.capabilities.formats.video import state as video_state
-from neocortex.code.code_schema import (
-    validate_code_schema,
-    validate_code_schema_v7,
-    validate_code_schema_v8,
-)
 from neocortex.persistence.framework_schema import (
     validate_framework_schema_v19,
     validate_framework_schema_v20,
@@ -159,7 +154,6 @@ class KnowledgeStatePaths:
     audio: Path
     image: Path
     semantic: Path
-    code: Path
     archive: Path | None = None
     text: Path | None = None
     video: Path | None = None
@@ -364,10 +358,6 @@ _OWNER_VALIDATORS: dict[
             (9, _validate_semantic_legacy_v9),
         ),
     ),
-    "code": (
-        validate_code_schema,
-        ((7, validate_code_schema_v7), (8, validate_code_schema_v8)),
-    ),
     "archive": (_validate_archive, ()),
     "text": (_validate_text, ()),
 }
@@ -425,7 +415,7 @@ def _observed_schema_version(
         label=spec.owner,
     )
     pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if spec.owner in {"semantic", "code"}:
+    if spec.owner == "semantic":
         if metadata_version is None and pragma_version == 0:
             return None
         if metadata_version is None:
@@ -711,25 +701,6 @@ def _framework_observation(connection: sqlite3.Connection) -> _LogicalObservatio
     return _LogicalObservation(review_heads, tuple(watermarks), ())
 
 
-def _code_observation(connection: sqlite3.Connection) -> _LogicalObservation:
-    row = connection.execute(
-        """SELECT
-        (SELECT COUNT(*) FROM files WHERE status='current') AS current_files,
-        (SELECT COALESCE(MAX(version_id),0) FROM file_versions) AS version_id,
-        (SELECT COALESCE(MAX(analysis_run_id),0) FROM analysis_runs) AS run_id"""
-    ).fetchone()
-    return _LogicalObservation(
-        (),
-        (
-            LogicalWatermark("current_files", str(int(row["current_files"]))),
-            LogicalWatermark("latest_version_id", str(int(row["version_id"]))),
-            LogicalWatermark("latest_analysis_run_id", str(int(row["run_id"]))),
-            LogicalWatermark("visibility", "best_effort_non_generational"),
-        ),
-        (),
-    )
-
-
 def _logical_observation(
     connection: sqlite3.Connection,
     spec: _OwnerSpec,
@@ -742,8 +713,6 @@ def _logical_observation(
         return _semantic_observation(connection)
     if spec.read_kind == "framework":
         return _framework_observation(connection)
-    if spec.read_kind == "code":
-        return _code_observation(connection)
     if spec.read_kind == "images":
         return _aggregate_observation(
             connection,

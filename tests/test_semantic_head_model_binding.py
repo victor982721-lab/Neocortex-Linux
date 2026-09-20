@@ -1,9 +1,9 @@
 """Adversarial model/generation binding checks for Semantic publication heads.
 
 The fixtures intentionally create two independently valid text heads before
-performing one database-local head corruption.  Readers and the Code writer
-must reject only the crossed or malformed boundary; immutable member, receipt,
-and Code facts remain available for diagnosis.
+performing one database-local head corruption.  Readers and the reader
+must reject only the crossed or malformed boundary; immutable member and receipt
+facts remain available for diagnosis.
 """
 
 from __future__ import annotations
@@ -16,12 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.code.code_schema import readonly_code_database
-from neocortex.code.search.code_semantic_links import (
-    CodeSemanticLinkError,
-    code_semantic_search_availability,
-    synchronize_code_embedding_links,
-)
 from neocortex.semantic.semantic_config import (
     compact_multilingual_text_model,
     multilingual_text_model,
@@ -50,10 +44,6 @@ from neocortex.semantic.semantic_state import (
 from tests.test_semantic_generation_control_projection import _migrate_v5_to_v7
 from tests.test_semantic_generation_publication_v6 import _create_populated_v5
 from tests.test_semantic_state import _stage_text_item, _text_model
-from tests.test_semantic_v7_read_compatibility import (
-    _create_code_owner,
-    _insert_current_code_link,
-)
 
 
 TEST_CAPABILITIES = ("base", "inference")
@@ -77,23 +67,6 @@ def _owner_files(database: Path) -> dict[str, bytes]:
         for path in database.parent.glob(f"{database.name}*")
         if path.is_file()
     }
-
-
-def _code_domain_rows(code: Path) -> tuple[tuple[object, ...], ...]:
-    with readonly_code_database(code) as connection:
-        return tuple(
-            tuple(row)
-            for row in connection.execute(
-                """SELECT chunk_id,semantic_item_id,model_signature,vector_space,
-                    generation_id,active,provenance_json
-                FROM embedding_links
-                ORDER BY chunk_id,model_signature,generation_id"""
-            ).fetchall()
-        )
-
-
-def _code_snapshot(code: Path) -> tuple[dict[str, bytes], tuple[tuple[object, ...], ...]]:
-    return _owner_files(code), _code_domain_rows(code)
 
 
 def _zero_vector(model: EmbeddingModelSpec) -> tuple[float, ...]:
@@ -408,7 +381,7 @@ def test_publication_bridges_abstain_on_cross_model_head_in_each_direction(
     with pytest.raises(PublicationHeadsError):
         observe_semantic_generation_heads(fixture.database.parent)
     with pytest.raises(PublicationHeadsError):
-        observe_integrated_owner_heads(fixture.database.parent, include_code=False)
+        observe_integrated_owner_heads(fixture.database.parent)
     assert _owner_files(fixture.database) == before
 
 
@@ -466,132 +439,6 @@ def test_legacy_lineage_fallback_requires_matching_legacy_model_head(
     assert _owner_files(fixture.database) == before
 
 
-def test_code_availability_rejects_crossed_model_with_real_current_link(
-    tmp_path: Path,
-) -> None:
-    state_directory = tmp_path / "state"
-    state_directory.mkdir()
-    fixture = _create_two_model_fixture(state_directory)
-    _assert_two_valid_heads(fixture)
-    _cross_head_a_to_b(fixture)
-    code = _create_code_owner(state_directory)
-    _insert_current_code_link(code, model=fixture.model_a, generation_id=fixture.generation_b)
-    before = _code_snapshot(code)
-    available = code_semantic_search_availability(state_directory, verify_model_cache=False)
-    assert available.available is False
-    assert available.reason == "default_profile_head_not_published"
-    assert available.current_links == 0
-    assert _code_snapshot(code) == before
-
-
-def test_code_writer_rejects_crossed_model_head_without_mutating_code(
-    tmp_path: Path,
-) -> None:
-    state_directory = tmp_path / "state"
-    state_directory.mkdir()
-    fixture = _create_two_model_fixture(state_directory)
-    _assert_two_valid_heads(fixture)
-    _cross_head_a_to_b(fixture)
-    code = _create_code_owner(state_directory)
-    _insert_current_code_link(code, model=fixture.model_a, generation_id=fixture.generation_b)
-    before = _code_snapshot(code)
-    with pytest.raises(CodeSemanticLinkError, match=r"(?i)(model|binding|head)"):
-        synchronize_code_embedding_links(
-            state_directory,
-            generation_id=fixture.generation_b,
-            model_signature=fixture.model_a.model_signature,
-        )
-    assert _code_snapshot(code) == before
-
-
-@pytest.mark.parametrize("status", ("ready_partial", "failed"))
-def test_published_nonready_head_is_not_available_and_bridge_abstains(
-    tmp_path: Path,
-    status: str,
-) -> None:
-    state_directory = tmp_path / "state"
-    state_directory.mkdir()
-    fixture = _create_two_model_fixture(state_directory)
-    candidate = start_embedding_generation(
-        fixture.database,
-        model_signature=fixture.model_a.model_signature,
-        processing_signature=f"head-binding-{status}",
-        started_ns=300,
-    )
-    with closing(sqlite3.connect(fixture.database)) as connection:
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(
-            "UPDATE embedding_generations SET status=?,completed_ns=? WHERE generation_id=?",
-            (status, 301, candidate),
-        )
-        connection.execute(
-            "UPDATE published_embedding_heads SET generation_id=? WHERE model_signature=?",
-            (candidate, fixture.model_a.model_signature),
-        )
-        connection.commit()
-    with pytest.raises(PublicationHeadsError):
-        observe_semantic_generation_heads(fixture.database.parent)
-    code = _create_code_owner(state_directory)
-    _insert_current_code_link(code, model=fixture.model_a, generation_id=candidate)
-    before = _code_snapshot(code)
-    available = code_semantic_search_availability(state_directory, verify_model_cache=False)
-    assert (available.available, available.reason, available.generation_id) == (
-        False,
-        "default_profile_head_not_published",
-        None,
-    )
-    assert _code_snapshot(code) == before
-
-
-def test_code_writer_rejects_v7_head_without_mutating_code(tmp_path: Path) -> None:
-    state_directory = tmp_path / "state"
-    state_directory.mkdir()
-    semantic = state_directory / "semantic.sqlite3"
-    model, _chunk = _create_populated_v5(semantic)
-    _migrate_v5_to_v7(semantic)
-    code = _create_code_owner(state_directory)
-    _insert_current_code_link(code, model=model, generation_id=1)
-    before = _code_snapshot(code)
-    with pytest.raises(CodeSemanticLinkError, match=r"(?i)(schema|8|contract)"):
-        synchronize_code_embedding_links(
-            state_directory,
-            generation_id=1,
-            model_signature=model.model_signature,
-        )
-    assert _code_snapshot(code) == before
-
-
-@pytest.mark.parametrize("mutation", ("index_missing", "trigger_missing", "metadata_noncanonical"))
-def test_code_writer_rejects_v8_contract_drift_without_mutating_code(
-    tmp_path: Path,
-    mutation: str,
-) -> None:
-    state_directory = tmp_path / "state"
-    state_directory.mkdir()
-    fixture = _create_two_model_fixture(state_directory)
-    _assert_two_valid_heads(fixture)
-    semantic = fixture.database
-    code = _create_code_owner(state_directory)
-    _insert_current_code_link(code, model=fixture.model_a, generation_id=fixture.generation_a)
-    with closing(sqlite3.connect(semantic)) as connection:
-        connection.execute("PRAGMA foreign_keys=ON")
-        if mutation == "index_missing":
-            connection.execute("DROP INDEX embedding_jobs_source_dirty_idx")
-        elif mutation == "trigger_missing":
-            connection.execute("DROP TRIGGER text_chunks_embedding_jobs_source_dirty_update")
-        elif mutation == "metadata_noncanonical":
-            connection.execute("UPDATE metadata SET value='08' WHERE key='schema_version'")
-        else:  # pragma: no cover - parameter table is exhaustive
-            raise AssertionError(mutation)
-        connection.commit()
-    before = _code_snapshot(code)
-    with pytest.raises(CodeSemanticLinkError, match=r"(?i)(schema|contract|incompatible)"):
-        synchronize_code_embedding_links(
-            state_directory,
-            generation_id=fixture.generation_a,
-            model_signature=fixture.model_a.model_signature,
-        )
-    assert _code_snapshot(code) == before
 
 
 __all__ = [

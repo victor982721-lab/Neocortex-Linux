@@ -17,14 +17,9 @@ from typing import cast
 from neocortex.semantic import semantic_service
 from neocortex.semantic.semantic_resources import governed_retrieval
 from .knowledge_resources import knowledge_phase, knowledge_result_budget
-from neocortex.code.code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
-from neocortex.code.ingestion.code_detection import LANGUAGE_EXTENSIONS
-from neocortex.code.code_schema import connect_code_state
-from neocortex.code.search.code_search import search_code
 from neocortex.documents.document_catalog import document_catalog_database
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityEncoding, FileIdentityError
 from .knowledge_contracts import (
-    MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS,
     EvidenceMethod,
     EvidenceRef,
     KnowledgeHit,
@@ -49,13 +44,6 @@ from .knowledge_search_contracts import (
     KnowledgeSearchResult,
     RankingExecution,
     ResourceDiscoverySignal,
-)
-from .knowledge_search_code import (
-    bounded_code_relation_value as _code_bounded_relation_value_impl,
-    code_ranking as _code_ranking_impl,
-    code_relation_candidate as _code_relation_candidate_impl,
-    code_resource_revision as _code_resource_revision_impl,
-    code_version_metadata as _code_version_metadata_impl,
 )
 from .knowledge_search_content import (
     candidate_from_resolved as _content_candidate_from_resolved,
@@ -101,10 +89,6 @@ from neocortex.persistence.sqlite_cancellation import (
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,
 )
-from neocortex.persistence.sqlite_immutable import (
-    open_immutable_sqlite_connection,
-    preferred_sqlite_read_mode,
-)
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 # region [01] Public search facade and runtime constants
@@ -116,7 +100,6 @@ SQLITE_BATCH_SIZE = 500
 INVENTORY_IDENTITY_BATCH_SIZE = 200
 INVENTORY_HEAD_BATCH_SIZE = 50
 MAX_INVENTORY_RELATIONS = 4_000
-MAX_CODE_RELATION_CANDIDATES = 4_000
 _LEXICAL_OWNER_FORMATS: dict[str, frozenset[str]] = {
     "pdf": frozenset({"pdf"}),
     "docx": frozenset({"docx"}),
@@ -146,31 +129,6 @@ _LEXICAL_OWNER_FORMATS: dict[str, frozenset[str]] = {
 _IMAGE_FORMATS = frozenset(
     {"avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp"}
 )
-_CODE_LANGUAGE_BY_EXTENSION = {
-    extension.removeprefix(".").casefold(): language.casefold()
-    for extension, language in LANGUAGE_EXTENSIONS.items()
-}
-_CODE_QUERY_CUES = frozenset(
-    {
-        "call",
-        "calls",
-        "class",
-        "clase",
-        "definition",
-        "definición",
-        "function",
-        "función",
-        "import",
-        "importa",
-        "reference",
-        "referencia",
-        "signature",
-        "símbolo",
-        "symbol",
-    }
-)
-
-
 def _duration_ns(clock_ns: Callable[[], int], started_ns: int) -> int:
     finished_ns = clock_ns()
     if (
@@ -296,29 +254,6 @@ def _open_direct_readonly_sqlite(path: Path) -> sqlite3.Connection:
         cleanup_preserving_primary=_cleanup_preserving_primary,
     )
 
-
-def _open_code_readonly_for_knowledge(
-    path: Path,
-    *,
-    readonly: bool = False,
-    create: bool = True,
-) -> sqlite3.Connection:
-    """Keep Knowledge's code metadata pass on the shared read kernel."""
-
-    if readonly:
-        return open_immutable_sqlite_connection(path, timeout_seconds=60.0)
-    return connect_code_state(path, readonly=False, create=create)
-
-
-def _code_read_session_for_knowledge(path: Path):
-    """Provide a lifecycle-owning reader for code metadata batches."""
-
-    from neocortex.runtime.control.read_operation import operation_sqlite_session
-    return operation_sqlite_session(
-        path,
-        mode=preferred_sqlite_read_mode(path),
-        timeout_seconds=60.0,
-    )
 
 
 def _revision_identity(
@@ -593,120 +528,6 @@ def _exact_rankings(
     )
 
 
-def _code_version_metadata(
-    path: Path,
-    version_ids: Sequence[int],
-    *,
-    cancellation_check: Callable[[], None] | None = None,
-) -> dict[int, sqlite3.Row]:
-    """Resolve physical identity and producer provenance in bounded batches."""
-
-    return _code_version_metadata_impl(
-        path,
-        version_ids,
-        cancellation_check=cancellation_check,
-        connect_code_state_fn=connect_code_state,
-        cancellation_bridge_type=SQLiteCancellationBridge,
-        sqlite_cancellation_scope_fn=sqlite_cancellation_scope,
-        cleanup_preserving_primary_fn=_cleanup_preserving_primary,
-        sqlite_batch_size=SQLITE_BATCH_SIZE,
-    )
-
-
-def _code_resource_revision(
-    row: sqlite3.Row,
-    *,
-    path: str,
-) -> tuple[ResourceRef, RevisionRef, tuple[str, ...]]:
-    """Build the neutral resource/revision identity for one current code version."""
-
-    return _code_resource_revision_impl(
-        row,
-        path=path,
-        file_identity_type=FileIdentity,
-        direct_resource_ref_fn=_direct_resource_ref,
-        canonical_json_fn=canonical_json,
-        fingerprint_text_fn=fingerprint_text,
-        revision_ref_type=RevisionRef,
-        revision_state_type=RevisionState,
-    )
-
-
-def _bounded_code_relation_value(
-    namespace: str,
-    value: str,
-    warnings: set[str],
-) -> str:
-    return _code_bounded_relation_value_impl(
-        namespace,
-        value,
-        warnings,
-        max_identifier_chars=MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS,
-        fingerprint_text_fn=fingerprint_text,
-    )
-
-
-def _code_relation_candidate(
-    metadata: Mapping[int, sqlite3.Row],
-    *,
-    source_rank: int,
-    hit: CodeSearchHit,
-    relation: CodeSearchRelation,
-) -> tuple[KnowledgeCandidate | None, bool]:
-    """Materialize one owner relation without fabricating a target endpoint."""
-
-    return _code_relation_candidate_impl(
-        metadata,
-        source_rank=source_rank,
-        hit=hit,
-        relation=relation,
-        code_resource_revision_fn=_code_resource_revision,
-        bounded_relation_value_fn=_bounded_code_relation_value,
-        file_identity_error_type=FileIdentityError,
-        canonical_json_fn=canonical_json,
-        fingerprint_text_fn=fingerprint_text,
-        evidence_method_type=EvidenceMethod,
-        evidence_ref_type=EvidenceRef,
-        knowledge_candidate_type=KnowledgeCandidate,
-        ranking_signal_type=RankingSignal,
-        revision_state_type=RevisionState,
-    )
-
-
-def _code_ranking(
-    paths: KnowledgeStatePaths,
-    plan: KnowledgePlan,
-    snapshot: KnowledgeSnapshot,
-    *,
-    cancellation_check: Callable[[], None] | None = None,
-) -> tuple[tuple[KnowledgeCandidate, ...], RankingExecution]:
-    return _code_ranking_impl(
-        paths,
-        plan,
-        snapshot,
-        cancellation_check=cancellation_check,
-        owner_available_fn=_owner_available,
-        planned_candidate_limit_fn=_planned_candidate_limit,
-        max_candidates=MAX_KNOWLEDGE_CANDIDATES,
-        max_relation_candidates=MAX_CODE_RELATION_CANDIDATES,
-        code_query_cues=_CODE_QUERY_CUES,
-        cancellation_bridge_type=SQLiteCancellationBridge,
-        search_code_fn=search_code,
-        code_search_query_type=CodeSearchQuery,
-        code_version_metadata_fn=_code_version_metadata,
-        code_resource_revision_fn=_code_resource_revision,
-        code_relation_candidate_fn=_code_relation_candidate,
-        sqlite_error_type=sqlite3.Error,
-        reraise_captured_cancellation_fn=_reraise_captured_cancellation,
-        file_identity_error_type=FileIdentityError,
-        evidence_method_type=EvidenceMethod,
-        evidence_ref_type=EvidenceRef,
-        fingerprint_text_fn=fingerprint_text,
-        knowledge_candidate_type=KnowledgeCandidate,
-        ranking_signal_type=RankingSignal,
-        ranking_execution_type=RankingExecution,
-    )
-
 
 def _escape_like(value: str) -> str:
     return _catalog_escape_like_impl(value)
@@ -798,9 +619,6 @@ def _matches_explicit_source_filters(
         aliases.update(_LEXICAL_OWNER_FORMATS["text"])
     if extension in _IMAGE_FORMATS or "image" in aliases or "image_ocr" in aliases:
         aliases.add("image")
-    code_language = _CODE_LANGUAGE_BY_EXTENSION.get(extension)
-    if code_language is not None:
-        aliases.update(("code", code_language))
     if candidate.evidence.section_kind == "image_ocr":
         aliases.add("image_ocr")
     if plan.source_kinds and aliases.isdisjoint(plan.source_kinds):
@@ -836,7 +654,6 @@ def _apply_plan_filters(
                 and name
                 not in {
                     "catalog_metadata",
-                    "code_structural",
                 }
                 and candidate.resource.resource_id not in catalog_resources
             ):
@@ -1100,24 +917,6 @@ def _run_exact_phase(execution: _SearchExecution) -> None:
 
 @knowledge_phase
 def _run_direct_phases(execution: _SearchExecution) -> None:
-    execution.check_cancelled()
-    if _planned(execution.plan, "structural_code"):
-        ranking_started_ns = execution.clock()
-        values, report = _code_ranking(
-            execution.paths,
-            execution.plan,
-            execution.snapshot,
-            cancellation_check=execution.cancellation_check,
-        )
-        report = replace(
-            report,
-            owner="code",
-            elapsed_ns=_duration_ns(execution.clock, ranking_started_ns),
-        )
-        if values:
-            execution.rankings[report.name] = values
-        execution.add_reports((report,))
-
     execution.check_cancelled()
     if _planned(execution.plan, "catalog"):
         ranking_started_ns = execution.clock()

@@ -52,13 +52,6 @@ EXPECTED_EXPORTS = [
     "CurationScanOutput",
     "CurationSourceHead",
     "CurationVerifyOutput",
-    "CodeRelationEndpoint",
-    "CodeRoute",
-    "CodeRouteConfig",
-    "CodeRouteSummary",
-    "CodeSearchHit",
-    "CodeSearchQuery",
-    "CodeSearchRelation",
     "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "DetectedType",
     "DerivationRef",
@@ -108,9 +101,6 @@ EXPECTED_EXPORTS = [
     "StageDescriptor",
     "detect_content_type",
     "verify_pdf_state",
-    "list_projects",
-    "reconstruct_project",
-    "search_code",
     "curation_plan_payload",
     "curation_review_payload",
     "curation_decide_payload",
@@ -133,7 +123,6 @@ EXPECTED_EXPORTS = [
     "evidence_payload",
     "operational_query_payload",
     "asset_health_payload",
-    "code_search_payload",
     "lineage_payload",
     "knowledge_search_projection_payload",
     "ContextBundle",
@@ -211,13 +200,6 @@ EXPECTED_SOURCES = {
     "CurationScanOutput": "neocortex.api.curation_verification_api",
     "CurationSourceHead": "neocortex.curation.preview",
     "CurationVerifyOutput": "neocortex.api.curation_verification_api",
-    "CodeRelationEndpoint": "neocortex.code.code_contracts",
-    "CodeRoute": "neocortex.code.code_route",
-    "CodeRouteConfig": "neocortex.code.code_contracts",
-    "CodeRouteSummary": "neocortex.code.code_contracts",
-    "CodeSearchHit": "neocortex.code.code_contracts",
-    "CodeSearchQuery": "neocortex.code.code_contracts",
-    "CodeSearchRelation": "neocortex.code.code_contracts",
     "DERIVATION_CONTRACT_SCHEMA_VERSION": ("neocortex.semantic.derivation_contracts"),
     "DetectedType": "neocortex.platform.content_types",
     "DerivationRef": "neocortex.semantic.derivation_contracts",
@@ -267,9 +249,6 @@ EXPECTED_SOURCES = {
     "StageDescriptor": "neocortex.semantic.derivation_contracts",
     "detect_content_type": "neocortex.platform.content_types",
     "verify_pdf_state": "neocortex.capabilities.formats.pdf.pdf_admin",
-    "list_projects": "neocortex.code.ingestion.code_projects",
-    "reconstruct_project": "neocortex.code.ingestion.code_projects",
-    "search_code": "neocortex.code.search.code_search",
     "curation_plan_payload": "neocortex.api.curation_api",
     "curation_review_payload": "neocortex.api.curation_lifecycle_api",
     "curation_decide_payload": "neocortex.api.curation_lifecycle_api",
@@ -292,7 +271,6 @@ EXPECTED_SOURCES = {
     "evidence_payload": "neocortex.api.read_api",
     "operational_query_payload": "neocortex.api.read_api",
     "asset_health_payload": "neocortex.api.read_api",
-    "code_search_payload": "neocortex.api.read_api",
     "lineage_payload": "neocortex.api.read_api",
     "knowledge_search_projection_payload": "neocortex.api.read_api",
     "ContextBundle": "neocortex.knowledge.knowledge_contracts",
@@ -394,7 +372,6 @@ class LazyPackageApiTests(unittest.TestCase):
                 "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.audio.models",
-                "neocortex.code.code_contracts",
                 "neocortex.capabilities.formats.docx.models",
                 "neocortex.capabilities.formats.docx.models",
                 "neocortex.runtime.control.global_resources",
@@ -406,7 +383,6 @@ class LazyPackageApiTests(unittest.TestCase):
             }
             from neocortex.runtime.config.application_config_projections import (
                 audio_route_config_from_application,
-                code_route_config_from_application,
                 docx_route_config_from_application,
                 global_resource_limits_from_application,
                 image_route_config_from_application,
@@ -416,7 +392,6 @@ class LazyPackageApiTests(unittest.TestCase):
 
             projections = (
                 audio_route_config_from_application,
-                code_route_config_from_application,
                 docx_route_config_from_application,
                 global_resource_limits_from_application,
                 image_route_config_from_application,
@@ -458,8 +433,6 @@ class LazyPackageApiTests(unittest.TestCase):
                 "neocortex.capabilities.formats.audio.route",
                 "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.archive.route",
-                "neocortex.code.code_contracts",
-                "neocortex.code.code_route",
                 "neocortex.capabilities.formats.docx.models",
                 "neocortex.capabilities.formats.docx.models",
                 "neocortex.capabilities.formats.pdf.pdf_route",
@@ -478,7 +451,6 @@ class LazyPackageApiTests(unittest.TestCase):
             from neocortex.api.public import ApplicationConfig, FrameworkConfig
             from neocortex.runtime.config.application_config import (
                 audio_route_config_from_application,
-                code_route_config_from_application,
                 docx_route_config_from_application,
                 image_route_config_from_application,
                 office_route_config_from_application,
@@ -489,8 +461,6 @@ class LazyPackageApiTests(unittest.TestCase):
                 raise SystemExit("application compatibility identity changed")
             if not callable(audio_route_config_from_application):
                 raise SystemExit("audio configuration projection is unavailable")
-            if not callable(code_route_config_from_application):
-                raise SystemExit("code configuration projection is unavailable")
             if not callable(docx_route_config_from_application):
                 raise SystemExit("DOCX configuration projection is unavailable")
             if not callable(image_route_config_from_application):

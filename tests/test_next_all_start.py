@@ -67,14 +67,11 @@ def test_legacy_missing_semantic_budget_starts_fresh_all_without_resume(
         lambda *_args: SimpleNamespace(status="blocked", epoch=SimpleNamespace(owners=())),
     )
 
-    observed_heads = (
-        StateOwnerHead("semantic", 1, "a" * 64, 7),
-        StateOwnerHead("code", 0, "b" * 64, 7),
-    )
-    observer_calls: list[bool] = []
+    observed_heads = (StateOwnerHead("semantic", 1, "a" * 64, 7),)
+    observer_calls: list[int] = []
 
-    def observe(*_args: object, include_code: bool, **_kwargs: object) -> tuple[StateOwnerHead, ...]:
-        observer_calls.append(include_code)
+    def observe(*_args: object, **_kwargs: object) -> tuple[StateOwnerHead, ...]:
+        observer_calls.append(1)
         return observed_heads
 
     monkeypatch.setattr(
@@ -91,7 +88,7 @@ def test_legacy_missing_semantic_budget_starts_fresh_all_without_resume(
         assert callable(verify)
         assert verify() == observed_heads
         now[0] = 100.5
-        return SimpleNamespace(owners=("semantic", "code"), epoch=5)
+        return SimpleNamespace(owners=("semantic",), epoch=5)
 
     monkeypatch.setattr(
         "neocortex.persistence.state_publication.restart_state_publication_checkpoint",
@@ -114,8 +111,8 @@ def test_legacy_missing_semantic_budget_starts_fresh_all_without_resume(
     assert restart_calls[0]["event_id"] == "epoch:4:event:legacy"
     assert restart_calls[0]["expected_epoch"] == 4
     assert restart_calls[0]["owner_heads"] == observed_heads
-    assert observer_calls == [True, True]
-    assert args._semantic_publication_owners == ("semantic", "code")
+    assert observer_calls == [1, 1]
+    assert args._semantic_publication_owners == ("semantic",)
     assert args.run_time_budget_seconds == pytest.approx(4.5)
     assert args.semantic_time_budget_seconds == pytest.approx(9.5)
     assert args.semantic_max_items == 7
@@ -164,11 +161,11 @@ def test_stage_absent_is_restarted_from_real_framework_metadata(
         owner_heads=(old_head,),
     ).prepared
     args = _fresh_args(state_directory)
-    observed_heads = (old_head, StateOwnerHead("code", 0, "c" * 64, 7))
-    observer_calls: list[bool] = []
+    observed_heads = (old_head,)
+    observer_calls: list[int] = []
 
-    def observe(*_args: object, include_code: bool, **_kwargs: object) -> tuple[StateOwnerHead, ...]:
-        observer_calls.append(include_code)
+    def observe(*_args: object, **_kwargs: object) -> tuple[StateOwnerHead, ...]:
+        observer_calls.append(1)
         return observed_heads
 
     monkeypatch.setattr(
@@ -185,53 +182,15 @@ def test_stage_absent_is_restarted_from_real_framework_metadata(
     view = read_state_publication_state(state_directory)
     assert not view.pending
     assert view.epoch.epoch == 2
-    assert observer_calls == [True, True, True]
-    assert args._semantic_publication_owners == ("semantic", "code")
+    assert observer_calls == [1, 1, 1]
+    assert args._semantic_publication_owners == ("semantic",)
     assert pending.event_id not in {item.event_id for item in view.pending}
     with FrameworkState(state_directory / "framework.sqlite3", existing_only=True) as state:
         assert state._connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
-def test_checkpoint_owner_union_survives_following_source_selection() -> None:
-    args = Namespace(_semantic_publication_owners=("semantic", "code"))
-    assert cli_semantic._integrated_publication_owners(args, ("pdf",)) == (
-        "semantic",
-        "code",
-    )
 
 
-@pytest.mark.parametrize("repair", [False, True])
-def test_new_prepare_baseline_repairs_links_invalidated_by_code_route_only_when_allowed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repair: bool,
-) -> None:
-    from neocortex.semantic import semantic_publication_heads
-
-    heads = (StateOwnerHead("semantic", 3, "a" * 64, 7), StateOwnerHead("code", 2, "b" * 64, 7))
-    calls = 0
-    repairs = []
-
-    def observe(*_args: object, **_kwargs: object):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise semantic_publication_heads.PublicationHeadsRepairRequired("Code version advanced")
-        return heads
-
-    monkeypatch.setattr(semantic_publication_heads, "observe_integrated_owner_heads", observe)
-    monkeypatch.setattr(semantic_publication_heads, "observe_semantic_generation_heads", lambda *_a, **_k: (("model", 3),))
-    monkeypatch.setattr(
-        "neocortex.code.search.code_semantic_links.deactivate_stale_code_embedding_links",
-        lambda *_a, **kwargs: repairs.append(kwargs["published_heads"]),
-    )
-    if repair:
-        assert cli_semantic._observe_integrated_heads(
-            tmp_path, include_code=True, repair_stale_code_links=True
-        ) == heads
-        assert calls == 2 and repairs == [(("model", 3),)]
-    else:
-        with pytest.raises(cli_semantic.StatePublicationRecoveryRequired):
-            cli_semantic._observe_integrated_heads(tmp_path, include_code=True)
-        assert calls == 1 and repairs == []
 
 
 def test_strict_resume_uses_explicit_stored_publication_scope(
@@ -245,7 +204,7 @@ def test_strict_resume_uses_explicit_stored_publication_scope(
         "max_items": 3,
         "max_new_jobs": 5,
         "time_budget_seconds": 7.0,
-        "publication_owners": ("semantic", "code"),
+        "publication_owners": ("semantic",),
         "details": {"semantic_text_profile": "quality"},
     }
     monkeypatch.setattr(cli_semantic, "_semantic_stage_for_resume", lambda *_args: spec)
@@ -258,46 +217,19 @@ def test_strict_resume_uses_explicit_stored_publication_scope(
     )
     effective = cli_semantic._semantic_resume_args(args, 25)
     assert effective is not None
-    assert effective._semantic_publication_owners == ("semantic", "code")
+    assert effective._semantic_publication_owners == ("semantic",)
 
 
-def test_baseline_code_repair_failure_is_structured(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from neocortex.code.search import code_semantic_links
-    from neocortex.semantic import semantic_publication_heads
-
-    def observe(*_args: object, **_kwargs: object) -> None:
-        raise semantic_publication_heads.PublicationHeadsRepairRequired("stale Code link")
-
-    failure = code_semantic_links.CodeSemanticLinkError("repair unavailable")
-
-    def repair(*_args: object, **_kwargs: object) -> None:
-        raise failure
-
-    monkeypatch.setattr(semantic_publication_heads, "observe_integrated_owner_heads", observe)
-    monkeypatch.setattr(
-        semantic_publication_heads, "observe_semantic_generation_heads", lambda *_a, **_k: (),
-    )
-    monkeypatch.setattr(code_semantic_links, "deactivate_stale_code_embedding_links", repair)
-    with pytest.raises(cli_semantic.StatePublicationRecoveryRequired, match="repair unavailable") as caught:
-        cli_semantic._observe_integrated_heads(
-            tmp_path, include_code=True, repair_stale_code_links=True,
-        )
-    assert caught.value.__cause__ is failure
 
 
-@pytest.mark.parametrize("boundary", ("owner_heads", "code_repair"))
+@pytest.mark.parametrize("boundary", ("owner_heads",))
 def test_fresh_start_owner_failures_are_structured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str,
 ) -> None:
-    from neocortex.code.search.code_semantic_links import CodeSemanticLinkError
     from neocortex.semantic.semantic_publication_heads import PublicationHeadsError
 
-    failure = (
-        PublicationHeadsError("owner unavailable") if boundary == "owner_heads"
-        else CodeSemanticLinkError("owner unavailable")
-    )
+    assert boundary == "owner_heads"
+    failure = PublicationHeadsError("owner unavailable")
 
     def reject(*_args: object, **_kwargs: object) -> None:
         raise failure
@@ -308,52 +240,6 @@ def test_fresh_start_owner_failures_are_structured(
     assert caught.value.__cause__ is failure
 
 
-def test_stale_code_projection_gets_one_bounded_repair_before_checkpoint(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from neocortex.semantic import semantic_publication_heads
-
-    args = _fresh_args(tmp_path / "state")
-    controls = cli_semantic._IntegratedStartReadBudget(
-        args,
-        cancellation_check=None,
-        clock=lambda: 100.0,
-        metadata_timeout_seconds=10.0,
-    )
-    repair = semantic_publication_heads.PublicationHeadsRepairRequired(
-        "stale code projection"
-    )
-    observer_calls = 0
-    deactivated: list[tuple[object, ...]] = []
-
-    def observe(*_args: object, **_kwargs: object) -> tuple[str, ...]:
-        nonlocal observer_calls
-        observer_calls += 1
-        if observer_calls == 1:
-            raise repair
-        return ("fresh-heads",)
-
-    def generations(*_args: object, **_kwargs: object) -> tuple[tuple[str, int], ...]:
-        return (("text-model", 17),)
-
-    def deactivate(_state: Path, *, published_heads: tuple[tuple[str, int], ...], **_kwargs: object) -> int:
-        deactivated.append(published_heads)
-        return 1
-
-    monkeypatch.setattr(semantic_publication_heads, "observe_integrated_owner_heads", observe)
-    monkeypatch.setattr(semantic_publication_heads, "observe_semantic_generation_heads", generations)
-    monkeypatch.setattr(
-        "neocortex.code.search.code_semantic_links.deactivate_stale_code_embedding_links",
-        deactivate,
-    )
-    assert cli_semantic._observe_fresh_integrated_heads(
-        tmp_path,
-        include_code=True,
-        controls=controls,
-    ) == ("fresh-heads",)
-    assert observer_calls == 2
-    assert deactivated == [(('text-model', 17),)]
 
 
 def test_explicit_resume_keeps_the_strict_recovery_contract(

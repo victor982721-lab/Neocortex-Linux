@@ -8,7 +8,6 @@ dependency doubles and lazy-load guarantees intact.
 from __future__ import annotations
 
 from importlib import import_module
-from functools import partial
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, TypedDict
@@ -45,7 +44,6 @@ class _DeferredTypeModule:
 
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.audio import models as _audio_contracts
-    from neocortex.code import code_contracts as _code_contracts
     from neocortex.runtime.control import global_resources as _resource_contracts
     from neocortex.runtime import models as _application_contracts
     from neocortex.capabilities.formats.office import route as _office_contracts
@@ -55,12 +53,10 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive import route as _archive_contracts
     from neocortex.capabilities.formats.docx import models as _docx_contracts
     from neocortex.capabilities.formats.image import contracts as _image_contracts
-    from neocortex.workflow.actions import corpus_admission as _admission_contracts
 else:
     _application_contracts = _DeferredTypeModule("neocortex.runtime.models")
     _archive_contracts = _DeferredTypeModule("neocortex.capabilities.formats.archive.route")
     _audio_contracts = _DeferredTypeModule("neocortex.capabilities.formats.audio.models")
-    _code_contracts = _DeferredTypeModule("neocortex.code.code_contracts")
     _docx_contracts = _DeferredTypeModule("neocortex.capabilities.formats.docx.models")
     _image_contracts = _DeferredTypeModule("neocortex.capabilities.formats.image.contracts")
     _office_contracts = _DeferredTypeModule("neocortex.capabilities.formats.office.route")
@@ -68,12 +64,10 @@ else:
     _text_contracts = _DeferredTypeModule("neocortex.capabilities.formats.text.text_route")
     _video_contracts = _DeferredTypeModule("neocortex.capabilities.formats.video.route")
     _resource_contracts = _DeferredTypeModule("neocortex.runtime.control.global_resources")
-    _admission_contracts = _DeferredTypeModule("neocortex.workflow.actions.corpus_admission")
 
 __all__ = [
     "archive_route_config_from_application",
     "audio_route_config_from_application",
-    "code_route_config_from_application",
     "docx_route_config_from_application",
     "global_resource_limits_from_application",
     "image_route_config_from_application",
@@ -89,53 +83,12 @@ __all__ = [
 # region [02] Import-local owner projections
 
 
-def _archive_member_admission(
-    context: _archive_contracts.ArchiveMemberAdmissionContext,
-    *,
-    policy: _admission_contracts.CorpusAdmissionPolicy,
-) -> _admission_contracts.AdmissionDecision:
-    """Spawn-picklable adapter; the Archive owner retains integrity authority."""
-    from neocortex.workflow.actions.corpus_admission import assess_virtual_member
-
-    return assess_virtual_member(
-        context.member_chain, context.prefix,
-        container_path=context.container_path, policy=policy,
-    )
-
-
 def archive_route_config_from_application(
     config: _application_contracts.FrameworkConfig,
 ) -> _archive_contracts.ArchiveRouteConfig:
     """Project current application values into recursive ZIP indexing."""
 
     from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
-
-    # The historical owner projection is also used by direct Archive callers
-    # whose flat config route is ``none`` (the owner is selected by its own
-    # facade).  Keep its explicit admission contract everywhere except the
-    # integrated ``--all`` preset, where Code analysis is deliberately out of
-    # scope and archive members must not invoke Code classifiers.
-    code_enabled = str(config.route).strip().casefold() != "all"
-    if code_enabled:
-        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
-
-        admission = CorpusAdmissionPolicy(
-            interested_roots=config.code_project_roots,
-            code_scope=config.code_candidate_scope,
-            include_generated=config.code_include_generated,
-            include_vendored=config.code_include_vendored,
-        )
-    else:
-        admission = None
-
-    admission_kwargs = (
-        {
-            "member_admission": partial(_archive_member_admission, policy=admission),
-            "member_admission_signature": admission.signature,
-        }
-        if admission is not None
-        else {}
-    )
 
     return ArchiveRouteConfig(
         state_path=config.archive_database,
@@ -172,7 +125,6 @@ def archive_route_config_from_application(
             if bool(getattr(config, "apply_actions", False))
             else None
         ),
-        **admission_kwargs,
     )
 
 
@@ -271,33 +223,6 @@ def video_route_config_from_application(
         ocr_timeout_seconds=config.video_ocr_timeout_seconds,
         tesseract_cmd=config.video_tesseract_cmd,
         tessdata_dir=config.video_tessdata_dir,
-        selection=config.selection,
-    )
-
-
-def code_route_config_from_application(
-    config: _application_contracts.FrameworkConfig,
-) -> _code_contracts.CodeRouteConfig:
-    """Project current application values into the code owner's contract."""
-
-    from neocortex.code.code_contracts import CodeRouteConfig
-
-    return CodeRouteConfig(
-        state_path=config.code_database,
-        dedup_path=config.dedup_database,
-        max_file_bytes=config.code_max_file_bytes,
-        max_text_chars=config.code_max_text_chars,
-        max_documents=config.code_max_documents,
-        chunk_chars=config.code_chunk_chars,
-        retry_errors=config.code_retry_errors,
-        retry_recoverable_errors=getattr(config, "retry_recoverable_errors", False),
-        cache_validation=config.code_cache_validation,
-        candidate_scope=getattr(config, "code_candidate_scope", "broad"),
-        include_generated=config.code_include_generated,
-        include_vendored=config.code_include_vendored,
-        complexity_warning=config.code_complexity_warning,
-        function_lines_warning=config.code_function_lines_warning,
-        explicit_project_roots=config.code_project_roots,
         selection=config.selection,
     )
 

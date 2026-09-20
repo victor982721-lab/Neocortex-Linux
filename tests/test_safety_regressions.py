@@ -822,7 +822,6 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
             self.assertTrue(source.exists())
             self.assertFalse(source.with_suffix(".png").exists())
 
-    @unittest.skipUnless(os.name == "nt", "native mutation backend is Windows-only")
     def test_normal_in_root_rename_still_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

@@ -129,7 +129,6 @@ if TYPE_CHECKING:
         read_run_status as read_run_status,
         read_run_status_json as read_run_status_json,
         asset_health_payload as asset_health_payload,
-        code_search_payload as code_search_payload,
         context_payload as context_payload,
         content_diagnostics_payload as content_diagnostics_payload,
         content_diagnostics_v2_payload as content_diagnostics_v2_payload,
@@ -246,7 +245,6 @@ __all__ = (  # noqa: RUF022
     "evidence_payload",
     "operational_query_payload",
     "asset_health_payload",
-    "code_search_payload",
     "lineage_payload",
     "knowledge_search_projection_payload",
     "plan_knowledge_query",
@@ -417,7 +415,6 @@ _READ_EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "operational_query_payload",
     ),
     "asset_health_payload": ("neocortex.api.read_api", "asset_health_payload"),
-    "code_search_payload": ("neocortex.api.read_api", "code_search_payload"),
     "lineage_payload": ("neocortex.api.read_api", "lineage_payload"),
     "knowledge_search_projection_payload": (
         "neocortex.api.read_api",

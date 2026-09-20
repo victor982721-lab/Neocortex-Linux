@@ -2,7 +2,7 @@
 
 These tests exercise the bounded read consumers that may accept a validated
 legacy Semantic owner.  Protocol/current writers are exercised at exact v8/v9
-for transition coverage, while the Code-link writer remains current-only.  Every owner
+for transition coverage, Every owner
 is a temporary fixture and every compatibility read is checked for byte stability.
 """
 
@@ -15,13 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.code.code_contracts import CodeRouteConfig
-from neocortex.code.code_route import CodeRoute
-from neocortex.code.search.code_semantic_links import (
-    CodeSemanticLinkError,
-    code_semantic_search_availability,
-    synchronize_code_embedding_links,
-)
 from neocortex.knowledge.knowledge_contracts import (
     KnowledgeSnapshot,
     OwnerAvailability,
@@ -49,7 +42,6 @@ from neocortex.semantic.semantic_state import (
     semantic_database,
     start_embedding_generation,
 )
-from tests.test_code_semantic_search import _FrameworkState, _Inventory
 from tests.test_semantic_generation_control_projection import _migrate_v5_to_v7
 from tests.test_semantic_generation_publication_v6 import _create_populated_v5
 from tests.test_semantic_planner import _create_pdf_state
@@ -432,7 +424,7 @@ def test_publication_heads_read_v7_v8_and_v9_with_schema_bound_digest(
     before = _database_files(tmp_path)
 
     assert observe_semantic_generation_heads(tmp_path) == ((model.model_signature, generation_id),)
-    owner = observe_integrated_owner_heads(tmp_path, include_code=False)[0]
+    owner = observe_integrated_owner_heads(tmp_path)[0]
     assert (owner.owner, owner.schema_version, owner.revision) == (
         "semantic",
         version,
@@ -466,9 +458,9 @@ def test_empty_publication_head_digest_distinguishes_observed_v7_v8_and_v9(
     assert observe_semantic_generation_heads(v7_root) == ()
     assert observe_semantic_generation_heads(v8_root) == ()
     assert observe_semantic_generation_heads(v9_root) == ()
-    v7_head = observe_integrated_owner_heads(v7_root, include_code=False)[0]
-    v8_head = observe_integrated_owner_heads(v8_root, include_code=False)[0]
-    v9_head = observe_integrated_owner_heads(v9_root, include_code=False)[0]
+    v7_head = observe_integrated_owner_heads(v7_root)[0]
+    v8_head = observe_integrated_owner_heads(v8_root)[0]
+    v9_head = observe_integrated_owner_heads(v9_root)[0]
     assert (v7_head.revision, v7_head.schema_version) == (0, 7)
     assert (v8_head.revision, v8_head.schema_version) == (0, 8)
     assert (v9_head.revision, v9_head.schema_version) == (0, 9)
@@ -476,110 +468,6 @@ def test_empty_publication_head_digest_distinguishes_observed_v7_v8_and_v9(
     assert _database_files(v7_root) == before7
     assert _database_files(v8_root) == before8
     assert _database_files(v9_root) == before9
-
-
-def _create_code_owner(state_directory: Path) -> Path:
-    source = state_directory.parent / "availability.py"
-    source.write_text("def current_status():\n    return 'ready'\n", encoding="utf-8")
-    code_path = state_directory / "code.sqlite3"
-    CodeRoute(
-        CodeRouteConfig(
-            state_path=code_path,
-            dedup_path=state_directory / "dedup.sqlite3",
-        ),
-        _Inventory((source,)),
-        _FrameworkState(),
-        1,
-        1,
-    ).run()
-    return code_path
-
-
-def _insert_current_code_link(
-    code_path: Path,
-    *,
-    model: EmbeddingModelSpec,
-    generation_id: int,
-    active: int = 1,
-) -> int:
-    with closing(sqlite3.connect(code_path)) as connection:
-        chunk_id = int(
-            connection.execute(
-                """SELECT chunk.chunk_id FROM code_chunks chunk
-                JOIN file_versions version ON version.version_id=chunk.version_id
-                JOIN files file ON file.current_version_id=version.version_id
-                WHERE file.status='current' AND version.invalidated_ns IS NULL
-                ORDER BY chunk.chunk_id LIMIT 1"""
-            ).fetchone()[0]
-        )
-        connection.execute(
-            """INSERT INTO embedding_links(
-                chunk_id,semantic_item_id,model_signature,vector_space,
-                generation_id,active,provenance_json)
-            VALUES(?,?,?,?,?,?,?)""",
-            (
-                chunk_id,
-                "item:code:compatibility",
-                model.model_signature,
-                model.vector_space,
-                generation_id,
-                active,
-                "{}",
-            ),
-        )
-        connection.commit()
-    return chunk_id
-
-
-@pytest.mark.parametrize("version", (7, 8))
-def test_code_read_availability_accepts_legacy_v7_v8_but_writer_rejects_them(
-    tmp_path: Path,
-    version: int,
-) -> None:
-    state_directory = tmp_path / "state"
-    state_directory.mkdir()
-    semantic = state_directory / "semantic.sqlite3"
-    if version == 7:
-        model, generation_id = _create_v7_default_head(semantic)
-    else:
-        _create_v8_empty(semantic)
-        model, generation_id = _insert_semantic_head(semantic, multilingual_text_model())
-    code = _create_code_owner(state_directory)
-    _insert_current_code_link(code, model=model, generation_id=generation_id)
-    code_before_writer = code.read_bytes()
-
-    available = code_semantic_search_availability(
-        state_directory,
-        verify_model_cache=False,
-    )
-    assert available.available is True
-    assert available.generation_id == generation_id
-    assert available.current_links == 1
-
-    current_schema = semantic_schema.SEMANTIC_SCHEMA_VERSION
-    with pytest.raises(
-        CodeSemanticLinkError,
-        match=rf"schema.*{current_schema}|{current_schema}.*schema",
-    ):
-        synchronize_code_embedding_links(
-            state_directory,
-            generation_id=generation_id,
-            model_signature=model.model_signature,
-        )
-    assert code.read_bytes() == code_before_writer
-
-    with closing(sqlite3.connect(code)) as connection:
-        connection.execute("UPDATE embedding_links SET active=0")
-        connection.commit()
-    no_current = code_semantic_search_availability(
-        state_directory,
-        verify_model_cache=False,
-    )
-    assert (no_current.available, no_current.reason, no_current.generation_id) == (
-        False,
-        "no_current_default_profile_links",
-        None,
-    )
 
 
 def test_semantic_plan_reuses_v7_cache_version_and_fenced_digest_read_only(

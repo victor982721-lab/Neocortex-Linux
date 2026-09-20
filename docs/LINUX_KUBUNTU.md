@@ -70,7 +70,7 @@ cambio de backend no duplica una intención ya registrada.
 
 | Capacidad | Extra / recurso | Incluido offline |
 |---|---|---|
-| Runtime base, inventario, texto y Code | `packaging`, `rich` y transitivos | Sí, lock `runtime-base-cp313-linux-x86_64.lock` |
+| Runtime base, inventario y texto | `packaging`, `rich` y transitivos | Sí, lock `runtime-base-cp313-linux-x86_64.lock` |
 | Acelerador opcional de hashing | `xxhash` | Sí, lock `fast-hash-cp313-linux-x86_64.lock` |
 | Construcción ordinaria | `build`, backend `setuptools` y transitivos | Sí, lock `build-cp313-linux-x86_64.lock` |
 | Pruebas base | `test-base`: pytest, backend `setuptools==83.0.0` para auditorías de empaquetado y transitivos, sin plugins obligatorios | Sí, lock `test-base-cp313-linux-x86_64.lock` |
@@ -119,7 +119,7 @@ mkdir -p "$Lab/corpus"
 cp -R "$Source/tests/fixtures/headless_product/base/." "$Lab/corpus/"
 NEOCORTEX_PROGRESS_STREAM=1 "$Lab/venv/bin/Neocortex" \
   --root "$Lab/corpus" --state-directory "$Lab/state" \
-  --code-project-root "$Lab/corpus/code" --route text,code --strict-exit-codes
+  --route text --strict-exit-codes
 "$Lab/venv/bin/Neocortex" --root "$Lab/corpus" \
   --state-directory "$Lab/state" --status --status-json
 ~~~

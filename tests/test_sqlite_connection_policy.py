@@ -11,7 +11,6 @@ from types import ModuleType
 import pytest
 
 from neocortex.capabilities.formats.audio import state as audio_state
-from neocortex.code import code_schema
 from neocortex.documents import document_catalog
 from neocortex.capabilities.formats.docx import state as docx_state
 from neocortex.capabilities.formats.office import state as office_state
@@ -365,7 +364,7 @@ def test_equivalent_factories_preserve_errors_close_and_monkeypatch_seam(
 # endregion [02]
 
 
-# region [03] Media and code owner adoption regressions
+# region [03] Media owner adoption regressions
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,16 +399,6 @@ _ROUTE_OWNER_FACTORY_CASES = (
         32_768,
         2_048,
         134_217_728,
-    ),
-    _RouteOwnerFactoryCase(
-        "code",
-        "code state",
-        code_schema,
-        code_schema.initialize_code_state,
-        code_schema.code_database,
-        32_768,
-        2_048,
-        268_435_456,
     ),
 )
 
@@ -530,13 +519,6 @@ def test_route_owner_readers_do_not_recreate_state_deleted_before_open(
 ) -> None:
     database = tmp_path / f"raced-{case.name}.sqlite3"
     case.initialize(database)
-    if case.name == "code":
-        with case.open_database(database, readonly=False) as writer:
-            code_schema.checkpoint_code_wal(writer)
-        code_schema.remove_checkpointed_code_sidecars(database)
-        assert not Path(f"{database}-wal").exists()
-        assert not Path(f"{database}-shm").exists()
-
     real_connect = sqlite_connection.sqlite3.connect
     removed = False
 
