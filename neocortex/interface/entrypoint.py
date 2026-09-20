@@ -88,6 +88,8 @@ Procesamiento:
   dedupe                alias de --dedupe
   --route ROUTES        ejecuta una o más rutas sobre el inventario
   --root ROOT           conserva precedencia explícita sobre la raíz por defecto
+  -S MB, --max-size-mb MB
+                        techo global de tamaño de archivo en MB decimales; sin esta opción, ilimitado
   --apply               sólo procede con una capacidad de backend verificada
   --json                emite un resumen JSON para --all, --dedupe, --route o machine-inventory
   --dedupe-json         emite el contrato JSON específico de --dedupe
