@@ -135,60 +135,12 @@ def test_readonly_sqlite_opens_are_centralized_in_the_read_kernel() -> None:
             )
 
 
-def test_code_tree_contains_only_product_capabilities() -> None:
-    forbidden_fragments = (
-        "analysis",
-        "review",
-        "experiment",
-        "external_",
-        "validation",
-        "supply_chain",
-        "unused",
-        "epistemic",
-        "engineering",
-        "publication_diff",
-    )
-    paths = tuple(path.relative_to(CODE).as_posix() for path in CODE.rglob("*.py"))
-    for relative in paths:
-        if relative in {"code_contracts.py", "code_route.py", "code_schema.py", "code_state.py", "code_retention.py"}:
-            continue
-        if relative.startswith(("ingestion/", "search/", "contracts/")):
-            continue
-        assert not any(fragment in relative for fragment in forbidden_fragments), relative
 
 
-def test_code_tree_has_no_legacy_wrappers_or_orphaned_modules() -> None:
-    expected = {
-        "__init__.py",
-        "code_contracts.py",
-        "code_retention.py",
-        "code_route.py",
-        "code_processing.py",
-        "code_schema.py",
-        "code_state.py",
-        "code_graph_generations.py",
-        "code_graph_blocks.py",
-        "code_graph_revision.py",
-        "code_fts_lookup.py",
-        "ingestion/__init__.py",
-        "ingestion/code_analyzer_common.py",
-        "ingestion/code_analyzers.py",
-        "ingestion/code_candidate_scope.py",
-        "ingestion/code_detection.py",
-        "ingestion/code_generic.py",
-        "ingestion/code_projects.py",
-        "ingestion/code_python.py",
-        "ingestion/code_rust.py",
-        "search/__init__.py",
-        "search/code_search.py",
-        "search/code_semantic_links.py",
-    }
-    actual = {
-        path.relative_to(CODE).as_posix()
-        for path in CODE.rglob("*.py")
-        if "__pycache__" not in path.parts
-    }
-    assert actual == expected
+
+
+def test_code_product_tree_has_been_removed() -> None:
+    assert not CODE.exists()
 
 
 def test_api_core_does_not_import_interface_ui() -> None:

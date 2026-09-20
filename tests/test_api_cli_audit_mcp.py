@@ -21,7 +21,6 @@ _READ_TOOLS = [
     ("context", "context_payload", {"query": "fixture", "response_version": 1}),
     ("operational_query", "operational_query_payload", {"query": "pdf error"}),
     ("evidence", "evidence_payload", {"query": "fixture", "citation_id": "C1", "response_version": 1}),
-    ("inspect_code", "code_search_payload", {"query": "fixture"}),
     ("lineage", "lineage_payload", {"identifier": "fixture"}),
     ("asset_health", "asset_health_payload", {"resource_id": "resource:file:1:2:-1"}),
 ]

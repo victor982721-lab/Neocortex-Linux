@@ -35,7 +35,6 @@ def test_linux_window_is_portable_non_elevated_and_non_mutating(tmp_path: Path) 
     try:
         visible_text = {label.text() for label in window.findChildren(QLabel)}
         assert "Modo Linux" in visible_text
-        assert window.route_toggles["code"].text() == "Código"
         assert window.route_toggles["archive"].text() == "ZIP"
         assert window.start_button.text() == "Iniciar ejecución"
         assert window.start_button.isEnabled()

@@ -101,7 +101,6 @@ def test_all_read_api_producers_emit_the_same_v1_envelope(
     monkeypatch.setattr(read_api, "_service", lambda _binding: _Service())
     monkeypatch.setattr(read_api, "knowledge_search_exit_code", lambda _result: 0)
     monkeypatch.setattr(read_api, "knowledge_context_exit_code", lambda _result: 0)
-    monkeypatch.setattr(read_api, "search_code", lambda _path, _query: ())
     monkeypatch.setattr(
         read_api,
         "inspect_derivation_lineage",
@@ -131,12 +130,6 @@ def test_all_read_api_producers_emit_the_same_v1_envelope(
         (
             read_api.evidence_payload(query, "missing", "personal", limit=3),
             ReadOperation.EVIDENCE,
-            query,
-            3,
-        ),
-        (
-            read_api.code_search_payload(query, "personal", limit=3),
-            ReadOperation.INSPECT_CODE,
             query,
             3,
         ),

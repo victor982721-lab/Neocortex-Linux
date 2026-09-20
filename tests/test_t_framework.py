@@ -122,7 +122,6 @@ class CommandLineTests(unittest.TestCase):
                 "audio",
                 "video",
                 "image",
-                "code",
             ),
         )
         self.assertEqual(selected_routes, tuple(builtin_route_registry()))
@@ -135,12 +134,10 @@ class CommandLineTests(unittest.TestCase):
         self.assertFalse(args.retry_audio_errors)
         self.assertFalse(args.retry_video_errors)
         self.assertFalse(args.retry_image_errors)
-        self.assertFalse(args.retry_code_errors)
         self.assertEqual(args.image_document_ocr, "auto")
         self.assertIsNone(args.semantic_max_items)
         self.assertIsNone(args.semantic_max_new_jobs)
         self.assertIsNone(args.semantic_time_budget_seconds)
-        self.assertEqual(args.code_candidate_scope, "projects")
         self.assertIsNone(args.global_memory_budget_mb)
         self.assertIsNone(args.global_min_free_memory_mb)
         self.assertIsNone(args.global_min_free_commit_mb)
@@ -214,7 +211,7 @@ class CommandLineTests(unittest.TestCase):
         route_error = type(
             "Result",
             (),
-            {"route_results": {"code": {"errors": 1}}},
+            {"route_results": {"archive": {"errors": 1}}},
         )()
         self.assertFalse(_has_strict_route_errors(clean))
         self.assertTrue(_has_strict_route_errors(partial))
@@ -329,9 +326,9 @@ class ProgressTests(unittest.TestCase):
         with patch("sys.stderr", output), LineProgress() as progress:
             progress(
                 ProgressEvent(
-                    "code",
+                    "text",
                     "analysis",
-                    "Code analysis",
+                    "Text analysis",
                     3,
                     5,
                     "shards",
@@ -355,7 +352,7 @@ class ProgressTests(unittest.TestCase):
                 now[0] = float(completed)
                 progress(
                     ProgressEvent(
-                        "code",
+                        "text",
                         "analysis",
                         "Incremental",
                         completed,
@@ -366,7 +363,7 @@ class ProgressTests(unittest.TestCase):
             now[0] = 24.0
             progress(
                 ProgressEvent(
-                    "code",
+                        "text",
                     "analysis",
                     "Incremental",
                     24,
@@ -378,7 +375,7 @@ class ProgressTests(unittest.TestCase):
             now[0] = 25.0
             progress(
                 ProgressEvent(
-                    "code",
+                        "text",
                     "analysis",
                     "Incremental",
                     0,
@@ -701,7 +698,7 @@ class OrchestratorTests(unittest.TestCase):
             config = FrameworkConfig(
                 root=corpus,
                 state_directory=state_directory,
-                route="pdf,docx,office,archive,text,audio,video,image,code",
+                route="pdf,docx,office,archive,text,audio,video,image",
                 image_workers=2,
                 image_document_ocr_mode="never",
                 image_min_free_memory_bytes=0,
@@ -731,7 +728,6 @@ class OrchestratorTests(unittest.TestCase):
                     "audio",
                     "video",
                     "image",
-                    "code",
                 },
             )
             self.assertIsNotNone(result.pdf)
@@ -740,14 +736,12 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIsNotNone(result.audio)
             self.assertIsNotNone(result.video)
             self.assertIsNotNone(result.image)
-            self.assertIsNotNone(result.code)
             assert result.pdf is not None
             assert result.docx is not None
             assert result.office is not None
             assert result.audio is not None
             assert result.video is not None
             assert result.image is not None
-            assert result.code is not None
             self.assertEqual(result.pdf.errors, 0)
             self.assertEqual(result.docx.errors, 0)
             self.assertEqual(result.office.errors, 0)
@@ -755,7 +749,6 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(result.audio.errors, 0)
             self.assertEqual(result.video.errors, 0)
             self.assertEqual(result.image.errors, 0)
-            self.assertEqual(result.code.errors, 0)
             self.assertIsNotNone(result.global_resources)
             assert result.global_resources is not None
             self.assertLessEqual(
@@ -788,7 +781,6 @@ class OrchestratorTests(unittest.TestCase):
                     "audio": "completed",
                     "video": "completed",
                     "image": "completed",
-                    "code": "completed",
                 },
             )
 

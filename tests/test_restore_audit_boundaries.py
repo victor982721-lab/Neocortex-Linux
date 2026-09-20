@@ -478,11 +478,10 @@ def test_future_pragma_cannot_hide_behind_supported_metadata(tmp_path: Path) -> 
     assert publication.read_state_publications(state) == ()
 
 
-@pytest.mark.parametrize("owner", ["code", "semantic", "catalog"])
+@pytest.mark.parametrize("owner", ["semantic", "catalog"])
 def test_known_legacy_schema_is_migrated_only_on_disposable_copies(
     tmp_path: Path, owner: str
 ) -> None:
-    from tests.test_code_schema_migration_v1_v2 import _create_version_one_fixture
     from tests.test_document_catalog_schema_contract import _create_legacy_catalog
     from tests.test_semantic_schema_contract import _create_version_two
 
@@ -490,9 +489,7 @@ def test_known_legacy_schema_is_migrated_only_on_disposable_copies(
     state.mkdir()
     contract = STATE_STORE_REGISTRY.by_owner(owner)
     database = state / contract.database_name
-    if owner == "code":
-        _create_version_one_fixture(database)
-    elif owner == "semantic":
+    if owner == "semantic":
         _create_version_two(database)
     else:
         _create_legacy_catalog(database, 1)
@@ -516,10 +513,6 @@ def test_known_legacy_schema_is_migrated_only_on_disposable_copies(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone()[0]
         assert int(version) == contract.expected_schema_version
-        if owner == "code":
-            assert connection.execute(
-                "SELECT value FROM metadata WHERE key='preserved_marker'"
-            ).fetchone()[0] == "keep-me"
 
 
 def test_absent_backup_entry_does_not_authorize_live_owner_deletion(tmp_path: Path) -> None:

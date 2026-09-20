@@ -76,7 +76,7 @@ def test_state_health_reports_missing_and_healthy_owners_without_creating_state(
 
     assert health.overall == "partial"
     assert health.healthy_count == 1
-    assert health.missing_count == 12
+    assert health.missing_count == 11
     framework = next(owner for owner in health.owners if owner.name == "framework")
     assert framework.status == "healthy"
     assert (
@@ -139,7 +139,7 @@ def test_state_health_json_is_structured_and_returns_two_for_partial_state(
     assert payload["kind"] == "state-health"
     assert payload["schema_version"] == 2
     assert payload["overall"] == "partial"
-    assert len(payload["owners"]) == 13
+    assert len(payload["owners"]) == 12
 
 
 def test_state_health_uses_canonical_topology_for_schema_and_unknown_entries(

@@ -124,7 +124,7 @@ def test_new_default_shows_video_without_promoting_saved_custom_selection(
             settings_path.parent.mkdir(exist_ok=True)
             settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
             settings.setValue("execution/root", str(root))
-            settings.setValue("execution/routes", "pdf,code")
+            settings.setValue("execution/routes", "pdf,image")
             settings.setValue("execution/profile", "full")
             settings.setValue("execution/max_items", 17)
             settings.setValue("execution/deadline_seconds", 42)
@@ -142,7 +142,7 @@ def test_new_default_shows_video_without_promoting_saved_custom_selection(
                     route
                     for route, toggle in saved.route_toggles.items()
                     if toggle.isChecked()
-                ) == ("pdf", "code")
+                ) == ("pdf", "image")
                 assert not saved.route_toggles["video"].isChecked()
                 request = saved._current_request()
                 assert request.profile == "full"
@@ -150,7 +150,7 @@ def test_new_default_shows_video_without_promoting_saved_custom_selection(
                 assert request.deadline_seconds == 42.0
                 assert not request.uses_all_lifecycle
                 arguments = request.cli_arguments()
-                assert arguments[arguments.index("--route") + 1] == "pdf,code"
+                assert arguments[arguments.index("--route") + 1] == "pdf,image"
                 assert "--all" not in arguments
 
                 saved.profile_combo.setCurrentIndex(0)

@@ -35,7 +35,6 @@ def test_public_registry_is_the_exact_knowledge_state_path_contract(tmp_path: Pa
         "video",
         "image",
         "semantic",
-        "code",
         "archive",
         "text",
     )

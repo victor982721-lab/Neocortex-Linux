@@ -49,7 +49,6 @@ importlib.import_module("neocortex.api")
 importlib.import_module("neocortex.api.cli")
 forbidden = {
     "neocortex.api.cli.cli_app",
-    "neocortex.api.cli.cli_code",
     "neocortex.api.read_api_port",
 }
 loaded = sorted(forbidden.intersection(sys.modules))

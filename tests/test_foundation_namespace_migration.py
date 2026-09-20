@@ -24,7 +24,6 @@ def test_foundation_implementation_lives_under_product_namespace() -> None:
         "neocortex/knowledge/knowledge_exact.py",
         "neocortex/knowledge/knowledge_search.py",
         "neocortex/knowledge/knowledge_search_catalog.py",
-        "neocortex/knowledge/knowledge_search_code.py",
         "neocortex/knowledge/knowledge_search_content.py",
         "neocortex/runtime/config/model_management.py",
         "neocortex/semantic/semantic_sources.py",

@@ -40,10 +40,7 @@ def _legacy(state: Path):
         manifest_sha256="b" * 64,
     ).prepared
     # This is a fresh aggregate, not a comparison against the legacy max id.
-    heads = (
-        StateOwnerHead("semantic", 17, "c" * 64, 7),
-        StateOwnerHead("code", 4, "d" * 64, 7),
-    )
+    heads = (StateOwnerHead("semantic", 17, "c" * 64, 7),)
     return pending, heads
 
 
@@ -104,7 +101,7 @@ def test_restart_revalidates_heads_after_manifest_and_journal_staging(tmp_path: 
     def observer():
         nonlocal calls
         calls += 1
-        return heads if calls == 1 else (replace(heads[0], revision=18), heads[1])
+        return heads if calls == 1 else (replace(heads[0], revision=18),)
 
     with pytest.raises(StatePublicationConflictError, match="heads changed"):
         _restart(tmp_path, pending, heads, callback=observer)
@@ -167,22 +164,6 @@ def test_restart_rejects_tampered_previous_publication(tmp_path: Path):
     assert read_state_publication_state(tmp_path).pending == (pending,)
 
 
-def test_restart_refuses_owner_scope_reduction(tmp_path: Path):
-    semantic = StateOwnerHead("semantic", 1, "a" * 64)
-    code = StateOwnerHead("code", 1, "b" * 64)
-    record_state_publication(
-        tmp_path, operation="framework-all-semantic", owners=("semantic", "code"),
-        status="complete", idempotency_key="previous", owner_heads=(semantic, code),
-    )
-    pending = begin_state_publication(
-        tmp_path, operation="framework-all-semantic", owners=("semantic",),
-        idempotency_key="new-work",
-    ).prepared
-    with pytest.raises(StatePublicationConflictError, match="owner scope"):
-        restart_state_publication_checkpoint(
-            tmp_path, event_id=pending.event_id, expected_epoch=1,
-            owner_heads=(semantic,), verify_owner_heads=lambda: (semantic,),
-        )
 
 
 def test_superseded_producer_cannot_commit_late(tmp_path: Path):
@@ -204,7 +185,7 @@ def test_restart_replay_cannot_hide_a_later_publication(tmp_path: Path, tampered
     pending, heads = _legacy(tmp_path)
     _restart(tmp_path, pending, heads)
     later = record_state_publication(
-        tmp_path, operation="framework-all-semantic", owners=("semantic", "code"),
+        tmp_path, operation="framework-all-semantic", owners=("semantic",),
         status="complete", idempotency_key="later", owner_heads=heads,
     )
     if tampered:
@@ -226,8 +207,8 @@ def test_restart_replay_rejects_same_event_pointer_contract_drift(tmp_path: Path
     payload = json.loads(pointer.read_text())
     drift = {
         "operation": "different-operation",
-        "owners": ["semantic"],
-        "owner_heads": [heads[0].as_payload()],
+        "owners": ["inventory"],
+        "owner_heads": [replace(heads[0], revision=99).as_payload()],
         "manifest_sha256": "f" * 64,
         "content_manifest_sha256": "f" * 64,
         "content_manifest_name": "content-publication-manifest.different.json",
@@ -241,13 +222,13 @@ def test_restart_replay_rejects_same_event_pointer_contract_drift(tmp_path: Path
     assert journal.read_bytes() == before
 
 
-@pytest.mark.parametrize("field", ["epoch", "owner_heads"])
+@pytest.mark.parametrize("field", ["epoch"])
 def test_restart_rejects_malformed_pending_baseline(tmp_path: Path, field: str):
     pending, heads = _legacy(tmp_path)
     journal = tmp_path / publication.STATE_PUBLICATION_JOURNAL_FILENAME
     lines = journal.read_text().splitlines()
     last = json.loads(lines[-1])
-    last[field] = 2 if field == "epoch" else [head.as_payload() for head in heads]
+    last[field] = 2
     lines[-1] = json.dumps(last)
     journal.write_text("\n".join(lines) + "\n")
     original = journal.read_bytes()

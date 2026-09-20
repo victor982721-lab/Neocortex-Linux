@@ -27,17 +27,12 @@ def _source_rows(connection: sqlite3.Connection, kind: SourceKind, texts: list[s
         connection.execute("CREATE TABLE frame_fts(file_key TEXT,timestamp_ms INTEGER,body TEXT)")
         connection.executemany("INSERT INTO frame_fts VALUES('fixture',?,?)", enumerate(texts))
     else:
-        connection.execute("CREATE TABLE files(file_id INTEGER,current_version_id INTEGER,status TEXT)")
-        connection.execute("CREATE TABLE file_versions(version_id INTEGER,text_zlib BLOB)")
-        connection.execute("CREATE TABLE code_chunks(version_id INTEGER,chunk_index INTEGER,text TEXT)")
-        connection.execute("INSERT INTO files VALUES(1,1,'current')")
-        connection.execute("INSERT INTO file_versions VALUES(1,NULL)")
-        connection.executemany("INSERT INTO code_chunks VALUES(1,?,?)", enumerate(texts))
+        raise AssertionError(f"unsupported fixture source kind: {kind}")
     connection.commit()
-    return SourceDocument(kind, "code:1" if kind == "code" else "fixture", "/fixture", "1", "2", 1, 1, -1, "complete", "fixture", "text", "", "", "")
+    return SourceDocument(kind, "fixture", "/fixture", "1", "2", 1, 1, -1, "complete", "fixture", "text", "", "", "")
 
 
-@pytest.mark.parametrize("kind", ("pdf", "video", "code"))
+@pytest.mark.parametrize("kind", ("pdf", "video"))
 @pytest.mark.parametrize("limit", (1, 2, 3, 4, 7, 12, 32, 129))
 def test_source_prefix_limit_counts_unicode_characters_and_separators(kind: SourceKind, limit: int) -> None:
     pieces = ["", "", "🧠á", "", "e\u0301z", "tail" * 40]
@@ -60,7 +55,7 @@ def test_many_empty_pdf_pages_stop_when_the_output_prefix_is_complete() -> None:
         assert sum("substr(text_zlib" in sql for sql in statements) <= 65
 
 
-@pytest.mark.parametrize("kind", ("pdf", "video", "code"))
+@pytest.mark.parametrize("kind", ("pdf", "video"))
 @pytest.mark.parametrize("encoding", ("UTF-8", "UTF-16le", "UTF-16be"))
 @pytest.mark.parametrize("limit", (1, 4, 12, 64))
 def test_source_prefix_preserves_nul_and_database_encoding(kind: SourceKind, encoding: str, limit: int) -> None:
@@ -72,20 +67,18 @@ def test_source_prefix_preserves_nul_and_database_encoding(kind: SourceKind, enc
             assert text_reader._load_leading_text(connection, document, max_text_chars=limit) == expected
 
 
-@pytest.mark.parametrize("kind", ("video", "code"))
+@pytest.mark.parametrize("kind", ("video",))
 @pytest.mark.parametrize("invalid", (b"\xff", b"text\xf0", b"\0\xff"))
 def test_invalid_stored_text_prefix_is_not_silently_discarded(kind: SourceKind, invalid: bytes) -> None:
     with closing(sqlite3.connect(":memory:")) as connection:
         document = _source_rows(connection, kind, ["placeholder"])
         if kind == "video":
             connection.execute("UPDATE frame_fts SET body=CAST(? AS TEXT)", (invalid,))
-        else:
-            connection.execute("UPDATE code_chunks SET text=CAST(? AS TEXT)", (invalid,))
         with pytest.raises(UnicodeDecodeError):
             text_reader._load_leading_text(connection, document, max_text_chars=64)
 
 
-@pytest.mark.parametrize("kind", ("video", "code"))
+@pytest.mark.parametrize("kind", ("video",))
 @pytest.mark.parametrize("encoding", ("UTF-8", "UTF-16le", "UTF-16be"))
 def test_text_prefix_transfer_is_bounded_at_multibyte_boundary(kind: SourceKind, encoding: str) -> None:
     text = "x\0" + "🧠" * 10_000
@@ -104,7 +97,7 @@ def test_text_prefix_transfer_is_bounded_at_multibyte_boundary(kind: SourceKind,
     assert transferred == [20]
 
 
-@pytest.mark.parametrize("kind", ("video", "code"))
+@pytest.mark.parametrize("kind", ("video",))
 def test_empty_source_rows_still_poll_worker_cancellation(
     monkeypatch: pytest.MonkeyPatch, kind: SourceKind,
 ) -> None:

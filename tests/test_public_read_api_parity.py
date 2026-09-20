@@ -20,7 +20,6 @@ READ_PAYLOADS = (
     "evidence_payload",
     "operational_query_payload",
     "asset_health_payload",
-    "code_search_payload",
     "lineage_payload",
     "knowledge_search_projection_payload",
 )
@@ -35,7 +34,6 @@ _ENVELOPE_KINDS = {
         "operational_query",
     ),
     "asset_health_payload": ("neocortex_scoped_asset_health", "asset_health"),
-    "code_search_payload": ("neocortex_scoped_code_search", "inspect_code"),
     "lineage_payload": ("neocortex_scoped_derivation_lineage", "lineage"),
     "knowledge_search_projection_payload": ("neocortex_scoped_search", "search"),
 }
@@ -61,7 +59,6 @@ def test_read_facades_are_manifested_without_eager_read_api_import() -> None:
                     "evidence_payload",
                     "operational_query_payload",
                     "asset_health_payload",
-                    "code_search_payload",
                     "lineage_payload",
                     "knowledge_search_projection_payload",
                 )
@@ -111,7 +108,6 @@ def test_read_facades_preserve_typed_envelopes_without_state_mutation(
         "evidence_payload": ("query", "citation", "personal"),
         "operational_query_payload": ("query", "personal"),
         "asset_health_payload": ("resource:file:1:2:-1", "personal"),
-        "code_search_payload": ("query", "personal"),
         "lineage_payload": ("revision:fixture", "personal"),
         "knowledge_search_projection_payload": ("query", "personal"),
     }

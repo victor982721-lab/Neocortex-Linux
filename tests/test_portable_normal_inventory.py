@@ -47,7 +47,6 @@ def _run(root: Path, state: Path, *, route: str = "none"):
                 root=root,
                 state_directory=state,
                 route=route,
-                code_candidate_scope="broad",
                 document_catalog_enabled=False,
                 global_memory_budget_bytes=256 * 1024**2,
                 global_min_free_memory_bytes=128 * 1024**2,
@@ -70,73 +69,6 @@ def _snapshot(state: Path, root: Path, scan_id: int) -> dict[str, tuple[int, ...
         }
 
 
-def test_portable_normal_run_is_published_and_code_remains_incremental(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "corpus"
-    state = tmp_path / "portable-state"
-    root.mkdir()
-    for index in range(20):
-        (root / f"module_{index:02d}.py").write_text(
-            f"VALUE_{index} = {index}\n",
-            encoding="utf-8",
-        )
-
-    first = _run(root, state, route="code")
-    second = _run(root, state, route="code")
-
-    assert first.inventory_mode == second.inventory_mode == "full"
-    assert first.inventory_attempts == second.inventory_attempts == 1
-    assert first.scan.scan_id == second.scan.scan_id
-    assert first.reconciliation_records == second.reconciliation_records == 0
-    assert first.journal_before is first.journal_after is None
-    assert second.journal_before is second.journal_after is None
-    assert first.journal_usn_span is second.journal_usn_span is None
-    assert first.code is not None and second.code is not None
-    assert (first.code.processed, first.code.cache_hits) == (20, 0)
-    assert (second.code.processed, second.code.cache_hits) == (0, 20)
-
-    (root / "module_00.py").write_text("VALUE_0 = 1000\n", encoding="utf-8")
-    (root / "module_01.py").unlink()
-    (root / "module_02.py").rename(root / "renamed_module.py")
-    (root / "added_module.py").write_text("ADDED = True\n", encoding="utf-8")
-
-    changed = _run(root, state, route="code")
-    replay = _run(root, state, route="code")
-
-    assert changed.code is not None and replay.code is not None
-    assert changed.scan.files_seen == replay.scan.files_seen == 20
-    assert changed.scan.scan_id != first.scan.scan_id
-    assert changed.scan.scan_id == replay.scan.scan_id
-    assert (changed.code.processed, changed.code.cache_hits) == (3, 17)
-    assert (replay.code.processed, replay.code.cache_hits) == (0, 20)
-    assert _snapshot(state, root, changed.scan.scan_id) == _snapshot(
-        state,
-        root,
-        replay.scan.scan_id,
-    )
-
-    with DedupIndex(state / "dedup.sqlite3") as index:
-        checkpoint = index.inventory_checkpoint(root)
-        published = list(index.published_snapshots(root))
-    assert checkpoint is not None
-    assert checkpoint.scan_id == replay.scan.scan_id
-    assert checkpoint.valid and not checkpoint.journal_available
-    assert len(published) == 20
-
-    with sqlite3.connect(state / "framework.sqlite3") as connection:
-        latest = connection.execute(
-            """SELECT journal_volume,journal_id,start_usn,end_usn,status
-            FROM initial_runs ORDER BY run_id DESC LIMIT 1"""
-        ).fetchone()
-        gate = connection.execute(
-            """SELECT details_json FROM run_events
-            WHERE phase='normal-incremental-gate'
-            ORDER BY event_id DESC LIMIT 1"""
-        ).fetchone()
-    assert latest == (None, None, None, None, "completed")
-    assert gate is not None
-    assert "journal_unavailable_portable_full_scan" in str(gate[0])
 
 
 def test_portable_snapshot_matches_the_usn_inventory_for_the_same_tree(

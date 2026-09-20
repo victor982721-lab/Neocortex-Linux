@@ -74,7 +74,6 @@ def test_professional_summary_includes_every_all_route_and_semantic(capsys) -> N
         office=_route(candidates=12, processed=12, cache_hits=12),
         audio=_route(candidates=13, processed=13, cache_hits=13),
         image=_route(candidates=14, processed=14, cache_hits=14),
-        code=_route(candidates=15, processed=15, cache_hits=15),
     )
     args = SimpleNamespace(all=True)
 
@@ -86,7 +85,7 @@ def test_professional_summary_includes_every_all_route_and_semantic(capsys) -> N
     )
 
     output = capsys.readouterr().out
-    for label in ("PDF", "DOCX", "Office", "Audio", "Imágenes", "Código"):
+    for label in ("PDF", "DOCX", "Office", "Audio", "Imágenes"):
         assert label in output
     assert "Semantic" in output
     assert "PUBLICADO" in output
