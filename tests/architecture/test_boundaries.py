@@ -208,6 +208,26 @@ def test_shared_read_contract_does_not_import_cli() -> None:
 # import failures and not a generic permission for new cycles. Every edge and
 # its calling function/type-checking context must still match this set.
 _RETAINED_DOMAIN_CYCLES = {
+    # The effects slice resolves the facade's historical ``files_equal_exact``
+    # injection seam lazily; the facade owns the mixin eagerly. This single
+    # deferred edge preserves safety-test patchability without a second owner.
+    frozenset({
+        "neocortex.workflow.actions.actions",
+        "neocortex.workflow.actions.action_effects",
+    }): {
+        (
+            "neocortex.workflow.actions.actions",
+            "neocortex.workflow.actions.action_effects",
+            "eager",
+            (),
+        ),
+        (
+            "neocortex.workflow.actions.action_effects",
+            "neocortex.workflow.actions.actions",
+            "deferred",
+            ("_files_equal_exact",),
+        ),
+    },
     # Archive extraction slices retain a narrow deferred callback cycle: the
     # route facade owns SQLite/effects while traversal/container helpers call
     # back through its injected seams.  The callback edges are explicit and
