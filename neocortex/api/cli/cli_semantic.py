@@ -127,6 +127,13 @@ _FORWARD_NAMES = (
 for _name in _FORWARD_NAMES:
     globals()[_name] = _forward(_name)
 
+# Static analyzers cannot infer the explicit forwarding loop above; retain
+# typed aliases for the public dispatcher while the implementation remains
+# owned by ``semantic_application``.
+semantic_resume_available = _application.semantic_resume_available
+run_integrated_all_semantic_index = _application.run_integrated_all_semantic_index
+prepare_integrated_semantic_start = _application.prepare_integrated_semantic_start
+
 __all__ = list(_application.__all__)
 
 # A small set of implementation-level imports is part of the established

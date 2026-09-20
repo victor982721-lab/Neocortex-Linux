@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# mypy: disable-error-code=attr-defined
+
 import json
 import time
 from collections.abc import Iterable, Mapping

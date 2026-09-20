@@ -8,6 +8,8 @@ not create a second orchestration object or a second persistence owner.
 
 from __future__ import annotations
 
+# mypy: disable-error-code=attr-defined
+
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait

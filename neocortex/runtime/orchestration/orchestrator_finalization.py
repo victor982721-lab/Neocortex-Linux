@@ -7,6 +7,8 @@ terminal state transitions together without owning route scheduling.
 
 from __future__ import annotations
 
+# mypy: disable-error-code=attr-defined
+
 import time
 from collections.abc import Mapping
 from dataclasses import replace

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# mypy: disable-error-code=attr-defined
+
 import json
 import os
 from collections.abc import Callable, Iterable

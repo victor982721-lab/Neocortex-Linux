@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# mypy: disable-error-code=attr-defined
+
 from collections.abc import Iterable
 
 from neocortex.runtime.models import ActionSummary

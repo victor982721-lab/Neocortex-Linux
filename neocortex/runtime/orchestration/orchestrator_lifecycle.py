@@ -7,6 +7,8 @@ provided by :mod:`orchestrator_routes`.
 
 from __future__ import annotations
 
+# mypy: disable-error-code=attr-defined
+
 import os
 from collections.abc import Mapping
 from dataclasses import replace

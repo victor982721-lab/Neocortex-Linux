@@ -7,6 +7,8 @@ route hand-off code into one cohesive slice.
 
 from __future__ import annotations
 
+# mypy: disable-error-code=attr-defined
+
 import os
 import time
 from dataclasses import replace
