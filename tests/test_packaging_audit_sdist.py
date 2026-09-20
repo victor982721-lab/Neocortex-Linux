@@ -50,7 +50,10 @@ def actual_sdists(tmp_path_factory: pytest.TempPathFactory):
     work = tmp_path_factory.mktemp("packaging-audit-sdist")
     source = work / "source-one"
     source.mkdir()
-    for filename in ("MANIFEST.in", "pyproject.toml", "README.md", "constraints.txt", "constraints-linux-cp314.lock"):
+    for filename in (
+        "MANIFEST.in", "pyproject.toml", "README.md", "constraints.txt",
+        "constraints-linux-cp313.lock", "constraints-linux-cp313-runtime.lock",
+    ):
         shutil.copy2(root / filename, source / filename)
     for directory in ("neocortex", "tools", "docs"):
         shutil.copytree(

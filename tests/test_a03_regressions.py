@@ -81,25 +81,25 @@ def test_artifact_cache_reuses_unchanged_but_rehashes_replacement_and_inplace_re
     path = tmp_path / "model.bin"
     path.write_bytes(b"AAAA")
     original = path.stat()
-    first = provenance.fingerprint_file_xxh3_128(path)
+    first = provenance.fingerprint_file_sha256_128(path)
     before = provenance._fingerprint_file_cached.cache_info()
-    assert provenance.fingerprint_file_xxh3_128(path) == first
+    assert provenance.fingerprint_file_sha256_128(path) == first
     assert provenance._fingerprint_file_cached.cache_info().hits == before.hits + 1
     replacement = tmp_path / "replacement"
     replacement.write_bytes(b"BBBB")
     os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
     replacement.replace(path)
-    second = provenance.fingerprint_file_xxh3_128(path)
+    second = provenance.fingerprint_file_sha256_128(path)
     assert second != first
     path.write_bytes(b"CCCC")
     os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
-    assert provenance.fingerprint_file_xxh3_128(path) not in {first, second}
+    assert provenance.fingerprint_file_sha256_128(path) not in {first, second}
 
 
 def test_hash_rejects_content_change_during_stream_and_does_not_cache_mixed_digest(tmp_path):
     path = tmp_path / "model.bin"
     path.write_bytes(b"before")
-    original_factory = provenance.xxhash.xxh3_128
+    original_factory = provenance.sha256.sha256_128
     changed = False
 
     class ChangingDigest:
@@ -114,10 +114,10 @@ def test_hash_rejects_content_change_during_stream_and_does_not_cache_mixed_dige
         def hexdigest(self):
             return self.digest.hexdigest()
 
-    with patch.object(provenance.xxhash, "xxh3_128", side_effect=ChangingDigest):
+    with patch.object(provenance.sha256, "sha256_128", side_effect=ChangingDigest):
         with pytest.raises(provenance.ProcessingArtifactChangedError):
-            provenance.fingerprint_file_xxh3_128(path)
-    assert provenance.fingerprint_file_xxh3_128(path) == original_factory(path.read_bytes()).hexdigest()
+            provenance.fingerprint_file_sha256_128(path)
+    assert provenance.fingerprint_file_sha256_128(path) == original_factory(path.read_bytes()).hexdigest()
 
 
 def test_hash_rejects_path_replacement_after_open(tmp_path):
@@ -142,7 +142,7 @@ def test_nonregular_artifact_rejected_without_opening_fifo(tmp_path):
     path = tmp_path / "fifo"
     os.mkfifo(path)
     with pytest.raises(FileNotFoundError):
-        provenance.fingerprint_file_xxh3_128(path)
+        provenance.fingerprint_file_sha256_128(path)
 
 
 def test_executable_replacement_updates_version_and_hash_without_private_clear(tmp_path):
@@ -158,7 +158,7 @@ def test_executable_replacement_updates_version_and_hash_without_private_clear(t
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     second = provenance.executable_component("probe", default_name="probe", explicit=str(path))
     assert second['version'] == 'version-B'
-    assert second['binary']['xxh3_128'] != first['binary']['xxh3_128']
+    assert second['binary']['sha256_128'] != first['binary']['sha256_128']
 
 
 def test_public_revision_discards_inflight_old_observation():

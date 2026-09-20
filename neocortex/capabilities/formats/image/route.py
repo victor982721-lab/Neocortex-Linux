@@ -1,6 +1,7 @@
 """Incremental, memory-bounded image classification route."""
 
 from __future__ import annotations
+import hashlib
 import json
 import threading
 import time
@@ -311,7 +312,7 @@ class ImageRoute:
             return
         cached = self.dedup_index.cached_fingerprint(snapshot, FULL_ALGORITHM)
         if cached is not None:
-            if len(cached) != 16:
+            if len(cached) != hashlib.sha256().digest_size:
                 raise RuntimeError("cached image full fingerprint has an invalid length")
             self._full_fingerprint_cache_hits += 1
             return

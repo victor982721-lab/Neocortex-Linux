@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Protocol
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.deduplication import FileSnapshot, snapshot_path
 from neocortex.progress import (
@@ -1047,7 +1047,7 @@ def _repair_cached_audio_derivatives(
         if not text:
             return False
         encoded = text.encode("utf-8")
-        fingerprint = xxhash.xxh3_128_hexdigest(encoded)
+        fingerprint = sha256.sha256_128_hexdigest(encoded)
         current_text: str | None = None
         if row["text_zlib"] is not None:
             try:
@@ -1288,7 +1288,7 @@ def _store_success(
     key = _file_key(snapshot)
     title = Path(snapshot.path).stem
     text_bytes = result.text.encode("utf-8")
-    fingerprint = xxhash.xxh3_128_hexdigest(text_bytes) if text_bytes else None
+    fingerprint = sha256.sha256_128_hexdigest(text_bytes) if text_bytes else None
     status = "complete" if result.text else "no_speech"
     metadata = _probe_metadata(probe)
     metadata["transcription_duration_seconds"] = result.duration_seconds

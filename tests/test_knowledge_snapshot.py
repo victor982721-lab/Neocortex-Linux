@@ -494,12 +494,7 @@ def test_snapshot_reads_safe_previous_framework_and_abstains_inventory(
         f"legacy_schema_read_compatible:{framework_version}"
         f"->{framework_schema_module.SCHEMA_VERSION}"
     )
-    review_watermarks = {
-        watermark.name: watermark.value
-        for watermark in framework_owner.watermarks
-        if watermark.name.startswith("review_task_")
-    }
-    assert review_watermarks == {}
+    assert all(not watermark.name.startswith("human_review_") for watermark in framework_owner.watermarks)
     assert inventory.read_bytes() == inventory_before
     assert framework.read_bytes() == framework_before
 

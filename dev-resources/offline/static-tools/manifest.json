@@ -1609,11 +1609,9 @@
     }
   ],
   "runtime_reference": {
-    "lock_path": "../../../constraints-linux-cp314.lock",
-    "lock_sha256": "8b962c45709e5bbe5390f4ef699f580bfdb4ef03d3aa95f44e9d1e9471caa3a1",
-    "separation": "runtime lock/wheelhouse owns shared runtime artifacts; this manifest does not copy them",
-    "wheelhouse_artifact_count": 69,
-    "wheelhouse_manifest_sha256": "22c1d3a4141dfce007925305cbfaa6b37cd0c27cadbc6199813eb2af99a9f5e6"
+    "reason": "This is a historical CPython 3.14 tooling snapshot. The active product is CPython 3.13-only, and no static-tooling closure is claimed from the product runtime lock.",
+    "separation": "static tooling is development-only; its historical records are not a product runtime or wheelhouse dependency",
+    "status": "historical-only"
   },
   "schema_version": 1,
   "scope": "analyzers-and-test-extra; runtime packages are referenced, not duplicated",

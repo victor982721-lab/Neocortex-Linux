@@ -7,14 +7,12 @@ from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from .pipeline import (
-        DEFAULT_PARTIAL_THRESHOLD as DEFAULT_PARTIAL_THRESHOLD,
         FingerprintProvider as FingerprintProvider,
         PlanningSession as PlanningSession,
     )
     from .planner import DedupPlanner as DedupPlanner
 
 _EXPORTS: Final = {
-    "DEFAULT_PARTIAL_THRESHOLD": (".pipeline", "DEFAULT_PARTIAL_THRESHOLD"),
     "DedupPlanner": (".planner", "DedupPlanner"),
     "FingerprintProvider": (".pipeline", "FingerprintProvider"),
     "PlanningSession": (".pipeline", "PlanningSession"),
@@ -36,7 +34,6 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    "DEFAULT_PARTIAL_THRESHOLD",
     "DedupPlanner",
     "FingerprintProvider",
     "PlanningSession",

@@ -4,7 +4,7 @@ The verifier is deliberately read-only with respect to the corpus and its
 owners.  It consumes one already-published :class:`CurationPlanPage`, checks
 the recorded physical identities, hashes the current regular files and then
 performs the byte comparison required for an exact duplicate claim.  It never
-creates ReviewTasks, AuthorizationGrants or ``file_actions``.
+creates workflow state or ``file_actions``.
 """
 
 from __future__ import annotations
@@ -1045,7 +1045,7 @@ def _read_stable_payload(
     the keeper without retaining a second copy of the file.
     """
 
-    from neocortex.foundation.hash_compat import xxhash
+    from neocortex.foundation.hash_compat import sha256
     descriptor = _open_regular_file_beneath(root, path)
     try:
         before = os.fstat(descriptor)
@@ -1055,7 +1055,7 @@ def _read_stable_payload(
             or not stat_matches_snapshot(snapshot, before)
         ):
             raise CurationVerificationSnapshotChanged(f"curation source identity changed: {path}")
-        hasher = xxhash.xxh3_128()
+        hasher = sha256.sha256_128()
         remaining = snapshot.size
         while remaining:
             work.before_read()
@@ -1118,7 +1118,7 @@ def _compare_stable_file(
 ) -> tuple[bool, str]:
     """Hash and compare one source file against a temporary keeper stream."""
 
-    from neocortex.foundation.hash_compat import xxhash
+    from neocortex.foundation.hash_compat import sha256
     descriptor = _open_regular_file_beneath(root, path)
     try:
         before = os.fstat(descriptor)
@@ -1128,7 +1128,7 @@ def _compare_stable_file(
             or not stat_matches_snapshot(snapshot, before)
         ):
             raise CurationVerificationSnapshotChanged(f"curation source identity changed: {path}")
-        hasher = xxhash.xxh3_128()
+        hasher = sha256.sha256_128()
         equal = True
         remaining = snapshot.size
         reference.seek(0)

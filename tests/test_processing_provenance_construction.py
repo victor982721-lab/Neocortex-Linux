@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 from neocortex.foundation.processing_provenance import build_processing_provenance
 
 
@@ -32,7 +32,7 @@ def test_nested_provenance_retains_canonical_manifest_and_signature() -> None:
         },
         ensure_ascii=True, sort_keys=True, separators=(",", ":"),
     )
-    expected_signature = "psig-v1|test-route|contract-v1|" + xxhash.xxh3_128(expected_json.encode()).hexdigest()
+    expected_signature = "psig-v1|test-route|contract-v1|" + sha256.sha256_128(expected_json.encode()).hexdigest()
     for ordered in (components, tuple(reversed(components))):
         result = build_processing_provenance(
             "test-route", "algorithm-v1", configuration, iter(ordered), compatibility_tag="contract-v1",

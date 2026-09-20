@@ -657,7 +657,7 @@ def test_cold_canonical_probe_loads_no_optional_engine_and_creates_no_state(
                 from pathlib import Path
 
                 blocked_roots = {
-                    "PIL", "PySide6", "ctranslate2", "fastembed",
+                    "PIL", "ctranslate2", "fastembed",
                     "faster_whisper", "fitz", "numpy",
                     "pdfminer", "pytesseract",
                 }
@@ -739,7 +739,7 @@ def test_cold_text_selection_loads_no_provider_engine_and_creates_no_state(
                 from pathlib import Path
 
                 blocked_roots = {
-                    "PIL", "PySide6", "ctranslate2", "fastembed",
+                    "PIL", "ctranslate2", "fastembed",
                     "faster_whisper", "fitz", "numpy",
                     "pdfminer", "pytesseract",
                 }

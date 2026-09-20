@@ -209,7 +209,7 @@ def run_organization_stages(
     checkpoint_cancellation()
     if not apply_requested:
         return plan_summary, None
-    # A resume is a request to recover state, not an AuthorizationGrant. Read
+    # A resume is a request to recover state, not an effect permission. Read
     # the exact owner intent and statuses before considering the old effect
     # path; uncertain or unauthorized application remains explicitly pending.
     if checkpoint is not None:

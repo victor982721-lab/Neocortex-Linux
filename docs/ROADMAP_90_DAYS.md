@@ -33,112 +33,27 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Deduplicación | Planificación y `curate verify` implementados; la disposición pública sigue bloqueada hasta `apply` |
 | Catálogo y organización | Planes disponibles; recorrido end-to-end parcial |
 | Knowledge y contexto para agentes | Implementado read-only; cobertura/localizadores varían por owner |
-| Review | **IMPLEMENTED:** `curate review` publica ReviewTasks y `curate decide` añade decisiones humanas por CAS |
-| Curación integrada | **CURRENT:** scan/plan/verify; **IMPLEMENTED:** review/decide, AuthorizationGrant durable y apply/reconcile grant-bound sobre fixtures |
-| Mutación Linux | `curate apply` usa backends POSIX/KIO inyectados y ledger/recovery; `--apply`/`--organization-apply` genéricos siguen absteniéndose |
+| Review humano | **RETIRADO:** no hay ReviewTask, colas, eventos ni decisión humana obligatoria |
+| Curación integrada | **CURRENT:** plan/scan/verify; `--apply` ejecuta sólo acciones automáticas seguras y conserva incertidumbre, receipts y recovery |
+| Mutación Linux | `--apply` usa backends POSIX/KIO neutrales y ledger/recovery; incertidumbre queda en KEEP |
 | Backup/restore/purge/factory reset | Implementados mediante `Neocortex databases` y `Neocortex --factory-reset`; sus contratos permanecen separados |
-| MCP | **IMPLEMENTED:** plan/scan/verify/review/decide; authorize se omite hasta resolver un principal autenticado |
+| MCP | **IMPLEMENTED:** plan/scan/verify y consultas read-only; no publica autorización ni review humano |
 | Lifecycle durable de `--all` | **IMPLEMENTED INSTALADO:** `current` es `0.13.0-c6d3985f7a45-cp314-linux-x86_64`; C0–C7 y la tranche post-0.13 están aceptados sobre sus `source_sha` |
 | Preparación federada de `hygiene` | **CURRENT / PREPARACIÓN:** registry y manifests de owners/procedencia, categorías y cobertura en modo read-only/preview-only; zero deletion. La cadena de efectos es TARGET y permanece bloqueada |
 
-## 0.10.0 — Evidencia y plan de curación
+## 0.10.0–0.11.0 — Evidencia y efectos (histórico consolidado)
 
-**Resultado:** una persona o agente puede inspeccionar, paginar y revisar un plan
-completo sin mutar el corpus.
+El plan paginado, `curate scan` y `curate verify` conservan la evidencia,
+identidad, cobertura y razones de abstención sin mutar el corpus. Las antiguas
+superficies humanas de ReviewTask/decide/authorize fueron retiradas por la
+simplificación estructural: no forman parte del runtime ni de CLI, API, SDK o
+MCP. La clasificación automática mantiene `UNKNOWN` como KEEP.
 
-**IMPLEMENTED en el checkout:** `curate scan` y `curate plan` consultan el digest
-paginado; `curate verify` revalida identidad, hash completo y bytes de grupos
-duplicados sin escribir estado; `curate review` publica páginas idempotentes como
-ReviewTask y `curate decide` registra `resolved`/`dismissed` mediante digest y
-event-head CAS. API, SDK y MCP proyectan estas operaciones. Scan/plan/verify son
-read-only; review/decide escriben sólo Framework, mantienen
-`actions_authorized=false` y crean cero `file_actions`.
-
-Las superficies de scan, plan y verify comparten `source_heads` para inventario y
-catálogo, con revisión, digest, cobertura, modo de verificación y razón de
-abstención; verify admite `--cursor` para recorrer páginas posteriores sin
-confundirlas con un cambio del snapshot.
-
-`curate authorize` y `curation_authorize_payload` validan plan completo,
-ReviewTasks resueltas, acción, actor, expiración y presupuestos, y persisten un
-grant append-only con manifiesto de heads, versiones, eventos, fingerprints y
-digest agregado en la extensión Framework. Está expuesto por CLI/API/SDK, no por
-MCP; declara autoridad acotada, pero `physical_effect_applied=false` y crea cero
-`file_actions`.
-
-Entregas restantes:
-
-1. proyección común de tipo real, procedencia, valor, duplicado, versión,
-   similitud, disposición y evidencia;
-2. ampliar el plan inmutable ya paginado con reason codes y localizadores
-   públicos comprobables;
-3. resolver autenticación antes de considerar un tool MCP de autorización;
-4. límites uniformes de elementos, tiempo, RAM y disco, con progreso y
-   cancelación;
-5. corregir la paridad de `--all`, `resume` y las fachadas públicas;
-6. cerrar las regresiones de fences SQLite y restore que afectan la siguiente
-   cohorte física.
-
-Criterios de aceptación:
-
-- fixture heterogéneo de 20–50 elementos recorre scan, plan, verify, review y
-  decide con paginación/replay;
-- segunda corrida no rehace trabajo compatible;
-- cada propuesta enlaza evidencia y explica incertidumbre;
-- igualdad exacta exige comparación byte a byte;
-- CLI, SDK, GUI y MCP proyectan el mismo schema;
-- cero cambios en bytes/rutas del corpus, cero `file_actions` y cero autoridad
-  derivada de una decisión; el grant sólo aparece tras `curate authorize` y no
-  demuestra aplicación física.
-
-No se añadirá exportación ni ZIP de curación en este corte. JSON/JSONL son
-respuestas de interfaz, no artefactos de entrega.
-
-## 0.11.0 — IMPLEMENTED: efectos Linux reversibles sobre fixtures
-
-**Resultado verificado:** un grant aprobado puede mover, renombrar o enviar a
-Papelera un lote pequeño sobre una raíz de fixture mediante un backend inyectado,
-y después demostrar o conservar para recovery el efecto.
-
-Decisión de backend:
-
-- reutilizar `neocortex.safety.kio_trash`, ya preparado pero no promovido ni
-  validado contra KIO real;
-- Papelera KDE mediante el primer cliente disponible entre `kioclient6`,
-  `kioclient5` y `kioclient`, con `move <origen> trash:/`;
-- preflight de identidad y revalidación para compensar la resolución path-bound;
-- rename POSIX no-replace separado del backend de Papelera;
-- ningún fallback a `gio trash`, `unlink`, borrado directo o copia+delete;
-- timeout o efecto ambiguo dejan recovery pendiente, sin reintento automático.
-
-Entregas implementadas:
-
-1. `apply` consume el AuthorizationGrant vigente y crea un intento `file_actions`
-   por efecto, con replay idempotente;
-2. revalidación de grant, expiración, digest, ReviewTask heads, identidad,
-   tamaño, mtime y hash junto a la frontera;
-3. aplicación KIO/rename dentro del scope, acción y presupuestos concedidos;
-4. verificación física con receipt y evidencia de Papelera/destino;
-5. `reconcile` resuelve cada punto de caída y conserva `recovery_required`;
-6. lotes pequeños con límite de acciones/bytes y cancelación entre efectos;
-7. API, SDK y CLI proyectan el resultado, mientras MCP no expone autoridad de
-   aplicación ni conciliación escrita;
-8. `reconcile` clasifica y registra eventos append-only de forma idempotente.
-
-Criterios de aceptación verificados en fixtures:
-
-- mismo filesystem aprobado; `EXDEV` se abstiene;
-- symlink, hard link no soportado, destino existente o fuente mutada se abstienen;
-- crash antes/después de metadata y rename produce estado conciliable;
-- restore usa no-replace y verifica bytes;
-- una segunda aplicación del mismo plan no repite efectos;
-- el piloto no toca contenido fuera de su raíz y límites.
-
-Pendiente de promoción: verificador/runner KIO real, restore no-replace contra
-la Papelera del escritorio, sincronización de caches y una GUI que sólo presente
-el grant y el intento. El restore no-replace de fixtures ya está implementado en
-el corte 0.11.1, pero esos gates reales no se ejecutaron para evitar tocar el
-escritorio o el corpus real.
+Los backends POSIX/KIO y el ledger de `file_actions` se conservaron en el owner
+neutral. La aplicación automática sólo cruza la frontera con `--apply` y una
+raíz contenida; identidad, no-follow, no-replace, receipts y
+`recovery_required` permanecen obligatorios. No existe un grant humano ni una
+segunda implementación física.
 
 ## 0.12.0 — Inventario reanudable y verificación acotada
 
@@ -303,8 +218,8 @@ La tranche quedó implementada en `main` y promovida a `current` desde
 - `content-diagnostics/v2` para los ocho owners, cursores ligados a snapshot y
   `KnowledgeReadBudget` con deadline, filas, vectores, temporales y cancelación;
 - contrato `neocortex.authenticated-principal/v1`, lectura fenced de grants y
-  recovery, sincronización de caches move/rename sólo sobre fixtures y panel GUI
-  read-only; MCP no recibe autorización ni aplicación.
+  recovery, sincronización de caches move/rename sólo sobre fixtures; MCP no
+  recibe autorización ni aplicación.
 
 La integración y release quedaron aceptadas con **6959 pasadas, 67 omitidas y
 42 subtests**, calidad estática individual sin errores bloqueantes, build

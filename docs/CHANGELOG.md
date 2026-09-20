@@ -4,6 +4,16 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-20 — Simplificación de curación automática
+
+- Se retiraron ReviewTask, colas/eventos de revisión, value-review y la
+  autorización humana grant-bound junto con sus APIs, CLI, SDK, MCP y módulos
+  sin consumidores funcionales.
+- La incertidumbre y evidencia persistidas ahora se consultan desde
+  `workflow.findings_query`; una propuesta incierta permanece en KEEP.
+- `--apply` es el único gate explícito para efectos automáticos seguros; se
+  conservan fences físicas, receipts y recovery.
+
 ## 2026-09-19 — Curación previa por utilidad y reconstrucción demostrable
 
 - Code limita `projects` a raíces explícitas: NeoCortex, MTF y bitácoras EPS por

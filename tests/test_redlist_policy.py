@@ -7,7 +7,7 @@ from neocortex.workflow.actions.redlist import (
 )
 from neocortex.safety.kio_trash import metadata_binding
 from neocortex.deduplication import FileSnapshot
-from neocortex.curation.application import BackendOutcome
+from neocortex.workflow.mutations import BackendOutcome
 from neocortex.deduplication import DedupIndex
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.api.lifecycle_read_api import lifecycle_status_payload
@@ -193,7 +193,7 @@ def test_all_apply_prefilters_the_corpus_before_planning_and_never_leaves_root(
     class Backend(_MetadataOnlyBackend):
         pass
 
-    monkeypatch.setattr("neocortex.curation.application.KioTrashBackend", Backend)
+    monkeypatch.setattr("neocortex.workflow.actions.actions.KioTrashBackend", Backend)
     monkeypatch.setattr(
         "neocortex.workflow.actions.actions.full_fingerprint",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected hash")),
@@ -237,7 +237,7 @@ def test_all_apply_route_input_excludes_redlisted_source(tmp_path: Path, monkeyp
     class Backend(_MetadataOnlyBackend):
         pass
 
-    monkeypatch.setattr("neocortex.curation.application.KioTrashBackend", Backend)
+    monkeypatch.setattr("neocortex.workflow.actions.actions.KioTrashBackend", Backend)
     monkeypatch.setattr(FrameworkOrchestrator, "_prepare_run_contract", lambda *_args: None)
     monkeypatch.setattr(
         "neocortex.workflow.actions.actions.full_fingerprint",

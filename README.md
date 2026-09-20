@@ -63,13 +63,10 @@ organización son reversibles y se aplican sólo dentro de la raíz autorizada
 cuando se solicita `--apply`; mover, renombrar o retirar fuera de esa frontera
 sigue siendo rechazado.
 
-La GUI usa la misma orden de rutas, estados y stage Semantic que la CLI: el perfil
-completo se traduce al lifecycle `--all`, mientras un subconjunto guardado no se
-expande por sorpresa y el perfil piloto mantiene límites acotados. Una publicación
-Semantic pendiente posterior a epoch 0 se recupera mediante el mismo productor,
-manifest y heads de todos los modelos; la GUI no dispara un factory reset ni
-cambia el estado automáticamente. El borrado operativo completo del estado sólo
-se solicita de forma explícita con `Neocortex --factory-reset`. No crea backup,
+Una publicación Semantic pendiente posterior a epoch 0 se recupera mediante el
+mismo productor, manifest y heads de todos los modelos. El borrado operativo
+completo del estado sólo se solicita de forma explícita con
+`Neocortex --factory-reset`. No crea backup,
 snapshot SQL, plan, digest ni receipt adicional, no acepta `--apply`/`--yes` y
 deja fuera el corpus, la instalación, los modelos y los `installation-receipts`.
 
@@ -85,8 +82,8 @@ NeoCortex puede:
 - planear duplicados, clasificación y organización sin modificar originales;
 - ejecutar `--dedupe`/`dedupe` con igualdad byte a byte y enviar redundantes
   verificados a la Papelera KDE, conservando receipts y restauración no-replace;
-- buscar evidencia mediante CLI, API Python, GUI y MCP local; las únicas
-  escrituras MCP actuales publican o deciden ReviewTasks advisory;
+- buscar evidencia mediante CLI, API Python y MCP local; MCP permanece read-only
+  y no publica colas ni decisiones humanas;
 - exponer cobertura, errores, procedencia y localizadores cuando el productor
   puede demostrarlos;
 - auditar una raíz histórica absoluta de forma bounded y, sólo con un manifest
@@ -133,8 +130,10 @@ reset completo.
 
 El recorrido físico Linux usa el backend KIO nativo receipt-bound con claim
 same-filesystem/no-replace, sin `gio trash`, borrado directo ni fallback
-destructivo. `curate apply` conserva su frontera grant-bound independiente;
-`dedupe --apply` y `--all --apply` reutilizan la cadena de acciones y recovery.
+destructivo. `--apply` es la autorización explícita del usuario para las
+acciones seguras de la corrida; `dedupe --apply` y `--all --apply` reutilizan
+la cadena de acciones y recovery. La incertidumbre se conserva como KEEP con
+razón y evidencia, nunca como una cola humana obligatoria.
 La canaria KIO debe demostrar cuotas sin autovaciado y restauración automática;
 la restauración visual única desde Dolphin permanece como gate humano separado.
 
@@ -144,7 +143,7 @@ la restauración visual única desde Dolphin permanece como gate humano separado
 En esta etapa sólo observa y devuelve un registro/manifest de preview:
 `read_only=true`, cero `file_actions`, cero eliminaciones y ningún cambio en
 corpus, owners, configuración o sistemas externos. No es un limpiador global ni
-un alias de `maintenance`, `--factory-reset`, `curate apply` o
+un alias de `maintenance`, `--factory-reset` o
 `external-maintenance`; un eventual `--apply` pertenece a una etapa posterior.
 
 El registro de higiene relaciona cada observación con su raíz, identidad física,
@@ -387,9 +386,9 @@ no forma parte de `machine-inventory`.
 el contexto compacto v2: fuentes sin repetición, fragmentos citables y cobertura
 explícita, con presupuesto para la respuesta completa. `ask --response-version 1`
 o `--knowledge-response-version 1` conservan el contrato anterior;
-`SharedReadClient`, la GUI y las conveniencias SDK solicitan v2 por defecto,
-mientras la función Python de bajo nivel conserva v1 hasta una deprecación
-explícita. Un resultado completo de búsqueda no prueba que la pregunta tenga
+Las fachadas CLI, MCP y SDK solicitan v2 por defecto, mientras la función Python
+de bajo nivel conserva v1 hasta una deprecación explícita. Un resultado completo
+de búsqueda no prueba que la pregunta tenga
 respuesta ni autoriza acciones.
 
 La búsqueda Semantic admite un [índice exacto derivado explícito](docs/OPERATIONS.md#índice-exacto-derivado-de-semantic),
@@ -422,57 +421,23 @@ las ocho rutas de contenido registradas; sus efectos sobre el Corpus requieren
 
 ## Ruta de curación actual
 
-**CURRENT:** `curate plan` consulta la página estable y paginada del plan local
-sin abrir una ruta nueva ni escribir estado. **IMPLEMENTED:**
-`curate review` publica ReviewTasks advisory, `curate decide` registra por CAS
-una decisión humana y `curate authorize` emite un grant durable separado. Estas
-interfaces forman parte de 0.12.0, pero compartir versión no implica compartir
-SHA: los cambios posteriores requieren comprobar el manifest instalado.
+`curate plan`, `curate scan` y `curate verify` son consultas acotadas del plan
+publicado y de su evidencia física. No crean ReviewTask, colas, eventos,
+grants ni otro estado de autorización. La clasificación automática conserva
+`uncertainty`, `reason` y `evidence`; una precondición incierta permanece en
+KEEP.
 
 ```bash
-Neocortex curate plan --limit 20
-Neocortex curate plan --limit 20 --cursor TOKEN
-Neocortex curate review PLAN_ID --limit 20 --json
-Neocortex curate decide PLAN_ID ITEM_ID --expected-event-id EVENT_ID \
-  --decision resolved --decision-scope until-source-change --actor ACTOR --json
-Neocortex curate authorize PLAN_ID --item-id ITEM_ID --action move \
-  --actor ACTOR --expires-ns NS --max-bytes BYTES --json
+Neocortex curate plan --limit 20 --json
+Neocortex curate scan --limit 20 --json
+Neocortex curate verify PLAN_ID --limit 100 --json
 ```
 
-`PLAN_ID` es el `plan_digest` devuelto por plan. Review/decide escriben únicamente
-estado ReviewTask y no autorizan. Authorize persiste el grant append-only, pero
-no crea `file_actions`, invoca KIO ni aplica un efecto físico. MCP no expone
-authorize mientras el actor autenticado no esté resuelto. No existe exportación
-o ZIP de curación; `--json` sólo devuelve la respuesta.
-`--curation-preview 50 --curation-json` permanece como compatibilidad plana. El contrato completo está en
-[File Intelligence & Curation](docs/FILE_INTELLIGENCE_AND_CURATION.md).
-
-La planificación de duplicados acepta decisiones explícitas con
-`--dedup-keep FILE` y ubicaciones preferidas con
-`--dedup-prefer-root DIRECTORY`, ambas repetibles dentro de la raíz de entrada.
-Estas opciones ejecutan inventario y plan, escriben estado interno y nunca
-autorizan borrar archivos. `--show-groups` explica la elección; dos decisiones
-de conservación incompatibles en un mismo grupo impiden publicar el plan.
-
-El tramo físico controlado se consulta así:
-
-```bash
-Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json
-Neocortex curate reconcile --actor ACTOR --confirm-reconcile --json
-Neocortex curate recovery status --json
-Neocortex curate restore preview ACTION_ID --json
-```
-
-La CLI ordinaria devuelve `backend_unavailable` sin un run firmado y un backend
-inyectado, por diseño fail-closed; los tests de 0.11 ejecutan el mismo contrato
-sólo sobre raíces temporales contenidas.
-
-La tranche 0.12 añade a `neocortex.api.public` y `neocortex.sdk` las funciones
-`curation_checkpoint_create_payload`, `curation_checkpoint_status_payload` y
-`curation_checkpoint_resume_payload`. Su uso exige un directorio de estado
-explícito, conserva root/source/plan/snapshot digests y publica sucesores
-idempotentes por página; no selecciona el corpus por defecto, no crea efectos y
-no está registrado en MCP.
+Para una corrida autorizada, `--apply` ejecuta únicamente acciones automáticas
+seguras dentro de la raíz seleccionada. Cada efecto revalida identidad y
+contención, registra receipt y deja `recovery_required` cuando la frontera
+física es ambigua. No existe una ceremonia separada de review/decide/authorize;
+el usuario controla el gate con `--apply`.
 
 ## Plataforma y rutas
 

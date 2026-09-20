@@ -48,7 +48,6 @@ def platform_report(
             "runtimes": str(policy.runtimes_directory),
             "launcher": str(policy.stable_launcher),
             "alias": str(policy.user_alias),
-            "desktop": str(policy.desktop_file),
         },
         "effective_paths": {
             "corpus": str(default_corpus_root() if root is None else root),

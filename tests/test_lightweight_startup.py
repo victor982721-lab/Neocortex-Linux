@@ -16,7 +16,6 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PROCESSING_DEPENDENCIES = (
     "PIL",
     "numpy",
-    "PySide6",
     "fastembed",
     "onnxruntime",
     "ctranslate2",
@@ -92,7 +91,6 @@ print(json.dumps(dict(code=code, stdout=out.getvalue(), stderr=err.getvalue(),
         ("--version",),
         ("help",),
         ("status", "--help"),
-        ("--ui", "--help"),
         ("models", "status", "--help"),
         ("doctor", "capabilities", "--help"),
     ),
@@ -112,7 +110,6 @@ def test_public_help_works_without_any_site_packages(
     assert probe["stderr"] == ""
     assert probe["attempted"] == []
     assert "neocortex.capabilities.formats.video.frames" not in probe["introduced"]
-    assert "neocortex.interface.application.app" not in probe["introduced"]
     assert "neocortex.knowledge.knowledge_service" not in probe["introduced"]
     assert not (tmp_path / "state").exists()
 
@@ -183,28 +180,6 @@ def test_missing_stdlib_runtime_dependencies_are_reported_without_traceback(
     )
     assert probe["stderr"] == ""
     assert not (tmp_path / "state").exists()
-
-
-def test_desktop_without_qt_names_the_blocked_operation(tmp_path: Path) -> None:
-    probe = _probe(("--ui",), tmp_path, no_site_packages=True)
-
-    assert probe["code"] == 1
-    assert "PySide6" in str(probe["stderr"])
-    assert "--ui" in str(probe["stderr"])
-    assert "Traceback" not in str(probe["stderr"])
-    assert not (tmp_path / "state").exists()
-
-
-def test_desktop_parser_accepts_explicit_isolated_state_without_qt(tmp_path: Path) -> None:
-    from neocortex.interface.application.arguments import parse_arguments
-
-    parsed = parse_arguments(
-        ["--root", str(tmp_path / "corpus"), "--state-directory", str(tmp_path / "state")]
-    )
-
-    assert parsed.root == tmp_path / "corpus"
-    assert parsed.state_directory == tmp_path / "state"
-    assert not parsed.state_directory.exists()
 
 
 def test_model_resource_arguments_preserve_an_explicit_selection(tmp_path: Path) -> None:

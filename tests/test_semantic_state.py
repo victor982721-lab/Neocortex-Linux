@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -1269,7 +1270,7 @@ def test_image_lease_propagates_path_fingerprint_and_source_revision(
         source_revision={
             "size_bytes": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
-            "raw_content_xxh3_128": fingerprint.xxh3_128,
+            "raw_content_xxh3_128": hashlib.sha256(image.read_bytes()).hexdigest(),
         },
     )
     upsert_semantic_item(database, item, refresh_token="images-r1", updated_ns=1)

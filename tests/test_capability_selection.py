@@ -56,9 +56,9 @@ def _collection_repository(tmp_path: Path) -> Path:
         "def test_base():\n    assert True\n", encoding="utf-8"
     )
     (directory / "test_optional.py").write_text(
-        "TEST_CAPABILITIES = ('ui',)\n"
+        "TEST_CAPABILITIES = ('inference',)\n"
         "import neocortex_deliberately_unavailable_optional_dependency\n"
-        "def test_ui():\n    assert False\n",
+        "def test_inference():\n    assert False\n",
         encoding="utf-8",
     )
     other_platform = "win32" if sys.platform != "win32" else "linux"
@@ -126,7 +126,7 @@ def test_optional_test_overrides_shared_base_module_marker(tmp_path: Path) -> No
 
 
 def test_selecting_unavailable_capability_preserves_collection_failure(tmp_path: Path) -> None:
-    result = _pytest(_collection_repository(tmp_path), "--capabilities=ui")
+    result = _pytest(_collection_repository(tmp_path), "--capabilities=inference")
     assert result.returncode == 2, result.stdout + result.stderr
     assert "neocortex_deliberately_unavailable_optional_dependency" in result.stdout
     assert "skipped" not in result.stdout

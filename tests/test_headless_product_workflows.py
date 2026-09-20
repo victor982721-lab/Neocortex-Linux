@@ -168,6 +168,8 @@ def product_lab(tmp_path: Path) -> _ProductLab:
         NEOCORTEX_PROGRESS_STREAM="1",
         HF_HUB_OFFLINE="1",
         TRANSFORMERS_OFFLINE="1",
+        # Preserve the non-interactive Qt safety default used by KIO/desktop
+        # helpers even though the product surface is CLI-only.
         QT_QPA_PLATFORM="offscreen",
     )
     lab = _ProductLab(python, tmp_path, environment)
@@ -245,18 +247,14 @@ def test_installed_entrypoints_and_fresh_status_are_headless(product_lab: _Produ
     resources = lab.python_json(
         "import json,sys\n"
         "before=set(sys.modules)\n"
-        "import neocortex,importlib.metadata as metadata,importlib.resources as resources\n"
+        "import neocortex,importlib.metadata as metadata\n"
         "distribution=metadata.distribution('neocortex-framework')\n"
-        "icons=resources.files('neocortex.interface.presentation').joinpath('assets')\n"
-        "sizes={suffix:len(icons.joinpath('neocortex-app-icon.'+suffix).read_bytes()) "
-        "for suffix in ('png','svg','ico')}\n"
-        "heavy=('PIL','numpy','PySide6','fastembed','faster_whisper','onnxruntime')\n"
+        "heavy=('PIL','numpy','fastembed','faster_whisper','onnxruntime')\n"
         "new=[name for name in set(sys.modules)-before if name.split('.')[0] in heavy]\n"
-        "print(json.dumps({'sizes':sizes,'introduced_optional':new,"
+        "print(json.dumps({'introduced_optional':new,"
         "'version_matches':neocortex.__version__==distribution.version,"
         "'bundled_wheels':[str(path) for path in distribution.files if str(path).endswith('.whl')]}))\n"
     )
-    assert all(size > 0 for size in resources["sizes"].values())
     assert resources["introduced_optional"] == []
     assert resources["version_matches"] and resources["bundled_wheels"] == []
     status = lab.cli("--state-directory", str(lab.state), "--status", "--status-json")

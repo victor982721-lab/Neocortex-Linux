@@ -37,22 +37,6 @@ _DISTRIBUTION: Final = "neocortex-framework"
 _WHEEL_DISTRIBUTION: Final = "neocortex_framework"
 _ENTRY_POINT: Final = ("Neocortex", "neocortex.interface.entrypoint:entrypoint")
 _TYPED_PACKAGES: Final = ("neocortex",)
-_UI_ASSETS: Final = (
-    "neocortex/interface/presentation/assets/neocortex-app-icon.ico",
-    "neocortex/interface/presentation/assets/neocortex-app-icon.png",
-    "neocortex/interface/presentation/assets/neocortex-app-icon.svg",
-)
-_UI_ASSET_SHA256: Final = {
-    "neocortex/interface/presentation/assets/neocortex-app-icon.ico": (
-        "FD9520EB4D9FF6E8EDF6D9F8318E6AFE9D9162D4313317E3AC13EB3C28297A47"
-    ),
-    "neocortex/interface/presentation/assets/neocortex-app-icon.png": (
-        "C8DAAEC11AAF57872B5AD010D55117919B16856721D6FD3CA1BE7D9B2EF1E94C"
-    ),
-    "neocortex/interface/presentation/assets/neocortex-app-icon.svg": (
-        "09D29874482810D65C7AA0D5B858C0660D0C2BC9E15D41BFE66C89B9F2BF440A"
-    ),
-}
 _SOURCE_ONLY_TOOLS: Final = (
     "tools/__init__.py",
     "tools/pip_bootstrap.py",
@@ -254,15 +238,6 @@ def _validate_member_policy(path: str) -> None:
         raise ArtifactValidationError(f"forbidden artifact member category={category}: {path}")
 
 
-def _ui_asset_contract_name(path: str) -> str | None:
-    normalized = path.casefold()
-    for asset in _UI_ASSETS:
-        canonical = asset.casefold()
-        if normalized == canonical or normalized.endswith(f"/{canonical}"):
-            return asset
-    return None
-
-
 def _text_views(payload: bytes) -> tuple[str, ...]:
     views = [payload.decode("utf-8", errors="ignore")]
     if len(payload) >= 4:
@@ -274,11 +249,6 @@ def _text_views(payload: bytes) -> tuple[str, ...]:
 
 
 def _validate_payload_policy(path: str, payload: bytes) -> None:
-    asset = _ui_asset_contract_name(path)
-    if asset is not None:
-        if hashlib.sha256(payload).hexdigest().upper() != _UI_ASSET_SHA256[asset]:
-            raise ArtifactValidationError(f"UI asset payload hash is unexpected: {path}")
-        return
     if payload.startswith(b"SQLite format 3\x00"):
         raise ArtifactValidationError(f"SQLite payload is forbidden: {path}")
     if payload.startswith(importlib.util.MAGIC_NUMBER):
@@ -459,7 +429,6 @@ def _validate_wheel_scan(
         raise ArtifactValidationError("wheel must use the ZIP container")
     filename_distribution, filename_version = _wheel_filename(scan.report.path)
     _reject_wheel_source_only_tools(scan.payloads)
-    _required_members(scan.payloads, _UI_ASSETS, "UI asset")
     dist_info = _wheel_dist_info(scan.payloads)
     expected_dist_info = f"{filename_distribution}-{filename_version}.dist-info"
     if dist_info.casefold() != expected_dist_info.casefold():
@@ -542,7 +511,6 @@ def _validate_sdist_scan(
         raise ArtifactValidationError(
             f"sdist is missing required sdist content: {', '.join(missing)}"
         )
-    _required_members(scan.payloads, _UI_ASSETS, "UI asset", root=root)
     _required_members(
         scan.payloads,
         _SOURCE_ONLY_TOOLS,

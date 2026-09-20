@@ -21,7 +21,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Protocol
 
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256
 
 from neocortex import __version__ as _NEOCORTEX_DISTRIBUTION_VERSION
 from neocortex.capabilities.broker import (
@@ -328,7 +328,7 @@ def _input_binding(
     payload: bytes,
 ) -> tuple[ResourceRef, RevisionRef, InputBinding]:
     resource = _resource_ref(snapshot)
-    raw_xxh3_128 = xxhash.xxh3_128_hexdigest(payload)
+    raw_xxh3_128 = sha256.sha256_128_hexdigest(payload)
     revision_id = _stable_identifier(
         "revision:text",
         {
@@ -1437,7 +1437,7 @@ class TextRoute:
                 json.dumps(extracted.metadata, ensure_ascii=False, sort_keys=True),
                 zlib.compress(encoded, 6),
                 len(extracted.text),
-                xxhash.xxh3_128_hexdigest(encoded),
+                sha256.sha256_128_hexdigest(encoded),
                 int(extracted.truncated),
                 extracted.detail,
                 self.run_id,

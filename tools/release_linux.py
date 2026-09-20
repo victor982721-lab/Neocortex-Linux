@@ -70,8 +70,12 @@ RECEIPT_SCHEMA_VERSION = 2
 RELEASE_VERIFICATION_SCHEMA_VERSION = 2
 READABLE_RELEASE_SCHEMA_VERSIONS = frozenset({1, 2})
 RELEASE_PLATFORM_TAG = "linux-x86_64"
+RUNTIME_PYTHON_MAJOR_MINOR = (3, 13)
+RUNTIME_PYTHON_MINIMUM = (3, 13, 5)
+RUNTIME_PYTHON_CACHE_TAG = "cpython-313"
+RUNTIME_PYTHON_ABI = "cp313"
 RELEASE_MANIFEST_NAME = "neocortex-release.json"
-RUNTIME_DEPENDENCY_LOCK_NAME = "constraints-linux-cp314.lock"
+RUNTIME_DEPENDENCY_LOCK_NAME = "constraints-linux-cp313-runtime.lock"
 RUNTIME_PROFILE = "product-only-v1"
 WHEELHOUSE_MANIFEST_NAME = "wheelhouse-manifest.json"
 WHEELHOUSE_SCHEMA_VERSION = 1
@@ -92,26 +96,21 @@ _RELEASE_ID = re.compile(
     r"(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r")"
-    r"-(?P<source_sha>[0-9a-f]{12}(?:[0-9a-f]{28})?)-cp314-linux-x86_64\Z"
+    r"-(?P<source_sha>[0-9a-f]{12}(?:[0-9a-f]{28})?)-cp313-linux-x86_64\Z"
 )
 _LOCKED_REQUIREMENT = re.compile(
     r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s;]+)"
     r"(?:\s+--hash=sha256:([0-9a-f]{64}))?$"
 )
 _MAX_RUNTIME_DEPENDENCIES = 512
-_BUILD_DEPENDENCIES = {"build": "1.5.0", "setuptools": "83.0.0", "wheel": None}
+_BUILD_DEPENDENCIES = {"build": "1.5.0", "setuptools": "83.0.0"}
 _STAGING_STALE_SECONDS = 24 * 60 * 60
 _STAGING_MARKER = ".installing.json"
 _GC_MARKER = ".gc.json"
 _GC_PREFIX = ".gc-"
 _IMPORT_MODULES = (
     "PIL",
-    "PySide6",
-    "ctranslate2",
-    "fastembed",
-    "faster_whisper",
     "fitz",
-    "numpy",
     "pytesseract",
 )
 
@@ -191,15 +190,6 @@ class LinuxReleaseLayout:
     @property
     def alias(self) -> Path:
         return self.policy.user_alias
-
-    @property
-    def desktop(self) -> Path:
-        return self.policy.desktop_file
-
-    @property
-    def icon(self) -> Path:
-        return self.policy.data_directory / "icons" / "neocortex-app-icon.png"
-
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -376,7 +366,7 @@ def _validate_wheelhouse(
     if (
         payload.get("schema_version") != WHEELHOUSE_SCHEMA_VERSION
         or payload.get("kind") != "neocortex_wheelhouse"
-        or payload.get("python") != "cp314"
+        or payload.get("python") != RUNTIME_PYTHON_ABI
         or payload.get("platform") != "linux_x86_64"
         or not isinstance(payload.get("artifacts"), list)
     ):
@@ -520,7 +510,7 @@ def _validate_runtime_dependency_closure(
         pending.extend((name, value) for value in requirement.extras)
 
     for value in project_requirements:
-        require(value, parent="neocortex[full]", extra="full")
+        require(value, parent="neocortex", extra="")
     while pending:
         name, extra = pending.pop()
         if (name, extra) in visited:
@@ -680,7 +670,7 @@ def _hashed_requirements(
         name, version, digest = project
         if _SHA256.fullmatch(digest) is None:
             raise LinuxReleaseError("project wheel hash is malformed")
-        rows.insert(0, f"{name}[full]=={version} --hash=sha256:{digest}")
+        rows.insert(0, f"{name}=={version} --hash=sha256:{digest}")
     if not rows:
         raise LinuxReleaseError("hashed requirements are empty")
     try:
@@ -1169,15 +1159,19 @@ def _require_reference_platform() -> None:
     if platform.machine() not in {"x86_64", "AMD64"}:
         raise LinuxReleaseError("Linux releases require x86_64")
     if sysconfig.get_config_var("Py_GIL_DISABLED"):
-        raise LinuxReleaseError("Linux releases require the CPython 3.14 GIL ABI")
-    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 14):
-        raise LinuxReleaseError("Linux releases require CPython 3.14")
+        raise LinuxReleaseError("Linux releases require the CPython 3.13 GIL ABI")
+    if (
+        sys.implementation.name != "cpython"
+        or sys.version_info[:2] != RUNTIME_PYTHON_MAJOR_MINOR
+        or sys.version_info[:3] < RUNTIME_PYTHON_MINIMUM
+    ):
+        raise LinuxReleaseError("Linux releases require CPython >=3.13.5,<3.14")
 
 
 def release_id(source_sha: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
         raise ValueError("release source SHA must contain 40 lowercase hex digits")
-    return f"{__version__}-{source_sha[:12]}-cp314-{RELEASE_PLATFORM_TAG}"
+    return f"{__version__}-{source_sha[:12]}-{RUNTIME_PYTHON_ABI}-{RELEASE_PLATFORM_TAG}"
 
 
 def parse_release_id(value: str) -> tuple[str, str] | None:
@@ -1186,7 +1180,7 @@ def parse_release_id(value: str) -> tuple[str, str] | None:
     The installer currently emits a twelve-character source prefix, while
     accepting a full forty-character source SHA keeps the namespace compatible
     with older/manual attestations.  Both forms remain bound to the Linux
-    CPython 3.14 platform suffix.
+    CPython 3.13 platform suffix.
     """
 
     match = _RELEASE_ID.fullmatch(value)
@@ -1350,7 +1344,6 @@ def _build_wheel_once(
             **runtime_lock,
             "build": "1.5.0",
             "setuptools": "83.0.0",
-            "wheel": None,
         }
         wheelhouse_artifacts = _validate_wheelhouse(wheelhouse, required=required)
     build_environment = workspace / "build-environment"
@@ -1399,7 +1392,7 @@ def _build_wheel_once(
     else:
         # Internal callers predating the wheelhouse contract retain the old
         # argument shape, but still cannot reach an index or ambient cache.
-        install_command += ("build==1.5.0", "setuptools==83.0.0", "wheel")
+        install_command += ("build==1.5.0", "setuptools==83.0.0")
     runner(install_command, timeout=900, environment=build_process_environment)
     wheelhouse = workspace / "wheelhouse"
     wheelhouse.mkdir()
@@ -1644,7 +1637,7 @@ def _install_wheel(
     if requirements_path is not None:
         install_command += ("--requirement", requirements_path)
     else:
-        install_command += (f"{wheel}[full]",)
+        install_command += (str(wheel),)
     try:
         runner(
             install_command,
@@ -1736,15 +1729,6 @@ def _verify_python_release(
         timeout=60,
         environment=environment,
     )
-    runner(
-        (
-            python,
-            "-c",
-            "from PySide6.QtWidgets import QApplication; a=QApplication([]); assert a is not None",
-        ),
-        timeout=120,
-        environment={**environment, "QT_QPA_PLATFORM": "offscreen"},
-    )
     return ReleaseVerification(pip_version, interpreter, native_runtime)
 
 
@@ -1783,10 +1767,10 @@ def _allowed_release_symlink(relative: str, target: str) -> bool:
     # ``𝜋thon`` was emitted by an earlier venv bootstrap and is retained as a
     # compatibility alias; unlike arbitrary links it is still confined to the
     # interpreter aliases and must point at the release-local python3 entry.
-    if relative in {"bin/python", "bin/python3.14", "bin/𝜋thon"}:
-        return target in {"python3", "python3.14", "/usr/bin/python3.14"}
+    if relative in {"bin/python", "bin/python3.13", "bin/𝜋thon"}:
+        return target in {"python3", "python3.13", "/usr/bin/python3.13"}
     if relative == "bin/python3":
-        return target in {"python3.14", "/usr/bin/python3", "/usr/bin/python3.14"}
+        return target in {"python3.13", "/usr/bin/python3", "/usr/bin/python3.13"}
     return False
 
 
@@ -2508,35 +2492,6 @@ def _launcher_payload(
     ).encode("utf-8")
 
 
-def _desktop_exec_argument(path: Path) -> str:
-    value = str(path)
-    if any(character in value for character in ("\n", "\r", "\x00")):
-        raise LinuxReleaseError("desktop executable path contains an invalid character")
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("`", "\\`")
-        .replace("$", "\\$")
-        .replace("%", "%%")
-    )
-    return f'"{escaped}"'
-
-
-def _desktop_payload(layout: LinuxReleaseLayout) -> bytes:
-    return (
-        "[Desktop Entry]\n"
-        "Type=Application\n"
-        "Version=1.0\n"
-        "Name=NeoCortex\n"
-        "Comment=Inventario, búsqueda y procesamiento portátil\n"
-        f"Exec={_desktop_exec_argument(layout.launcher)} --ui\n"
-        f"Icon={layout.icon}\n"
-        "Terminal=false\n"
-        "Categories=Utility;FileTools;\n"
-        "StartupNotify=true\n"
-    ).encode("utf-8")
-
-
 @dataclass(frozen=True, slots=True)
 class _PathSnapshot:
     kind: str
@@ -2572,12 +2527,9 @@ def _publish_public_access(
     layout: LinuxReleaseLayout,
     corpus_root: Path,
     *,
-    desktop: bool,
     runner: CommandRunner = _run,
 ) -> tuple[dict[Path, _PathSnapshot], dict[str, str]]:
     paths = [layout.launcher, layout.alias]
-    if desktop:
-        paths.extend((layout.icon, layout.desktop))
     snapshots = {path: _snapshot_path(path) for path in paths}
     try:
         current_release = _current_target(layout)
@@ -2603,21 +2555,6 @@ def _publish_public_access(
             alias_stage.unlink(missing_ok=True)
         runner((layout.alias, "--version"), timeout=60)
         artifacts = {"launcher_sha256": _sha256_file(layout.launcher)}
-        if desktop:
-            source_icon = (
-                layout.source_root
-                / "neocortex"
-                / "interface"
-                / "presentation"
-                / "assets"
-                / "neocortex-app-icon.png"
-            )
-            _atomic_write(layout.icon, source_icon.read_bytes())
-            _atomic_write(layout.desktop, _desktop_payload(layout))
-            runner(("desktop-file-validate", layout.desktop), timeout=60)
-            runner(("update-desktop-database", layout.desktop.parent), timeout=60)
-            artifacts["icon_sha256"] = _sha256_file(layout.icon)
-            artifacts["desktop_sha256"] = _sha256_file(layout.desktop)
         return snapshots, artifacts
     except BaseException:
         for path, snapshot in reversed(tuple(snapshots.items())):
@@ -2750,8 +2687,9 @@ def _validate_release_interpreter(
     if (
         expected.get("implementation") != "cpython"
         or not isinstance(expected.get("version"), str)
-        or not re.fullmatch(r"3\.14\.[0-9]+", str(expected["version"]))
-        or expected.get("cache_tag") != "cpython-314"
+        or not re.fullmatch(r"3\.13\.[0-9]+", str(expected["version"]))
+        or tuple(int(part) for part in str(expected["version"]).split(".")) < RUNTIME_PYTHON_MINIMUM
+        or expected.get("cache_tag") != RUNTIME_PYTHON_CACHE_TAG
         or expected.get("executable") != "bin/python"
     ):
         raise LinuxReleaseError("release interpreter attestation is invalid")
@@ -3126,9 +3064,12 @@ def _preflight_install(
     if os.path.lexists(layout.source_root / ".git"):
         try:
             project = tomllib.loads((layout.source_root / "pyproject.toml").read_text())["project"]
-            project_requirements = [*project["dependencies"], *project["optional-dependencies"]["full"]]
+            # The checked-in release is product-only.  Optional inference,
+            # audio, MCP, and document profiles require a separately
+            # authenticated wheelhouse and are never implied by this install.
+            project_requirements = list(project["dependencies"])
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise LinuxReleaseError("offline full profile requirements are unavailable") from exc
+            raise LinuxReleaseError("offline product runtime requirements are unavailable") from exc
     _validate_runtime_dependency_closure(
         wheelhouse_artifacts, locked_dependencies, project_requirements=project_requirements,
     )
@@ -3229,8 +3170,6 @@ def _validate_layout(layout: LinuxReleaseLayout) -> None:
         layout.current.parent,
         layout.launcher.parent,
         layout.alias.parent,
-        layout.desktop.parent,
-        layout.icon.parent,
     )
     for path in paths:
         cursor = path
@@ -3247,7 +3186,6 @@ def install_release(
     *,
     corpus_root: Path | None = None,
     prepare_models: bool,
-    desktop: bool,
     wheelhouse: Path | None = None,
     sqlite_policy: Path | None = None,
     sqlite_policy_sha256: str | None = None,
@@ -3490,7 +3428,7 @@ def install_release(
 
         environment = _candidate_environment(layout, smoke_corpus_root)
         model_status: dict[str, object] | None = None
-        if prepare_models or desktop:
+        if prepare_models:
             model_status = _decode_json_object(
                 runner(
                     (_venv_command(final_release), "models", "status", "--json"),
@@ -3528,7 +3466,6 @@ def install_release(
             public_snapshots, public_hashes = _publish_public_access(
                 layout,
                 corpus_root,
-                desktop=desktop,
                 runner=runner,
             )
             receipt = {
@@ -3552,7 +3489,6 @@ def install_release(
                 ],
                 "models_prepared": prepare_models,
                 "model_inventory": model_status,
-                "desktop_published": desktop,
                 "retention_policy": "current_and_immediate_rollback_v1",
                 "retained_releases": retained_releases,
                 "native_runtime": release_artifacts["native_runtime"],
@@ -3906,8 +3842,6 @@ def _verify_release_unlocked(
     languages = frozenset(line.strip() for line in tesseract.stdout.splitlines()[1:])
     if not {"spa", "eng"} <= languages:
         raise LinuxReleaseError("Tesseract must expose spa and eng language data")
-    if bool(receipt.get("desktop_published")):
-        runner(("desktop-file-validate", layout.desktop), timeout=60)
     return {
         "schema_version": RELEASE_VERIFICATION_SCHEMA_VERSION,
         "kind": "linux_release_verification",
@@ -4060,7 +3994,6 @@ def rollback_release(
         )
         if os.path.lexists(corpus_root):
             _require_corpus_root(corpus_root)
-        desktop_published = bool(latest and latest.get("desktop_published"))
         public_snapshots: dict[Path, _PathSnapshot] = {}
         _recheck_native_before_activation(
             target, manifest, target_native[1], str(target_native[0]["policy_sha256"]),
@@ -4070,7 +4003,6 @@ def rollback_release(
             public_snapshots, public_hashes = _publish_public_access(
                 layout,
                 corpus_root,
-                desktop=desktop_published,
                 runner=runner,
             )
             gc_transaction, pruned_releases = _stage_old_releases(
@@ -4095,7 +4027,6 @@ def rollback_release(
                     else "platform_default"
                 ),
                 "models_prepared": False,
-                "desktop_published": desktop_published,
                 "retention_policy": "current_and_immediate_rollback_v1",
                 "retained_releases": (target.name, current.name),
                 "pruned_releases": pruned_releases,
@@ -4186,7 +4117,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-models", "--prepare-models", dest="prepare_models", action="store_true",
         help="require pre-provisioned local models; the legacy prepare-models alias never downloads",
     )
-    install.add_argument("--desktop", action="store_true")
     install.add_argument(
         "--sqlite-policy", type=Path,
         help="reviewed offline SQLite build policy (defaults to the source offline directory)",
@@ -4216,7 +4146,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 layout,
                 corpus_root=args.corpus_root,
                 prepare_models=args.prepare_models,
-                desktop=args.desktop,
                 wheelhouse=args.wheelhouse,
                 sqlite_policy=args.sqlite_policy,
                 sqlite_policy_sha256=args.sqlite_policy_sha256,

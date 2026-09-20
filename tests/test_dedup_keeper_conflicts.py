@@ -38,8 +38,8 @@ def test_multiple_explicit_keepers_abstain_with_preserved_evidence(tmp_path: Pat
         assert error.code == "conflicting_explicit_keepers"
         assert error.policy is policy
         assert error.identities == tuple(sorted(selected))
-        assert len(error.full_fingerprint) == 32
-        assert error.proof.comparison_method == ("byte_for_byte" if exact else "full_xxh3")
+        assert len(error.full_fingerprint) == 64
+        assert error.proof.comparison_method == ("byte_for_byte" if exact else "sha256_full")
         assert error.proof.comparison_result == ("equal" if exact else "fingerprint_match")
         assert "keeper_decision_conflict" in error.proof.missing_checks
         assert policy.explicit_keep_identities == selected

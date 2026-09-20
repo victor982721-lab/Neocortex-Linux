@@ -242,11 +242,6 @@ _RETAINED_DOMAIN_CYCLES = {
         ("neocortex.semantic.semantic_search_repository", "neocortex.semantic.semantic_exact_index", "type_checking", ()),
         ("neocortex.semantic.semantic_search_repository", "neocortex.semantic.semantic_exact_index", "deferred", ("_search_exact_page",)),
     },  # Verified index preparation reads native rows; optional query dispatch never prepares an index.
-    frozenset({"neocortex.workflow.review.archive_review_tasks", "neocortex.workflow.review.value_review_tasks"}): {
-        ("neocortex.workflow.review.archive_review_tasks", "neocortex.workflow.review.value_review_tasks", "deferred", ("_refresh_archive_review_tasks",)),
-        ("neocortex.workflow.review.value_review_tasks", "neocortex.workflow.review.archive_review_tasks", "type_checking", ()),
-        ("neocortex.workflow.review.value_review_tasks", "neocortex.workflow.review.archive_review_tasks", "deferred", ("refresh_value_review_tasks",)),
-    },  # Public refresh delegates to a shared review writer; archive reuses digest/invalidators, not refresh.
 }
 
 

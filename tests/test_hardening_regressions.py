@@ -26,7 +26,7 @@ from neocortex.documents.document_taxonomy import (
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 
-TEST_CAPABILITIES = ("base", "documents", "ui")
+TEST_CAPABILITIES = ("base", "documents")
 # endregion [01]
 
 # region [02] Implementación
@@ -67,32 +67,6 @@ identifier_patterns = ["(a+)+$"]
 
     with pytest.raises(ValueError, match="unsafe identifier pattern"):
         load_taxonomy(taxonomy_path)
-
-
-@pytest.mark.capability("ui")
-def test_controller_discards_oversized_unterminated_line_and_resynchronizes() -> None:
-    from neocortex.interface.application.controller import MAX_PROCESS_LINE_BYTES, WorkerController
-
-    controller = WorkerController()
-    emitted: list[str] = []
-    controller.output_received.connect(emitted.append)
-
-    controller._ingest_output(
-        controller._stdout_buffer,
-        b"x" * (MAX_PROCESS_LINE_BYTES + 1),
-        protocol=True,
-    )
-
-    assert not controller._stdout_buffer
-    assert controller._stdout_discarding_oversized_line
-    controller._ingest_output(
-        controller._stdout_buffer,
-        b"discarded suffix\nvisible output\n",
-        protocol=True,
-    )
-    assert not controller._stdout_discarding_oversized_line
-    assert any("exceder el límite" in message for message in emitted)
-    assert emitted[-1] == "visible output"
 
 
 def test_mutation_policy_allows_only_a_missing_destination_suffix(

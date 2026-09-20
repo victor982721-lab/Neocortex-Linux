@@ -149,7 +149,7 @@ def test_first_execution_and_cache_hit_publish_complete_causal_receipts(
         assert revision == (
             f"resource:file:{snapshot.volume_id}:{snapshot.file_id}:{snapshot.birthtime_ns}",
             HASH_ALGORITHM_128,
-            text_route_module.xxhash.xxh3_128_hexdigest(source.read_bytes()),
+            text_route_module.sha256.sha256_128_hexdigest(source.read_bytes()),
         )
         output_sets = [
             tuple(
@@ -485,7 +485,7 @@ def _create_legacy_v1(path: Path, snapshot: FileSnapshot) -> None:
                 snapshot.birthtime_ns,
                 zlib.compress(encoded),
                 len(payload),
-                text_route_module.xxhash.xxh3_128_hexdigest(encoded),
+                text_route_module.sha256.sha256_128_hexdigest(encoded),
             ),
         )
         connection.execute(

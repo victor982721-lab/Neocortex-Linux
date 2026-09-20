@@ -16,25 +16,6 @@ if TYPE_CHECKING:
         CurationPlanOutput as CurationPlanOutput,
         curation_plan_payload as curation_plan_payload,
     )
-    from neocortex.api.curation_lifecycle_api import (
-        CURATION_DECISION_API_SCHEMA as CURATION_DECISION_API_SCHEMA,
-        CURATION_REVIEW_API_SCHEMA as CURATION_REVIEW_API_SCHEMA,
-        curation_decide_payload as curation_decide_payload,
-        curation_review_payload as curation_review_payload,
-    )
-    from neocortex.api.curation_authorization_api import (
-        CURATION_AUTHORIZATION_API_SCHEMA as CURATION_AUTHORIZATION_API_SCHEMA,
-        curation_authorize_payload as curation_authorize_payload,
-    )
-    from neocortex.api.curation_application_api import (
-        CURATION_APPLY_API_SCHEMA as CURATION_APPLY_API_SCHEMA,
-        CURATION_APPLY_SCHEMA as CURATION_APPLY_SCHEMA,
-        CURATION_RECONCILE_API_SCHEMA as CURATION_RECONCILE_API_SCHEMA,
-        CurationApplyOutput as CurationApplyOutput,
-        CurationReconcileOutput as CurationReconcileOutput,
-        curation_apply_payload as curation_apply_payload,
-        curation_reconcile_payload as curation_reconcile_payload,
-    )
     from neocortex.api.curation_recovery_api import (
         CURATION_RECOVERY_STATUS_API_SCHEMA as CURATION_RECOVERY_STATUS_API_SCHEMA,
         CURATION_RESTORE_API_SCHEMA as CURATION_RESTORE_API_SCHEMA,
@@ -206,15 +187,9 @@ __all__ = [  # noqa: RUF022
     "AudioRouteConfig",
     "AudioRouteSummary",
     "CapabilityFailure",
-    "CURATION_AUTHORIZATION_API_SCHEMA",
-    "CURATION_APPLY_API_SCHEMA",
-    "CURATION_APPLY_SCHEMA",
-    "CURATION_RECONCILE_API_SCHEMA",
     "CURATION_RECOVERY_STATUS_API_SCHEMA",
     "CURATION_RESTORE_API_SCHEMA",
-    "CURATION_DECISION_API_SCHEMA",
     "CURATION_PLAN_API_SCHEMA",
-    "CURATION_REVIEW_API_SCHEMA",
     "CURATION_SCAN_API_SCHEMA",
     "CURATION_VERIFY_API_SCHEMA",
     "CURATION_CHECKPOINT_CREATE_API_SCHEMA",
@@ -223,8 +198,6 @@ __all__ = [  # noqa: RUF022
     "CONTENT_DIAGNOSTICS_SCHEMA",
     "CONTENT_DIAGNOSTICS_V2_SCHEMA",
     "CurationPlanOutput",
-    "CurationApplyOutput",
-    "CurationReconcileOutput",
     "CurationRecoveryStatusOutput",
     "CurationPlanPage",
     "CurationScanOutput",
@@ -282,11 +255,6 @@ __all__ = [  # noqa: RUF022
     "identify",
     "verify_pdf_state",
     "curation_plan_payload",
-    "curation_review_payload",
-    "curation_decide_payload",
-    "curation_authorize_payload",
-    "curation_apply_payload",
-    "curation_reconcile_payload",
     "curation_recovery_status_payload",
     "curation_restore_payload",
     "curation_restore_preview_payload",
@@ -351,26 +319,6 @@ __all__ = [  # noqa: RUF022
 ]
 
 _EXPORTS: Final[dict[str, tuple[str, str]]] = {
-    "CURATION_AUTHORIZATION_API_SCHEMA": (
-        "neocortex.api.curation_authorization_api",
-        "CURATION_AUTHORIZATION_API_SCHEMA",
-    ),
-    "CURATION_APPLY_SCHEMA": (
-        "neocortex.api.curation_application_api",
-        "CURATION_APPLY_SCHEMA",
-    ),
-    "CURATION_APPLY_API_SCHEMA": (
-        "neocortex.api.curation_application_api",
-        "CURATION_APPLY_API_SCHEMA",
-    ),
-    "CurationApplyOutput": (
-        "neocortex.api.curation_application_api",
-        "CurationApplyOutput",
-    ),
-    "CurationReconcileOutput": (
-        "neocortex.api.curation_application_api",
-        "CurationReconcileOutput",
-    ),
     "CURATION_RECOVERY_STATUS_API_SCHEMA": (
         "neocortex.api.curation_recovery_api",
         "CURATION_RECOVERY_STATUS_API_SCHEMA",
@@ -383,19 +331,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "neocortex.api.curation_recovery_api",
         "CurationRecoveryStatusOutput",
     ),
-    "CURATION_RECONCILE_API_SCHEMA": (
-        "neocortex.api.curation_application_api",
-        "CURATION_RECONCILE_API_SCHEMA",
-    ),
-    "CURATION_DECISION_API_SCHEMA": (
-        "neocortex.api.curation_lifecycle_api",
-        "CURATION_DECISION_API_SCHEMA",
-    ),
     "CURATION_PLAN_API_SCHEMA": ("neocortex.api.curation_api", "CURATION_PLAN_API_SCHEMA"),
-    "CURATION_REVIEW_API_SCHEMA": (
-        "neocortex.api.curation_lifecycle_api",
-        "CURATION_REVIEW_API_SCHEMA",
-    ),
     "CurationPlanOutput": ("neocortex.api.curation_api", "CurationPlanOutput"),
     "CurationPlanPage": ("neocortex.curation.preview", "CurationPlanPage"),
     "CurationScanOutput": (
@@ -508,26 +444,6 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "content_diagnostics_v2_payload",
     ),
     "curation_plan_payload": ("neocortex.api.curation_api", "curation_plan_payload"),
-    "curation_review_payload": (
-        "neocortex.api.curation_lifecycle_api",
-        "curation_review_payload",
-    ),
-    "curation_decide_payload": (
-        "neocortex.api.curation_lifecycle_api",
-        "curation_decide_payload",
-    ),
-    "curation_authorize_payload": (
-        "neocortex.api.curation_authorization_api",
-        "curation_authorize_payload",
-    ),
-    "curation_apply_payload": (
-        "neocortex.api.curation_application_api",
-        "curation_apply_payload",
-    ),
-    "curation_reconcile_payload": (
-        "neocortex.api.curation_application_api",
-        "curation_reconcile_payload",
-    ),
     "curation_recovery_status_payload": (
         "neocortex.api.curation_recovery_api",
         "curation_recovery_status_payload",

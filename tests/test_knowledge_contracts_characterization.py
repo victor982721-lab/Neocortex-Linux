@@ -950,7 +950,7 @@ def test_context_bundle_payload_and_canonical_serialization_are_golden() -> None
     assert "\\u00c1" not in encoded
     assert len(encoded.encode("utf-8")) == 8_044
     assert hashlib.sha256(encoded.encode("utf-8")).hexdigest() == (
-        "53952e6b1749afae43af11ab8fc3696db12c8500fb287df5f7d3e2bff748172b"
+        "711054647bd0bf3e221637ca3c6596455041593590228552ad397e766b20c489"
     )
 
 

@@ -61,7 +61,7 @@ def test_canonical_inventory_and_planner_complete_a_small_exact_plan(tmp_path: P
 
     with deduplication.DedupIndex(tmp_path / "inventory.sqlite3") as index:
         scan = index.scan(corpus, excluded_paths=())
-        plan = deduplication.DedupPlanner(index, partial_threshold=0).plan(
+        plan = deduplication.DedupPlanner(index).plan(
             scan.scan_id,
             preview_limit=None,
         )

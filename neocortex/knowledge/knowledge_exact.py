@@ -1419,7 +1419,13 @@ def _lookup_inventory(
                 return matches, reports
             for term in terms:
                 if term.kind is ExactLookupKind.HASH and (
-                    len(term.value) != 32
+                    (
+                        len(term.value) != 64
+                        if term.algorithm in {_FULL_INVENTORY_HASH, FULL_ALGORITHM}
+                        else len(term.value) not in {32, 64}
+                        if term.algorithm is None
+                        else len(term.value) != 32
+                    )
                     or term.algorithm not in {None, "xxh3_128", HASH_ALGORITHM_128, _FULL_INVENTORY_HASH}
                 ):
                     reports.append(

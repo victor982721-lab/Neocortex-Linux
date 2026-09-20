@@ -431,10 +431,10 @@ def _fixture_rows(
         "aislamiento y protección en patio eléctrico."
     )
     encoded = text.encode("utf-8")
-    import xxhash
+    from neocortex.foundation.hash_compat import sha256
 
-    fingerprint = xxhash.xxh3_128_hexdigest(encoded)
-    guard = xxhash.xxh3_64_hexdigest(encoded, seed=0x4E454F43)
+    fingerprint = sha256.sha256_128_hexdigest(encoded)
+    guard = sha256.sha256_64_hexdigest(encoded, seed=0x4E454F43)
     content_bytes = len(encoded)
     source_revision = _json(
         {

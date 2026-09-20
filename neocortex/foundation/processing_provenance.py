@@ -1,9 +1,9 @@
 """Deterministic, compact processing signatures with auditable provenance.
 
-The signature uses the optional native XXH3 backend when present and the
-SHA-256 fallback otherwise. The manifest records the effective backend and
-contains only configuration, runtime versions and bounded artifact metadata;
-file contents are streamed and never retained in memory.
+The signature uses the standard-library SHA-256 implementation. The manifest
+records the effective backend and contains only configuration, runtime
+versions and bounded artifact metadata; file contents are streamed and never
+retained in memory.
 """
 
 from __future__ import annotations
@@ -28,10 +28,9 @@ from neocortex.foundation.hash_compat import (
     HASH_ALGORITHM_64,
     HASH_ALGORITHM_128,
     HASH_BACKEND,
-    HAS_NATIVE_XXHASH,
     hash_backend_component,
 )
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
 
@@ -197,7 +196,7 @@ def build_processing_provenance(
         sort_keys=True,
         separators=(",", ":"),
     )
-    digest = xxhash.xxh3_128(manifest_json.encode("utf-8")).hexdigest()
+    digest = sha256.sha256_128(manifest_json.encode("utf-8")).hexdigest()
     signature = "|".join(
         (
             _SIGNATURE_VERSION,
@@ -241,7 +240,7 @@ def python_runtime_component() -> dict[str, Any]:
 
 @processing_provenance_cache(maxsize=64)
 def _fingerprint_file_cached(path: str, identity: _ArtifactIdentity) -> str:
-    digest = xxhash.xxh3_128()
+    digest = sha256.sha256_128()
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_NONBLOCK", 0)
     descriptor = os.open(path, flags)
@@ -256,7 +255,7 @@ def _fingerprint_file_cached(path: str, identity: _ArtifactIdentity) -> str:
     return digest.hexdigest()
 
 
-def fingerprint_file_xxh3_128(path: Path) -> str:
+def fingerprint_file_sha256_128(path: Path) -> str:
     """Return a cached hash only for the same coherently observed file revision."""
     resolved, identity = _observe_artifact(path)
     digest = _fingerprint_file_cached(str(resolved), identity)
@@ -272,7 +271,7 @@ def file_artifact(path: Path, *, label: str | None = None) -> dict[str, Any]:
     return {
         "name": label or resolved.name,
         "size_bytes": identity[3],
-        "xxh3_128": digest,
+        "sha256_128": digest,
         "hash_backend": HASH_BACKEND,
         "hash_algorithm_128": HASH_ALGORITHM_128,
         "hash_algorithm_64": HASH_ALGORITHM_64,
@@ -287,7 +286,7 @@ def distribution_component(
 ) -> dict[str, Any]:
     """Describe an installed Python distribution and an optional bundled model."""
 
-    if distribution.casefold() == "xxhash" and not HAS_NATIVE_XXHASH:
+    if distribution.casefold() in {"sha256", "hashlib"}:
         return hash_backend_component(name)
     version = installed_distribution_version(distribution)
     component: dict[str, Any] = {
@@ -446,7 +445,7 @@ class TesseractRuntimeProvenance:
             filename = item.get("name")
             if not isinstance(filename, str) or not filename.endswith(".traineddata"):
                 continue
-            digest = item.get("xxh3_128")
+            digest = item.get("sha256_128")
             hashes.append(
                 (
                     filename.removesuffix(".traineddata"),

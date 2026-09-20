@@ -14,7 +14,6 @@ from neocortex.deduplication import (
     FileChangedError,
     files_equal_exact,
     full_fingerprint,
-    partial_fingerprint,
     snapshot_path,
 )
 
@@ -26,8 +25,6 @@ Operation = Callable[..., bytes | bool]
 def _operation(name: str) -> Operation:
     if name == "full":
         return full_fingerprint
-    if name == "partial":
-        return partial_fingerprint
     return files_equal_exact
 
 
@@ -48,7 +45,7 @@ def _run_without_blocking(operation: Callable[[], object]) -> Exception | None:
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO fixtures require POSIX")
-@pytest.mark.parametrize("name", ("full", "partial", "exact"))
+@pytest.mark.parametrize("name", ("full", "exact"))
 def test_fifo_replacement_fails_without_blocking(tmp_path: Path, name: str) -> None:
     source = tmp_path / "source.bin"
     peer = tmp_path / "peer.bin"
@@ -69,7 +66,7 @@ def test_fifo_replacement_fails_without_blocking(tmp_path: Path, name: str) -> N
     assert isinstance(error, FileChangedError)
 
 
-@pytest.mark.parametrize("name", ("full", "partial", "exact"))
+@pytest.mark.parametrize("name", ("full", "exact"))
 def test_symlink_replacement_fails_closed(tmp_path: Path, name: str) -> None:
     source = tmp_path / "source.bin"
     peer = tmp_path / "peer.bin"
@@ -92,7 +89,7 @@ def test_symlink_replacement_fails_closed(tmp_path: Path, name: str) -> None:
     assert isinstance(error, FileChangedError)
 
 
-@pytest.mark.parametrize("name", ("full", "partial", "exact"))
+@pytest.mark.parametrize("name", ("full", "exact"))
 def test_identity_replacement_fails_closed(tmp_path: Path, name: str) -> None:
     source = tmp_path / "source.bin"
     peer = tmp_path / "peer.bin"
@@ -138,7 +135,7 @@ class _MutatingStream:
         return self._stream.read(size)  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize("name", ("full", "partial", "exact"))
+@pytest.mark.parametrize("name", ("full", "exact"))
 @pytest.mark.parametrize("mutation", ("truncate", "grow"))
 def test_size_change_during_read_is_reported(
     tmp_path: Path,

@@ -117,12 +117,11 @@ _FINGERPRINT_GUARD_SEED = 0x4E454F43
 
 @dataclass(frozen=True, slots=True)
 class ContentFingerprint:
-    """Bounded collision guard for content reuse with XXH3-shaped fields.
+    """Bounded collision guard for content reuse with legacy field names.
 
     The byte count and an independently seeded 64-bit guard accompany the
-    primary 128-bit digest.  The native XXH3 backend is preferred, while the
-    hash compatibility layer supplies deterministic SHA-256-derived values
-    when its optional wheel is absent. This is not a security primitive.
+    primary 128-bit digest. Values are deterministically derived from the
+    standard-library SHA-256 backend. This is not a security primitive.
     """
 
     xxh3_128: str
@@ -133,11 +132,11 @@ class ContentFingerprint:
         if len(self.xxh3_128) != 32 or any(
             character not in "0123456789abcdef" for character in self.xxh3_128
         ):
-            raise ValueError("xxh3_128 must be 32 lowercase hexadecimal characters")
+            raise ValueError("primary digest must be 32 lowercase hexadecimal characters")
         if len(self.xxh3_64_guard) != 16 or any(
             character not in "0123456789abcdef" for character in self.xxh3_64_guard
         ):
-            raise ValueError("xxh3_64_guard must be 16 lowercase hexadecimal characters")
+            raise ValueError("compact guard must be 16 lowercase hexadecimal characters")
         if self.byte_count < 0:
             raise ValueError("byte_count cannot be negative")
 
@@ -145,13 +144,13 @@ class ContentFingerprint:
 def fingerprint_bytes(payload: bytes | bytearray | memoryview) -> ContentFingerprint:
     """Return the version-neutral content identity of an in-memory payload."""
 
-    from neocortex.foundation.hash_compat import xxhash
+    from neocortex.foundation.hash_compat import sha256
 
     view = memoryview(payload)
     return ContentFingerprint(
-        xxh3_128=xxhash.xxh3_128_hexdigest(view),
+        xxh3_128=sha256.sha256_128_hexdigest(view),
         byte_count=view.nbytes,
-        xxh3_64_guard=xxhash.xxh3_64_hexdigest(
+        xxh3_64_guard=sha256.sha256_64_hexdigest(
             view,
             seed=_FINGERPRINT_GUARD_SEED,
         ),
@@ -167,10 +166,10 @@ def fingerprint_text(text: str) -> ContentFingerprint:
 def fingerprint_chunks(chunks: Iterable[bytes]) -> ContentFingerprint:
     """Fingerprint a byte stream incrementally without joining it in memory."""
 
-    from neocortex.foundation.hash_compat import xxhash
+    from neocortex.foundation.hash_compat import sha256
 
-    primary = xxhash.xxh3_128()
-    guard = xxhash.xxh3_64(seed=_FINGERPRINT_GUARD_SEED)
+    primary = sha256.sha256_128()
+    guard = sha256.sha256_64(seed=_FINGERPRINT_GUARD_SEED)
     byte_count = 0
     for chunk in chunks:
         primary.update(chunk)

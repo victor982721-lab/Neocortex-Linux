@@ -1,34 +1,35 @@
-"""Stable file snapshots and exact or sampled content fingerprints.
+"""Stable file snapshots and full SHA-256 content fingerprints.
 
-The native XXH3 backend is preferred; :mod:`neocortex.foundation.hash_compat`
-uses deterministic SHA-256-derived values when its optional wheel is absent.
+Deduplication intentionally has one content-evidence path: files that share a
+physical size are streamed through SHA-256, then equal digest candidates are
+verified byte-for-byte before any effect.  Sampled fingerprints are not part
+of the product contract; they were an optimization for the removed dual
+backend and could never prove equality.
 """
 
 from __future__ import annotations
 
 import os
 import stat
-import struct
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
-from neocortex.foundation.hash_compat import HAS_NATIVE_XXHASH, HASH_BACKEND, xxhash
+from neocortex.foundation.hash_compat import (
+    FULL_ALGORITHM as HASH_FULL_ALGORITHM,
+    HASH_BACKEND,
+    sha256_hasher,
+)
 from neocortex.platform.policy import stat_birthtime_ns
 
 from .domain.errors import FileChangedError
 from .domain.models import FileSnapshot
 from .io import absolute_display_path, native_io_path
 
-# Native installations retain the historical labels. A fallback gets its own
-# cache namespace so XXH3 and SHA-256-derived fingerprints are never mixed.
-_ALGORITHM_PREFIX = "xxh3_128" if HAS_NATIVE_XXHASH else "sha256_128_fallback"
-FULL_ALGORITHM = f"{_ALGORITHM_PREFIX}_full_v1"
-PARTIAL_ALGORITHM = f"{_ALGORITHM_PREFIX}_first_middle_last_v1_sample_262144"
+FULL_ALGORITHM = HASH_FULL_ALGORITHM
 FINGERPRINT_BACKEND = HASH_BACKEND
 DEFAULT_IO_CHUNK_SIZE = 16 * 1024 * 1024
-DEFAULT_SAMPLE_SIZE = 256 * 1024
 _MIN_IO_CHUNK_SIZE = 64 * 1024
 
 
@@ -193,10 +194,10 @@ def full_fingerprint(
     read_observer: Callable[[int], None] | None = None,
     checkpoint: Callable[[], None] | None = None,
 ) -> bytes:
-    """Return an XXH3-128 digest after streaming the entire file once."""
+    """Return the complete SHA-256 digest after streaming the file once."""
 
     chunk_size = _validated_io_chunk_size(chunk_size)
-    hasher = xxhash.xxh3_128()
+    hasher = sha256_hasher()
     try:
         if checkpoint is not None:
             checkpoint()
@@ -227,48 +228,6 @@ def full_fingerprint(
         raise
     except OSError as exc:
         raise FileChangedError(f"cannot read {snapshot.path}: {exc}") from exc
-    return hasher.digest()
-
-
-def partial_fingerprint(
-    snapshot: FileSnapshot, *, sample_size: int = DEFAULT_SAMPLE_SIZE,
-    read_observer: Callable[[int], None] | None = None,
-    checkpoint: Callable[[], None] | None = None,
-) -> bytes:
-    """Hash deterministic first/middle/last ranges, including their offsets."""
-
-    if sample_size < 4096:
-        raise ValueError("sample_size must be at least 4096 bytes")
-    size = snapshot.size
-    offsets = sorted({0, max(0, (size - sample_size) // 2), max(0, size - sample_size)})
-    hasher = xxhash.xxh3_128()
-    hasher.update(b"T_DEDUP_PARTIAL_V1\0")
-    hasher.update(struct.pack("<QQ", size, sample_size))
-    try:
-        if checkpoint is not None:
-            checkpoint()
-        with _open_regular_stream(snapshot) as stream:
-            before_ctime_ns = os.fstat(stream.fileno()).st_ctime_ns
-            for offset in offsets:
-                if checkpoint is not None:
-                    checkpoint()
-                stream.seek(offset)
-                expected = min(sample_size, size - offset)
-                data = stream.read(expected)
-                if read_observer is not None:
-                    read_observer(len(data))
-                if len(data) != expected:
-                    raise FileChangedError(f"file was truncated while sampling: {snapshot.path}")
-                hasher.update(struct.pack("<QQ", offset, len(data)))
-                hasher.update(data)
-            after_stat = os.fstat(stream.fileno())
-            _assert_unchanged(snapshot, after_stat)
-            if after_stat.st_ctime_ns != before_ctime_ns:
-                raise FileChangedError(f"file changed while sampling: {snapshot.path}")
-    except FileChangedError:
-        raise
-    except OSError as exc:
-        raise FileChangedError(f"cannot sample {snapshot.path}: {exc}") from exc
     return hasher.digest()
 
 
@@ -355,14 +314,11 @@ def snapshot_path(path: str | Path) -> FileSnapshot:
 
 __all__ = [
     "DEFAULT_IO_CHUNK_SIZE",
-    "DEFAULT_SAMPLE_SIZE",
     "FINGERPRINT_BACKEND",
     "FULL_ALGORITHM",
-    "PARTIAL_ALGORITHM",
     "files_equal_exact",
     "fingerprint_change_version",
     "full_fingerprint",
-    "partial_fingerprint",
     "require_fingerprint_change_version",
     "snapshot_path",
     "stat_matches_snapshot",

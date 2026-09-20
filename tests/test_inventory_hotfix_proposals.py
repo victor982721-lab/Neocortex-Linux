@@ -141,11 +141,10 @@ def test_prune_deletes_all_disposable_batches_and_preserves_explicit_holds(
         assert all(statement.endswith("LIMIT 7") for statement in selections)
 
 
-@pytest.mark.parametrize("partial_threshold", [0, 1_000_000])
 @pytest.mark.parametrize("remove_alias", [False, True])
 @pytest.mark.parametrize("provider_method", ["_fingerprint", "_fingerprint_batch"])
 def test_one_observed_physical_identity_never_enters_hashing(
-    tmp_path: Path, partial_threshold: int, remove_alias: bool, provider_method: str,
+    tmp_path: Path, remove_alias: bool, provider_method: str,
 ) -> None:
     root = tmp_path / "corpus"
     root.mkdir()
@@ -159,7 +158,7 @@ def test_one_observed_physical_identity_never_enters_hashing(
         scan = index.scan(root, excluded_paths=())
         if remove_alias:
             aliases[-1].unlink()
-        planner = DedupPlanner(index, partial_threshold=partial_threshold)
+        planner = DedupPlanner(index)
         with patch.object(
             planner, provider_method, side_effect=AssertionError("singleton identity was hashed"),
         ):

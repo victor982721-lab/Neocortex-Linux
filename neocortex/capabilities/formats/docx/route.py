@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, cast
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.deduplication import (
     FileChangedError,
@@ -233,7 +233,7 @@ def _cached_layout_is_valid(row: Any) -> bool:
         and evidence.get("structure") is not None
         and layout_class == f"{evidence['page_class']}:{evidence['structure']}"
         and counts_match
-        and str(layout_signature) == xxhash.xxh3_128_hexdigest(canonical.encode("utf-8"))
+        and str(layout_signature) == sha256.sha256_128_hexdigest(canonical.encode("utf-8"))
     )
 
 

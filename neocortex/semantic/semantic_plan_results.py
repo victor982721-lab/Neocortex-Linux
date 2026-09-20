@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256
 
 from . import semantic_sources as _sources
 from .semantic_chunking import TextChunkingConfig
@@ -197,7 +197,7 @@ def _plan_text_source(
 ) -> SemanticSourcePlan:
     database = semantic_source_database(state_directory, source_kind)
     counters = _SourceCounters(source_kind, database, schema_version)
-    snapshot_hasher = xxhash.xxh3_128()
+    snapshot_hasher = sha256.sha256_128()
     snapshot_hasher.update(
         canonical_json(
             {
@@ -297,7 +297,7 @@ def _plan_images(
     image_database = semantic_source_database(state_directory, IMAGE_SOURCE_KIND)
     dedup_database = state_directory / "dedup.sqlite3"
     counters = _SourceCounters(IMAGE_SOURCE_KIND, image_database, schema_version)
-    snapshot_hasher = xxhash.xxh3_128()
+    snapshot_hasher = sha256.sha256_128()
     snapshot_hasher.update(
         canonical_json(
             {

@@ -1,6 +1,7 @@
 include README.md
 include constraints.txt
-include constraints-linux-cp314.lock
+include constraints-linux-cp313.lock
+include constraints-linux-cp313-runtime.lock
 exclude AGENTS.md
 prune tests
 # Source snapshots from Git contain this development supply, but built

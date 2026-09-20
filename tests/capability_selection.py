@@ -23,7 +23,7 @@ from functools import lru_cache
 from pathlib import Path
 
 
-CAPABILITIES = frozenset({"base", "documents", "image", "inference", "ui", "platform", "agent"})
+CAPABILITIES = frozenset({"base", "documents", "image", "inference", "platform", "agent"})
 
 
 class CapabilitySelectionError(ValueError):

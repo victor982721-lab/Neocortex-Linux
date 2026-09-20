@@ -4,7 +4,7 @@ The two operations are advisory and corpus-preserving.  ``curation_scan``
 projects the currently published plan through the same fixed-root reader as
 ``curation_plan``; ``curation_verify`` rechecks the physical files referenced by
 that plan and performs the byte comparison required for an exact duplicate
-claim.  Neither operation creates ReviewTasks, grants, ``file_actions`` or
+claim.  Neither operation creates workflow state, ``file_actions`` or
 filesystem effects.
 """
 

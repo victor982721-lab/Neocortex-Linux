@@ -44,7 +44,7 @@ class KeeperConflictError(InventoryError):
         )
         self.proof = DuplicateGroupProof(
             proof_version=PROOF_VERSION, requested_policy="exact" if exact_compare else "fast",
-            comparison_method="byte_for_byte" if exact_compare else "full_xxh3",
+            comparison_method="byte_for_byte" if exact_compare else "sha256_full",
             comparison_result="equal" if exact_compare else "fingerprint_match",
             missing_checks=missing if exact_compare else ("byte_for_byte_comparison", *missing),
             keeper_policy_version=KEEPER_POLICY_VERSION, keeper_reason=self.code,

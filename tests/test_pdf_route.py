@@ -48,7 +48,7 @@ from neocortex.capabilities.formats.pdf.pdf_isolation import (
 )
 from neocortex.capabilities.formats.pdf.pdf_route_models import CacheDecision
 from neocortex.capabilities.formats.pdf.pdf_state import SCHEMA_VERSION as PDF_SCHEMA_VERSION
-from neocortex.workflow.review.review import list_review_candidates
+from neocortex.workflow.findings_query import list_findings
 from neocortex.runtime.control.retry_policy import classify_pdf_failure
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
@@ -1192,7 +1192,7 @@ class PdfRouteTests(unittest.TestCase):
 
             with closing(sqlite3.connect(root / "pdf.sqlite3")) as connection:
                 digest = connection.execute("SELECT binary_xxh3_128 FROM documents").fetchone()[0]
-            self.assertEqual(len(digest), 32)
+            self.assertEqual(len(digest), 64)
 
     def test_unexpected_pdf_worker_failure_is_not_silently_counted(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1928,14 +1928,14 @@ class PdfRouteTests(unittest.TestCase):
             self.assertEqual(
                 {
                     record.reason_code
-                    for record in list_review_candidates(
+                    for record in list_findings(
                         framework_database,
                         limit=10,
                     )
                 },
                 {"pdf_password_required"},
             )
-            resolved = list_review_candidates(
+            resolved = list_findings(
                 framework_database,
                 limit=10,
                 status="resolved",

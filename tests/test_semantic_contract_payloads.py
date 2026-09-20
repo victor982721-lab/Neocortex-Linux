@@ -392,17 +392,13 @@ def test_representative_payload_keysets_and_byte_golden_are_stable() -> None:
     assert plan.plan_signature == _plan_signature(plan)
     encoded = canonical_json(payload).encode("utf-8")
     expected_golden = {
-        ("nt", "xxh3-128"): (
-            2683,
-            "7f9bd971da15b3fb7ce2f1f1128721102195b43b8c7155e0eca5020f4b24110a",
+        ("nt", "sha256_128"): (
+            2685,
+            "7461b9c73c541f93b344d37d1081d2fde15640e4575e88dd945760c06703e945",
         ),
-        ("posix", "xxh3-128"): (
-            2679,
-            "430ca856b97f5d3518864e120fbdb812ce2c1bdce281b98aafac5266e5870715",
-        ),
-        ("posix", "sha256-128-fallback-v1"): (
-            2693,
-            "be679c90f8ce52d014eb27a208ecfeb5972f68eafde40a5d2ea079959ab660c6",
+        ("posix", "sha256_128"): (
+            2681,
+            "93386fe57c8b178aa4b4e8fac3d55542535509ebf25227b026471f4f16a6c9a8",
         ),
     }
     expected_length, expected_digest = expected_golden[(

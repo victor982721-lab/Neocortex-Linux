@@ -1,4 +1,3 @@
-neocortex/interface/presentation/assets/neocortex-app-icon.svg text eol=lf
 tools/pyright_runtime_lock/*.json text eol=lf
 
 # Preserve reviewed upstream artifacts and license bytes without newline filters.

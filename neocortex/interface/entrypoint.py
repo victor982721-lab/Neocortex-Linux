@@ -1,4 +1,4 @@
-"""Installed Linux entry point for the integrated NeoCortex application."""
+"""Installed Linux entry point for the integrated NeoCortex CLI."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def _print_root_help() -> None:
         """usage: Neocortex [--root ROOT] (--factory-reset | --all | --dedupe | --route ROUTES | COMMAND)
 
 Consulta local:
-  status, search, ask, inspect, review, knowledge, curate, databases
+  status, search, ask, inspect, knowledge, curate, databases
   machine-inventory --machine-root PATH [--machine-root PATH ...]
                         diagnóstico federado read-only y bounded
 
@@ -187,23 +187,6 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
     parser.print_help()
 
 
-def _run_special_mode(arguments: Sequence[str]) -> int | None:
-    if arguments and arguments[0] == "--ui":
-        from neocortex.interface.application.arguments import parse_arguments
-
-        # Help and malformed options belong to the parser, not the Qt/display
-        # runtime.  Use the same argument contract as the desktop application.
-        parse_arguments(arguments[1:])
-        from neocortex.interface.application.app import main as run_ui
-
-        return run_ui(arguments[1:])
-    if arguments and arguments[0] == "--gui-worker":
-        from neocortex.interface.protocol.worker import main as run_worker
-
-        return run_worker(arguments[1:])
-    return None
-
-
 def _run_human_mode(arguments: Sequence[str]) -> int | None:
     """Dispatch read-only human commands without importing route engines."""
 
@@ -215,7 +198,7 @@ def _run_human_mode(arguments: Sequence[str]) -> int | None:
 
 
 def entrypoint(arguments: Sequence[str] | None = None) -> int:
-    """Run one public CLI, desktop, or supervised-worker invocation."""
+    """Run one public CLI invocation."""
 
     forwarded = list(sys.argv[1:] if arguments is None else arguments)
     if _root_help_requested(forwarded):
@@ -227,9 +210,6 @@ def entrypoint(arguments: Sequence[str] | None = None) -> int:
         return 0
     forwarded = _translate_canonical_arguments(forwarded)
     try:
-        special_exit_code = _run_special_mode(forwarded)
-        if special_exit_code is not None:
-            return special_exit_code
         human_exit_code = _run_human_mode(forwarded)
         if human_exit_code is not None:
             return human_exit_code
@@ -237,18 +217,15 @@ def entrypoint(arguments: Sequence[str] | None = None) -> int:
 
         return run_cli(forwarded)
     except SystemExit as exc:
-        # Every parser, including desktop help, has the same entrypoint result.
+        # Every parser has the same entrypoint result.
         if exc.code in (None, 0):
             return 0
         raise
     except ModuleNotFoundError as exc:
         if not exc.name or exc.name == "neocortex" or exc.name.startswith("neocortex."):
             raise
-        operation = (
-            "interfaz gráfica (--ui)" if forwarded[:1] == ["--ui"] else "operación solicitada"
-        )
         print(
-            f"No se puede ejecutar la {operation}: falta la dependencia Python {exc.name!r}. "
+            f"No se puede ejecutar la operación solicitada: falta la dependencia Python {exc.name!r}. "
             "Instale los requisitos declarados para esta capacidad desde los recursos offline.",
             file=sys.stderr,
         )

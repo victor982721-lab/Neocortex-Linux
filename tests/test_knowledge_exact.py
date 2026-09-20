@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, PARTIAL_ALGORITHM
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
 from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.knowledge import knowledge_exact as knowledge_exact_module
 from neocortex.documents.document_catalog import initialize_document_catalog
@@ -103,7 +103,7 @@ def _catalog_owner() -> OwnerSnapshot:
 
 def _create_inventory(path: Path) -> str:
     initialize_inventory_schema(path)
-    full_digest = "11" * 16
+    full_digest = "11" * 32
 
     def blob(value: int) -> bytes:
         return value.to_bytes(16, "little")
@@ -138,15 +138,6 @@ def _create_inventory(path: Path) -> str:
                     20,
                     10,
                     FULL_ALGORITHM,
-                    bytes.fromhex(full_digest),
-                ),
-                (
-                    blob(1),
-                    blob(2),
-                    100,
-                    20,
-                    10,
-                    PARTIAL_ALGORITHM,
                     bytes.fromhex(full_digest),
                 ),
                 (

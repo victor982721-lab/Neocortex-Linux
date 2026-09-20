@@ -355,7 +355,7 @@ from neocortex.capabilities.runtime import inspect_runtime_capabilities
 statuses = inspect_runtime_capabilities()
 introduced = set(sys.modules) - before
 engines = {{"fitz", "pymupdf", "pdfminer", "PIL", "numpy", "xxhash", "fastembed",
-           "onnxruntime", "faster_whisper", "ctranslate2", "PySide6"}}
+           "onnxruntime", "faster_whisper", "ctranslate2"}}
 assert not {{name.partition(".")[0] for name in introduced}} & engines
 print(json.dumps({{"capabilities": len(statuses), "native_imports": 0}}))
 """

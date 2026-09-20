@@ -14,7 +14,6 @@ from unittest.mock import patch
 from neocortex.runtime.config.app_paths import (
     default_generated_artifact_directories,
     default_state_directory,
-    default_ui_settings_path,
     local_application_data_directory,
     program_installation_directory,
     source_repository_directory,
@@ -69,12 +68,11 @@ class ApplicationPathTests(unittest.TestCase):
             ):
                 local_application_data_directory()
 
-    def test_state_and_ui_settings_use_fixed_local_appdata_tree(self) -> None:
+    def test_state_uses_fixed_local_appdata_tree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict(os.environ, {"LOCALAPPDATA": directory}):
                 base = Path(directory) / "Neocortex"
                 self.assertEqual(default_state_directory(), base / "state")
-                self.assertEqual(default_ui_settings_path(), base / "ui.ini")
 
     def test_cli_keeps_fixed_default_and_only_mentions_protected_override(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

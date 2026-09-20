@@ -308,13 +308,13 @@ tendría que cruzar; no la implementa ni la salta:
 | Gate | Evidencia exigida | Efecto en esta etapa |
 |---|---|---|
 | `preview` | registry/manifest versionado, owners, procedencia, cobertura y límites | Sólo lectura; zero deletion. |
-| `review` | revisión humana de entradas, evidencia y razones | No autoriza ni cambia owners. |
-| `authorize` | grant acotado a selección, política, actor, expiración y presupuesto | Persiste autoridad separada; no crea `file_actions`. |
+| `review` | capa humana retirada | No disponible; la incertidumbre permanece en KEEP. |
+| `authorize` | grant humano retirado | No disponible; `--apply` es el gate explícito. |
 | `apply` | backend explícito, locks, revalidación fresca y receipt reversible | Futuro; no disponible desde `hygiene`. |
 | `verify` | postcondición física y conciliación con identidad/receipt | Futuro; no se infiere del retorno del backend. |
 | `recovery` | estado ambiguo, receipt y siguiente decisión/reversión | Obligatorio ante fallo o drift; no hay retry automático. |
 
-`hygiene` no reemplaza `maintenance`, `--factory-reset`, `curate apply`,
+`hygiene` no reemplaza `maintenance` ni `--factory-reset`,
 `machine-inventory` ni `external-maintenance`: esas superficies conservan sus
 owners y gates actuales. En particular, un `--apply` existente de scratch o de
 auditoría histórica no se vuelve accesible por incluirlo en una federación de
@@ -337,7 +337,7 @@ paquete de auditoría fuera del árbol productivo.
 | C06 límites y escala | límites de `hygiene`/`maintenance` | entradas, profundidad, bytes, cancelación y lecturas bounded; lote sin barrido N² evitable |
 | C07 actividad externa | `neocortex.api.agent_activity` instalado | prepare, proceso determinista, publish, close, resume/reconcile y owner explícito |
 | C08 abandono/retención | lifecycle y planner de retención por owner | éxito, fallo y abandono reconciliados; tombstones y bytes separados por política |
-| C09 perfil base | wheel en venv runtime-base/test-base | recopilación sin Pillow/PySide6; skips opcionales explícitos |
+| C09 perfil base | wheel en venv runtime-base/test-base | recopilación sin Pillow; skips opcionales explícitos |
 | C10 workflows headless | selección funcional actual | texto, video y `--all` pasan bajo contratos reproducibles, sin skips/xfail |
 | C11 instrucciones | este manual, Operations y README | los comandos/métodos documentados existen en la distribución instalada |
 | C12 aceptación instalada | wheel final y launcher | `pip check`, versión, origen, help, smoke fuera del checkout y receipt de artefacto |
@@ -372,150 +372,32 @@ razón tipada, sin reintento ciego ni cache de resultados.
 
 ## Estado del lifecycle de curación
 
-**CURRENT — consulta:** `curate plan` consulta la raíz de estado canónica, no
-acepta rutas de estado o corpus y devuelve una página acotada con
-`plan_digest`, `snapshot`, `cursor` y `next_cursor`. No escribe estado ni
-autoriza acciones.
+**CURRENT — consulta:** `curate plan`, `curate scan` y `curate verify` leen la
+publicación local y su evidencia con límites bounded. Son read-only: no crean
+colas, tareas, eventos ni autorización humana.
 
 ```bash
-Neocortex curate plan --limit 50
-Neocortex curate plan --limit 50 --cursor TOKEN
 Neocortex curate plan --limit 50 --json
-```
-
-**IMPLEMENTED — scan y verificación exacta:** `curate scan` consulta la misma
-publicación acotada e incluye sus cabezas de estado, mientras `curate verify`
-relee los archivos regulares referenciados por el plan, comprueba identidad,
-hash completo y comparación byte a byte de cada grupo duplicado. Ambas
-operaciones son advisory, no crean estado, `ReviewTask`, grants ni
-`file_actions`, y no modifican el corpus.
-
-```bash
 Neocortex curate scan --limit 50 --json
-Neocortex curate scan --limit 50 --cursor TOKEN --json
 Neocortex curate verify PLAN_ID --limit 100 --json
-Neocortex curate verify PLAN_ID --limit 100 --cursor TOKEN --json
 Neocortex curate verify PLAN_ID --item-id ITEM_ID --json
 ```
 
-Un plan rápido conserva `persisted_mode=fast`; si la comprobación actual pasa,
-la respuesta informa `observed_mode=full_hash`, sin convertir por sí sola el
-plan persistido en autorización. Un cambio de identidad, bytes, symlink,
-archivo especial, raíz o presupuesto devuelve una abstención tipada.
+Un cambio de identidad, bytes, symlink, archivo especial, raíz o presupuesto
+devuelve una abstención tipada. La salida conserva `source_heads`, cobertura,
+razones e incertidumbre; `UNKNOWN` y cualquier precondición incierta se quedan
+en KEEP.
 
-La respuesta conserva `source_heads` para inventario y catálogo, con su owner,
-revisión, digest, cobertura y razón vigente; `--cursor` permite verificar una
-página posterior sin confundirla con un cambio de snapshot.
+**Aplicación automática segura:** la autorización se expresa únicamente con
+`--apply` en la corrida estándar. Sólo se ejecutan propuestas de alta confianza
+que pasan las fences de raíz, identidad y política. Cada efecto mantiene
+`started → applying → applied|recovery_required`, receipt y recovery; un timeout
+o estado ambiguo nunca se convierte en éxito ni dispara una revisión humana.
 
-El digest representa el stream completo de propuestas y no cambia al variar
-`--limit`; si la publicación cambia, el cursor anterior se rechaza y debe
-iniciarse una consulta nueva.
-
-**IMPLEMENTED — ReviewTask advisory:** `curate review` publica una página del
-plan completo como tareas de revisión, y `curate decide` registra por CAS una
-decisión humana. Son interfaces heredadas de 0.12.0; su presencia no demuestra que la
-instalación incluya las correcciones posteriores del checkout.
-
-```bash
-Neocortex curate review PLAN_ID --limit 50 --json
-Neocortex curate review PLAN_ID --limit 50 --cursor TOKEN --json
-Neocortex curate decide PLAN_ID ITEM_ID \
-  --expected-event-id EVENT_ID \
-  --decision resolved \
-  --decision-scope until-source-change \
-  --actor ACTOR --note "evidencia revisada" --json
-```
-
-`PLAN_ID` es el `plan_digest` de `curate plan`. Review devuelve para cada item su
-`task_id`, estado y `current_event_id`. Decide acepta `resolved` o `dismissed` y
-los scopes `until-source-change`, `until-policy-change` o `permanent`. El mismo
-evento se reproduce de forma idempotente; un digest o head distinto se rechaza.
-
-Estas operaciones tienen `read_only=false` porque escriben únicamente
-ReviewTask en Framework. No crean `file_actions`, no autorizan, no llaman KIO y
-no cambian corpus ni sistemas externos. `--json` devuelve el envelope; no es una
-interfaz de exportación ni crea un ZIP.
-
-**IMPLEMENTED — AuthorizationGrant durable:** después de resolver los items,
-`curate authorize` emite un grant explícito sin aplicar efectos:
-
-```bash
-Neocortex curate authorize PLAN_ID \
-  --item-id ITEM_ID \
-  --action move \
-  --actor ACTOR \
-  --expires-ns NS \
-  --max-bytes BYTES \
-  --json
-```
-
-`--item-id` puede repetirse hasta 100 veces; `--action` acepta `trash`, `move` o
-`rename`, y `--authorization-key` permite una key de idempotencia explícita. El
-grant valida el plan, el snapshot y los heads actuales de ReviewTask al emitirse,
-y persiste un manifiesto inmutable con task IDs, versiones, eventos, fingerprints
-y digest agregado. Trash de duplicados exige `verification_mode=full_hash`;
-move/rename exige destino absoluto. La respuesta declara `actions_authorized=true` y
-`physical_effect_applied=false`: no crea `file_actions`, no invoca KIO y no toca
-corpus ni sistemas externos.
-
-**IMPLEMENTED sobre fixtures y backends inyectados:** `curate apply` consume sólo
-un grant confirmado y `curate reconcile` registra observaciones bounded, sin
-reintentar efectos. La CLI instalada no selecciona backend ni run firmado por sí
-sola, así que `curate apply` devuelve `backend_unavailable` antes de crear
-`file_actions`; la ejecución física de 0.11 se prueba desde API/SDK con un
-backend POSIX o KIO falso y una raíz temporal.
-
-```bash
-Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json
-Neocortex curate reconcile --actor ACTOR --confirm-reconcile --limit 100 --json
-```
-
-El consumidor rechaza grants legacy sin manifest de efectos, vuelve a comprobar
-plan, source heads, ReviewTask heads, expiración, identidad, tamaño, mtime, hash,
-contención y presupuesto, y procesa un efecto por vez con
-`started → applying → applied|recovery_required`. Un timeout, receipt inválido,
-interrupción o ambigüedad queda en `recovery_required`, sin fallback a `gio`,
-`unlink`, sobrescritura ni reintento automático. `reconcile` sólo añade evidencia
-append-only e idempotente; no convierte la observación en permiso.
-
-**IMPLEMENTED — estado y restore de fixtures:**
-
-```bash
-Neocortex curate recovery status --limit 100 --json
-Neocortex curate restore preview ACTION_ID --json
-Neocortex curate restore apply ACTION_ID \
-  --confirm-action-id ACTION_ID --confirmation TOKEN --actor ACTOR --json
-```
-
-`recovery status` y `restore preview` son read-only y muestran sólo evidencia
-bounded. `restore apply` exige el token exacto derivado del receipt original,
-crea un intento separado antes de mover, utiliza no-replace same-filesystem y
-verifica bytes e identidad, mientras la CLI ordinaria falla cerrada sin backend
-inyectado. El restore de owners SQLite mediante `databases restore` mantiene su
-flujo y autoridad independientes.
-
-La primera tranche 0.12 mantiene `curate scan` y `curate verify` sin efectos y
-con límites bounded. La verificación exacta contabiliza items, archivos y bytes
-reales, admite deadline/cancelación en la API Python mediante
-`CurationWorkBudget` y devuelve las razones `budget_exhausted`, `cancelled` o
-`deadline_exceeded`. Los checkpoints y su reanudación por página se consumen
-mediante `neocortex.api.public` o `neocortex.sdk`, exigen un directorio de estado
-explícito para no seleccionar el corpus por accidente y no se exponen en MCP;
-la CLI conserva sus límites seguros por defecto.
-
-El inventario DFS checkpointado se consume en la API Python, no mediante un
-flag genérico de la CLI: `DedupIndex.scan` acepta `checkpoint_path`, `resume`,
-`deterministic` y un `InventoryWorkBudget`. El primer proceso crea un owner
-externo y, si se interrumpe, deja `partial`; la siguiente corrida usa
-`resume=True`, valida raíz, política, prefijo y ancestros, elimina sólo el tail
-no confirmado y continúa. Un owner `complete` se puede repetir para validar
-drift sin crear otro `scan_id`; el contrato no toca el corpus ni se publica como
-operación MCP.
-
-Si un nombre POSIX contiene bytes no representables por SQLite TEXT, el
-inventario conserva los archivos independientes y devuelve salida 2 con
-`unsupported_path_encoding`, sin traceback ni publicación completa. No
-renombra los originales ni sustituye caracteres para inventar otra ruta.
+No existen los comandos `curate review`, `curate decide`, `curate authorize`,
+`curate apply` ni `curate reconcile`, ni sus flags/API/SDK/MCP asociados. Restore
+operativo y consulta de recovery permanecen separados y sólo muestran evidencia
+o requieren el gate explícito de su propio contrato.
 
 ## Mantenimiento registrado de scratch
 
@@ -880,16 +762,15 @@ El factory reset sólo prueba el borrado local que pudo verificar; no prueba una
 nueva corrida, una release instalada, la reconstrucción del corpus ni la
 disponibilidad de modelos.
 
-## Modelos y GUI
+## Modelos locales
 
 ```bash
 Neocortex --models-status --models-json
 Neocortex --models-prepare --models-json
-Neocortex --ui
 ```
 
-`--models-status` es local; `--models-prepare` puede descargar. La GUI consume los mismos
-contratos y mantiene deshabilitados los efectos de corpus en Linux.
+`--models-status` es local; `--models-prepare` puede descargar. Las operaciones de
+modelos no procesan el corpus ni cambian sus rutas.
 
 La inspección o preparación puede limitarse al modelo solicitado, sin exigir
 todos los modelos productivos:
@@ -913,8 +794,7 @@ se sustituyen por modelos de prueba.
 
 Procesar o consultar offline no prepara modelos: sin backend o archivos locales
 la capacidad declara el requisito ausente. Backend presente, archivos presentes
-y procesamiento comprobado son estados distintos. `--ui --help` no requiere
-Qt; iniciar la UI sí requiere el extra `ui` y bibliotecas de plataforma.
+y procesamiento comprobado son estados distintos.
 
 ## MCP local
 
@@ -922,16 +802,14 @@ Qt; iniciar la UI sí requiere el extra `ui` y bibliotecas de plataforma.
 Neocortex agent serve
 ```
 
-El servidor stdio expone 15 herramientas: consultas read-only como status, search, context,
+El servidor stdio expone herramientas de consulta read-only como status, search, context,
 `lifecycle_status`, `content_diagnostics`, `operational_query`, `evidence`,
 `lineage`, `asset_health`, `curation_plan`, `curation_scan` y
-`curation_verify`. También expone `curation_review` y `curation_decide`: pueden
-escribir únicamente eventos advisory de ReviewTask, están marcadas como no
-destructivas y mantienen `actions_authorized=false`. `evidence` puede recibir
+`curation_verify`. No expone review humano, autorización ni aplicación física.
+`evidence` puede recibir
 `evidence_id` y `expected_snapshot_id`; ningún tool aplica acciones de corpus.
-MCP no expone `curation_authorize`, `curation_apply`, `curation_reconcile` ni
-`curation_restore`: el actor autenticado que podría emitir un grant no está
-resuelto y no se acepta un nombre aportado por el agente como sustituto.
+MCP tampoco expone restore ni conciliación escrita; esas superficies permanecen
+separadas de la consulta y requieren sus propios gates locales.
 
 ## Salida estructurada y códigos
 

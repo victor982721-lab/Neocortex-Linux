@@ -8,7 +8,7 @@ import unicodedata
 import zlib
 from typing import Literal, Protocol, cast
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.platform.policy import sqlite_path_collation
@@ -289,7 +289,7 @@ class PdfRouteStorageMixin:
     ) -> None:
         key = file_key(snapshot)
         signature = self.config.processing_signature
-        digest = xxhash.xxh3_128()
+        digest = sha256.sha256_128()
         normalized_chars = native_pages = ocr_pages = native_chars = ocr_chars = 0
         has_normalized_text = False
         rows = connection.execute(

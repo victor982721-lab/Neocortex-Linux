@@ -1,4 +1,4 @@
-# Pure Python native thread controller; CPython 3.13–3.14.
+# Pure Python native thread controller; CPython 3.13 GIL.
 # Install with --no-index --find-links dev-resources/offline/artifacts --require-hashes.
 # Origin, original bytes and license: ../provenance.json.
 threadpoolctl==3.6.0 --hash=sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb

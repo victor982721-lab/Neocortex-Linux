@@ -17,7 +17,7 @@ from neocortex.foundation.hash_compat import (
     HASH_ALGORITHM_64,
     STABLE_KEY_ALGORITHM,
     stable_sha256_128_hexdigest,
-    xxhash,
+    sha256,
 )
 
 from .derivation_contracts import (
@@ -389,14 +389,14 @@ def _binding_fingerprint(binding: Mapping[str, object]) -> tuple[str, str]:
             if guard is not None:
                 if algorithm.startswith("xxh3-"):
                     guard_label = "xxh3-64-guard"
-                elif algorithm.startswith("sha256-"):
+                elif algorithm.startswith("sha256_"):
                     guard_label = f"{HASH_ALGORITHM_64}-guard"
                 else:
                     guard_label = "hash-64-guard"
                 value += f";{guard_label}={guard}"
             return value, algorithm
     identity = canonical_json({"binding": dict(binding)})
-    return xxhash.xxh3_128_hexdigest(identity.encode("utf-8")), HASH_ALGORITHM_128
+    return sha256.sha256_128_hexdigest(identity.encode("utf-8")), HASH_ALGORITHM_128
 
 
 def _stored_fingerprint_algorithm(raw: object) -> str:
@@ -434,7 +434,7 @@ def _input_contracts(
         fingerprint, algorithm = _binding_fingerprint(binding)
         selected_revision = binding.get("revision_ref")
         if selected_revision is None:
-            resource_digest = xxhash.xxh3_128_hexdigest(f"{kind}\0{identifier}".encode("utf-8"))
+            resource_digest = sha256.sha256_128_hexdigest(f"{kind}\0{identifier}".encode("utf-8"))
             revision_value = binding.get("revision_id")
             selected_revision = RevisionRef(
                 resource_id=f"resource:semantic:{kind}:{resource_digest}",
@@ -586,7 +586,7 @@ def _configuration_contract(
             )
             encoded = canonical_json({"value": sanitized})
             if len(encoded) > _MAX_CONFIGURATION_VALUE_CHARS:
-                safe_fingerprint = xxhash.xxh3_128_hexdigest(encoded.encode("utf-8"))
+                safe_fingerprint = sha256.sha256_128_hexdigest(encoded.encode("utf-8"))
                 encoded = canonical_json(
                     {
                         "capture": "truncated",
@@ -2218,7 +2218,7 @@ def _item_revision_binding(
     )
     revision = RevisionRef(
         resource_id=(
-            "semantic:item:" + xxhash.xxh3_128_hexdigest(str(row["item_id"]).encode("utf-8"))
+            "semantic:item:" + sha256.sha256_128_hexdigest(str(row["item_id"]).encode("utf-8"))
         ),
         revision_id=f"revision:semantic:item:{item_revision_id}",
         producer="semantic.item.snapshot",
@@ -2371,7 +2371,7 @@ def _chunk_revision_binding_from_row(
     chunk_revision_id = int(row["chunk_revision_id"])
     revision = RevisionRef(
         resource_id=(
-            "semantic:text-chunk:" + xxhash.xxh3_128_hexdigest(str(row["chunk_id"]).encode("utf-8"))
+            "semantic:text-chunk:" + sha256.sha256_128_hexdigest(str(row["chunk_id"]).encode("utf-8"))
         ),
         revision_id=f"revision:semantic:chunk:{chunk_revision_id}",
         producer=SEMANTIC_CHUNK_STAGE,
@@ -2706,7 +2706,7 @@ def _legacy_payload_attestation_binding(
             f"semantic attestation schema {schema_version!r} is unsupported"
         )
     payload_fact = _manifest_binding_fact(payload_binding)
-    contract_fingerprint = xxhash.xxh3_128_hexdigest(
+    contract_fingerprint = sha256.sha256_128_hexdigest(
         canonical_json(
             {
                 "payload_id": payload_id,
@@ -2995,7 +2995,7 @@ def _record_manifest_node(
             "inputs": [_manifest_binding_fact(binding) for binding in inputs],
         }
     )
-    digest = xxhash.xxh3_128_hexdigest(encoded.encode("utf-8"))
+    digest = sha256.sha256_128_hexdigest(encoded.encode("utf-8"))
     schema_version = _require_current_receipt_schema(connection)
     output = _manifest_output_binding(
         stage_id=stage_id,
@@ -3061,7 +3061,7 @@ def _record_manifest_tree(
 ) -> tuple[dict[str, object] | None, int, str]:
     """Build a bounded fan-in tree and return its root and exact member digest."""
 
-    member_digest = xxhash.xxh3_128()
+    member_digest = sha256.sha256_128()
     count = 0
     leaves: list[dict[str, object]] = []
     group: list[Mapping[str, object]] = []
@@ -3154,7 +3154,7 @@ def _manifest_contract_tree(
             f"semantic manifest schema {schema_version!r} is unsupported"
         )
 
-    member_digest = xxhash.xxh3_128()
+    member_digest = sha256.sha256_128()
     nodes: list[tuple[dict[str, object], tuple[Mapping[str, object], ...], int, int]] = []
 
     def node(
@@ -3174,7 +3174,7 @@ def _manifest_contract_tree(
                 "inputs": [_manifest_binding_fact(binding) for binding in inputs],
             }
         )
-        digest = xxhash.xxh3_128_hexdigest(encoded.encode("utf-8"))
+        digest = sha256.sha256_128_hexdigest(encoded.encode("utf-8"))
         output = _manifest_output_binding(
             stage_id=stage_id,
             processing_signature=processing_signature,
@@ -3220,7 +3220,7 @@ def _chunk_set_output_binding(
     chunk_count: int,
     members_fingerprint: str,
 ) -> dict[str, object]:
-    output_fingerprint = xxhash.xxh3_128_hexdigest(
+    output_fingerprint = sha256.sha256_128_hexdigest(
         canonical_json(
             {
                 "item_revision_id": item_revision_id,
@@ -3235,7 +3235,7 @@ def _chunk_set_output_binding(
         "kind": "semantic_chunk_set",
         "materialization_id": (
             "materialization:semantic:chunk-set:"
-            + xxhash.xxh3_128_hexdigest(
+            + sha256.sha256_128_hexdigest(
                 f"{item_id}\0{chunking_signature}\0{refresh_token}".encode("utf-8")
             )
         ),
@@ -3730,7 +3730,7 @@ def _payload_binding(
     revision = RevisionRef(
         resource_id=(
             "resource:semantic:vector-payload:"
-            + xxhash.xxh3_128_hexdigest(
+            + sha256.sha256_128_hexdigest(
                 f"{row['model_signature']}\0{row['content_xxh3_128']}".encode("utf-8")
             )
         ),
@@ -3845,11 +3845,11 @@ def _embedding_member_binding_from_row(
             "payload_xxh3_64_guard": str(row["payload_xxh3_64_guard"]),
         }
     )
-    fingerprint = xxhash.xxh3_128_hexdigest(member_contract.encode("utf-8"))
+    fingerprint = sha256.sha256_128_hexdigest(member_contract.encode("utf-8"))
     revision = RevisionRef(
         resource_id=(
             "resource:semantic:embedding-member:"
-            + xxhash.xxh3_128_hexdigest(
+            + sha256.sha256_128_hexdigest(
                 f"{generation_id}\0{row['entity_kind']}\0{row['entity_id']}".encode("utf-8")
             )
         ),
@@ -4019,7 +4019,7 @@ def _record_embedding_clone_batch(
         )
         for row in cloned_rows
     )
-    causal_digest = xxhash.xxh3_128_hexdigest(
+    causal_digest = sha256.sha256_128_hexdigest(
         canonical_json(
             {
                 "inputs": [_manifest_binding_fact(binding) for binding in inputs],
@@ -4465,7 +4465,7 @@ def _record_discarded_embedding_execution(
         effective_config={
             "disposition": "discarded_duplicate_content_payload",
             "incumbent_payload_id": incumbent_payload_id,
-            "observation_contract_xxh3_128": xxhash.xxh3_128_hexdigest(
+            "observation_contract_xxh3_128": sha256.sha256_128_hexdigest(
                 observation_payload.encode("utf-8")
             ),
         },
@@ -4530,7 +4530,7 @@ def _record_embedding_attempt_failure(
         )
         entity_kind = str(row["entity_kind"])
         entity_id = str(row["entity_id"])
-        resource_digest = xxhash.xxh3_128_hexdigest(f"{entity_kind}\0{entity_id}".encode("utf-8"))
+        resource_digest = sha256.sha256_128_hexdigest(f"{entity_kind}\0{entity_id}".encode("utf-8"))
         inputs.append(
             {
                 "kind": f"{entity_kind}_job_input",
@@ -4636,7 +4636,7 @@ def _iter_embedding_member_bindings(
 
 
 def _generation_candidate_binding(row: sqlite3.Row, generation_id: int) -> dict[str, object]:
-    fingerprint = xxhash.xxh3_128_hexdigest(
+    fingerprint = sha256.sha256_128_hexdigest(
         canonical_json(
             {
                 "generation_id": generation_id,
@@ -4698,7 +4698,7 @@ def _record_generation_publication_receipt(
         generation_id=generation_id,
         now_ns=published_ns,
     )
-    generation_fingerprint = xxhash.xxh3_128_hexdigest(
+    generation_fingerprint = sha256.sha256_128_hexdigest(
         canonical_json(
             {
                 "generation_id": generation_id,

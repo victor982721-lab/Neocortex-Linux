@@ -53,11 +53,6 @@ _WHEEL = (
     "Wheel-Version: 1.0\nGenerator: Neocortex fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
 ).encode()
 _ENTRY_POINTS = ("[console_scripts]\nNeocortex = neocortex.interface.entrypoint:entrypoint\n").encode()
-_UI_ASSETS = (
-    "neocortex/interface/presentation/assets/neocortex-app-icon.ico",
-    "neocortex/interface/presentation/assets/neocortex-app-icon.png",
-    "neocortex/interface/presentation/assets/neocortex-app-icon.svg",
-)
 _SOURCE_ONLY_TOOLS = (
     "tools/__init__.py",
     "tools/pip_bootstrap.py",
@@ -66,7 +61,6 @@ _SOURCE_ONLY_TOOLS = (
     "tools/release_linux.py",
 )
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_UI_ASSET_PAYLOADS = {asset: (_PROJECT_ROOT / asset).read_bytes() for asset in _UI_ASSETS}
 
 
 def _record_bytes(files: Mapping[str, bytes]) -> bytes:
@@ -96,7 +90,6 @@ def _wheel_payloads() -> dict[str, bytes]:
         f"{_DIST_INFO}/WHEEL": _WHEEL,
         f"{_DIST_INFO}/entry_points.txt": _ENTRY_POINTS,
     }
-    payloads.update(_UI_ASSET_PAYLOADS)
     return payloads
 
 
@@ -139,7 +132,6 @@ def _sdist_payloads(root: str = _SDIST_ROOT) -> dict[str, bytes]:
         f"{root}/neocortex/interface/entrypoint.py": b"def entrypoint():\n    return 0\n",
         f"{root}/neocortex/py.typed": b"",
     }
-    payloads.update({f"{root}/{path}": payload for path, payload in _UI_ASSET_PAYLOADS.items()})
     payloads.update(
         {f"{root}/{path}": b"# synthetic source-only tool\n" for path in _SOURCE_ONLY_TOOLS}
     )
@@ -509,27 +501,6 @@ def test_valid_wheel_contract_includes_verified_record_and_typed_markers(
     assert validate_release_artifact(path) == report
 
 
-def test_repository_ui_assets_pass_payload_policy(tmp_path: Path) -> None:
-    path = _write_zip(
-        tmp_path / "repository-assets.zip",
-        _UI_ASSET_PAYLOADS,
-    )
-
-    report = inspect_archive(path)
-
-    assert tuple(member.path for member in report.members) == _UI_ASSETS
-
-
-def test_ui_asset_payload_hash_is_pinned(tmp_path: Path) -> None:
-    asset = _UI_ASSETS[1]
-    mutated = bytearray(_UI_ASSET_PAYLOADS[asset])
-    mutated[-1] ^= 1
-    path = _write_zip(tmp_path / "mutated-asset.zip", {asset: bytes(mutated)})
-
-    with pytest.raises(ArtifactValidationError, match="UI asset payload hash"):
-        inspect_archive(path)
-
-
 @pytest.mark.parametrize(
     ("missing", "message"),
     [
@@ -551,17 +522,6 @@ def test_wheel_rejects_missing_contract_members(
     )
 
     with pytest.raises(ArtifactValidationError, match=message):
-        validate_wheel(path)
-
-
-@pytest.mark.parametrize("asset", _UI_ASSETS)
-def test_wheel_requires_all_ui_assets(tmp_path: Path, asset: str) -> None:
-    path = _write_wheel(
-        tmp_path / "neocortex_framework-0.7.2-py3-none-any.whl",
-        remove=(asset,),
-    )
-
-    with pytest.raises(ArtifactValidationError, match="required UI asset"):
         validate_wheel(path)
 
 
@@ -667,16 +627,6 @@ def test_sdist_rejects_missing_contract_content(
     path = _write_sdist(_sdist_path(tmp_path, "missing"), payloads=payloads)
 
     with pytest.raises(ArtifactValidationError, match=message):
-        validate_sdist(path)
-
-
-@pytest.mark.parametrize("asset", _UI_ASSETS)
-def test_sdist_requires_all_ui_assets(tmp_path: Path, asset: str) -> None:
-    payloads = _sdist_payloads()
-    payloads.pop(f"{_SDIST_ROOT}/{asset}")
-    path = _write_sdist(_sdist_path(tmp_path, "missing-asset"), payloads=payloads)
-
-    with pytest.raises(ArtifactValidationError, match="required UI asset"):
         validate_sdist(path)
 
 

@@ -14,8 +14,8 @@ todo este catálogo como una lista de trabajos pendientes.
 | [Inventario y catálogo](subprojects/inventory-catalog.md) | [`neocortex/deduplication`](../neocortex/deduplication/AGENTS.md), [`neocortex/documents`](../neocortex/documents/AGENTS.md) | identidad, catálogo, duplicados, ámbito y planificación |
 | [Ingesta de formatos](subprojects/formats.md) | [`neocortex/capabilities`](../neocortex/capabilities/AGENTS.md) | rutas, extracción, límites y cobertura |
 | [Semantic y Knowledge](subprojects/retrieval-context.md) | [`neocortex/semantic`](../neocortex/semantic/AGENTS.md), [`neocortex/knowledge`](../neocortex/knowledge/AGENTS.md) | publicación, recuperación, citas y contexto |
-| [Curación y efectos](subprojects/curation-effects.md) | [`neocortex/curation`](../neocortex/curation/AGENTS.md), [`neocortex/workflow`](../neocortex/workflow/AGENTS.md) | review, grants, aplicación, verificación y recuperación |
-| [Interfaces públicas](subprojects/interfaces.md) | [`neocortex/api`](../neocortex/api/AGENTS.md), [`neocortex/interface`](../neocortex/interface/AGENTS.md) | CLI, API/SDK, GUI y MCP |
+| [Curación y efectos](subprojects/curation-effects.md) | [`neocortex/curation`](../neocortex/curation/AGENTS.md), [`neocortex/workflow`](../neocortex/workflow/AGENTS.md) | evidencia, aplicación automática, verificación y recuperación |
+| [Interfaces públicas](subprojects/interfaces.md) | [`neocortex/api`](../neocortex/api/AGENTS.md), [`neocortex/interface`](../neocortex/interface/AGENTS.md) | CLI, API/SDK y MCP |
 | [Desarrollo y distribución](subprojects/development-release.md) | [`tools`](../tools/AGENTS.md), [`tests`](../tests/AGENTS.md) | validación individual, fixtures, empaquetado y release |
 
 ## Superficies compartidas
@@ -29,7 +29,7 @@ progreso/control con runtime y SDK con interfaces. `semgrep` es una
 herramienta de desarrollo, no una capacidad del producto.
 
 `neocortex.api.status_codes` traduce los resultados de lectura al contrato común
-de códigos de salida; API/SDK, GUI y MCP no necesitan importar la CLI para usarlo.
+de códigos de salida; API/SDK y MCP no necesitan importar la CLI para usarlo.
 `neocortex.foundation.processing_provenance` mantiene la revisión compartida de
 procedencia y sus caches, sin asumir la autoridad de los owners que la consumen.
 `neocortex.semantic.semantic_models` define `TextSourceRecord`; el adaptador Video

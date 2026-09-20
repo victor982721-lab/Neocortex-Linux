@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, HASH_ALGORITHM_64, xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, HASH_ALGORITHM_64, sha256
 
 from neocortex.semantic import semantic_evidence_repository, semantic_generation_repository, semantic_schema
 from neocortex.semantic.derivation_contracts import WorkReceipt
@@ -1050,11 +1050,11 @@ def test_failed_and_repeated_cancelled_attempts_keep_distinct_terminal_receipts(
     assert "FAILURE_SECRET_MUST_NOT_ESCAPE" not in serialized_receipts
     assert "ERROR_TYPE_SECRET_MUST_NOT_ESCAPE" not in serialized_receipts
     assert (
-        xxhash.xxh3_128_hexdigest(b"api_key=FAILURE_SECRET_MUST_NOT_ESCAPE")
+        sha256.sha256_128_hexdigest(b"api_key=FAILURE_SECRET_MUST_NOT_ESCAPE")
         not in serialized_receipts
     )
     assert (
-        xxhash.xxh3_128_hexdigest(b"ERROR_TYPE_SECRET_MUST_NOT_ESCAPE") not in serialized_receipts
+        sha256.sha256_128_hexdigest(b"ERROR_TYPE_SECRET_MUST_NOT_ESCAPE") not in serialized_receipts
     )
     assert "message_capture" in serialized_receipts
     assert all(receipt["outputs"] == [] for receipt in receipts)

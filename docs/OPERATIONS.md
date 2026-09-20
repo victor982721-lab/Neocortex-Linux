@@ -573,46 +573,25 @@ explícita y autorizada.
 
 ## Curación
 
-**CURRENT — consulta:**
+**CURRENT — consulta bounded:**
 
 ```bash
 Neocortex --curation-preview 50 --curation-json
 Neocortex curate plan --limit 50 --json
+Neocortex curate scan --limit 50 --json
+Neocortex curate verify PLAN_ID --limit 100 --json
 ```
 
-**IMPLEMENTED — revisión advisory:** toma `plan_digest` como `PLAN_ID`, publica
-cada página y decide usando el event head devuelto:
+Estas operaciones sólo leen el plan publicado y revalidan evidencia. No crean
+ReviewTask, colas, eventos, grants ni `file_actions`. La clasificación automática
+conserva evidencia, razón e incertidumbre; ante una precondición incierta,
+`UNKNOWN` se conserva como KEEP.
 
-```bash
-Neocortex curate review PLAN_ID --limit 50 --json
-Neocortex curate decide PLAN_ID ITEM_ID --expected-event-id EVENT_ID \
-  --decision resolved --decision-scope until-source-change --actor ACTOR --json
-Neocortex curate authorize PLAN_ID --item-id ITEM_ID --action move \
-  --actor ACTOR --expires-ns NS --max-bytes BYTES --json
-```
-
-Revisa coverage, digest, snapshot, `current_event_id` y efecto declarado. Review
-y decide escriben únicamente ReviewTask en Framework; no crean `file_actions`,
-no autorizan ni modifican corpus o sistemas externos. Authorize exige items
-resueltos, action, actor, expiración futura y presupuesto; persiste un grant
-inmutable en Framework. Conserva el `grant_id`, pero no lo interpretes como
-receipt: no creó `file_actions` ni aplicó nada. Un digest/event head cambiado
-requiere volver a consultar, no reintentar a ciegas. `--json` no exporta ni crea
-ZIP, y MCP no ofrece authorize sin actor autenticado.
-
-**IMPLEMENTED sobre fixtures y canaria local:** `curate apply` consume un grant
-confirmado y revalida su manifest antes de cada efecto, `curate reconcile`
-registra observaciones sin reintentar y `curate restore preview/apply` ofrece
-una reversión no-replace con un intent separado. `dedupe --apply` y
-`--all --apply` usan KIO receipt-bound con claim same-filesystem; la canaria
-privada verifica que las cuotas no borren testigos y que la restauración nativa
-sea observable. La interacción visual única de Dolphin permanece como gate
-humano independiente.
-
-```bash
-Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json
-Neocortex curate reconcile --actor ACTOR --confirm-reconcile --json
-```
+**Efectos automáticos:** `--apply` es el único gate de usuario para acciones
+seguras de alta confianza dentro de la raíz seleccionada. Las fences físicas,
+receipts y recovery siguen siendo obligatorias; una operación ambigua termina
+en `recovery_required` y no se reintenta a ciegas. No existe una ceremonia
+separada de `review`, `decide`, `authorize`, `curate apply` o `reconcile`.
 
 ## Índice exacto derivado de Semantic
 
@@ -962,16 +941,16 @@ el checkout actual.
 
 La [instalación ordinaria offline](LINUX_KUBUNTU.md#instalación-ordinaria-desde-una-extracción)
 en venv CPython 3.13 no promueve una release ni requiere Git. El procedimiento
-siguiente conserva el contrato de instalación personal CPython 3.14.
+siguiente conserva el contrato de instalación personal CPython 3.13.
 
 La construcción e instalación de paquetes Python es offline y reproducible
 desde un wheelhouse local autenticado:
 
 ```bash
-python3.14 tools/release_linux.py install \
+python3.13 tools/release_linux.py install \
   --corpus-root "$HOME/Documentos/NeoCortex/Corpus" \
-  --wheelhouse "$Wheelhouse" --prepare-models --desktop
-python3.14 tools/release_linux.py verify
+  --wheelhouse "$Wheelhouse" --prepare-models
+python3.13 tools/release_linux.py verify
 ```
 
 No existe fallback de red para esos paquetes. El wheelhouse contiene
@@ -981,7 +960,7 @@ la instalación se abstiene; no cambies constraints para sortearla.
 `--prepare-models` es una operación adicional explícita que puede adquirir pesos
 y requiere su autorización; omítela cuando sólo corresponda usar modelos locales.
 
-Una release termina cuando artefacto, manifest, launcher y `source_sha`
+Una release productiva base termina cuando artefacto, manifest, launcher y `source_sha`
 coinciden, el smoke público pasa sin `PYTHONPATH`, el replay es verificable,
 staging queda vacío y sólo permanecen `current` y el rollback inmediato.
 Conserva además la distinción entre corpus operativo y raíz temporal de smoke;

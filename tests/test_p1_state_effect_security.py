@@ -149,13 +149,13 @@ def test_restore_rejects_trash_directory_replacement_before_rename(
             original_action_id=1,
             effect=effect,
             root=corpus,
+            root_snapshot=root_snapshot,
             trash_path=trash_item,
             info_path=info_item,
             trash_root=trash,
             trash_root_snapshot=trash_root_snapshot,
             trash_volume_id=item_snapshot.volume_id,
             trash_file_id=item_snapshot.file_id,
-            grant=SimpleNamespace(root_snapshot=root_snapshot),
         ),
     )
     monkeypatch.setattr(recovery, "_verify_trash_candidate", lambda _candidate: item_snapshot)

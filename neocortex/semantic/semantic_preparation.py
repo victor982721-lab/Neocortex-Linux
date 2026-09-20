@@ -11,7 +11,7 @@ from pathlib import Path
 from neocortex.platform.policy import stat_birthtime_ns
 from typing import Protocol, cast
 
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256
 
 from .semantic_backends import (
     EmbeddingBackend,
@@ -92,7 +92,7 @@ def resolve_text_token_guard(
         identity = f"exact-token-fit-v1\0{model.model_signature}\0{token_limit}"
         tokenizer_signature = (
             f"exact-token-fit-v1:fixture-{HASH_ALGORITHM_128}:"
-            f"{xxhash.xxh3_128_hexdigest(identity.encode('utf-8'))}"
+            f"{sha256.sha256_128_hexdigest(identity.encode('utf-8'))}"
         )
     if not isinstance(tokenizer_signature, str) or not tokenizer_signature.strip():
         raise RuntimeError("text backend returned an invalid tokenizer signature")

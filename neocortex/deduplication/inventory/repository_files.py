@@ -161,27 +161,16 @@ class FileRepositoryMixin:
         *,
         cached_only: bool = False,
     ) -> FingerprintObservation | None:
-        """Observe fresh samples or a full digest without inventing full proof."""
+        """Observe the canonical full digest without inventing proof."""
 
         from ..content_observation import observe_content_fingerprint
-        from ..fingerprinting import PARTIAL_ALGORITHM
 
-        evidence = (
-            None if algorithm == PARTIAL_ALGORITHM and not cached_only
-            else self.fingerprint_cache_evidence(snapshot, algorithm)
-        )
+        from ..fingerprinting import FULL_ALGORITHM
+        if algorithm != FULL_ALGORITHM:
+            raise ValueError("deduplication requires the canonical full SHA-256 algorithm")
+        evidence = self.fingerprint_cache_evidence(snapshot, algorithm)
         if cached_only and evidence is None:
             return None
-        if cached_only and algorithm == PARTIAL_ALGORITHM:
-            # A historical partial cache is trusted only after the complete
-            # content has been checked. Normal planning samples never take
-            # this path and always read fresh sample ranges first.
-            observed = observe_content_fingerprint(snapshot, FULL_ALGORITHM)
-            if evidence is None or observed.full_digest != evidence[1]:
-                return None
-            from dataclasses import replace
-            return replace(observed, algorithm=algorithm, digest=evidence[0], cache_hit=True,
-                           validation_read_bytes=observed.full_read_bytes)
         return observe_content_fingerprint(snapshot, algorithm, cached_evidence=evidence)
 
     def fingerprint_cache_evidence(

@@ -1,13 +1,12 @@
-"""Grant-bound, no-replace restoration of curation trash effects.
+"""Receipt-bound, no-replace restoration of framework Trash effects.
 
-Restoration is a separate human-gated effect.  It creates its own
+Restoration is a separate explicit effect.  It creates its own
 ``file_actions`` intent before moving anything, consumes only the original
-grant/effect receipt, and never exposes a restore mutation through MCP.
+Trash receipt, and never exposes a restore mutation through MCP.
 """
 
 from __future__ import annotations
 
-import ctypes
 import errno
 import hashlib
 import json
@@ -19,7 +18,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol
 
-from neocortex.curation.application import _open_parent_dirfd
 from neocortex.deduplication import (
     FileChangedError,
     FileSnapshot,
@@ -28,23 +26,20 @@ from neocortex.deduplication import (
     snapshot_path,
     stat_matches_snapshot,
 )
-from neocortex.persistence.framework_authorization_schema import (
-    AUTHORIZATION_GRANTS_TABLE,
-    authorization_extension_present,
-    validate_authorization_extension,
-)
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.workflow.actions.action_policy import validate_mutation_path
-from neocortex.workflow.authorization.contracts import AuthorizationEffect, AuthorizationGrant
-from neocortex.workflow.authorization.repository import (
-    _COLUMNS as AUTHORIZATION_GRANT_COLUMNS,
-    _grant_from_row,
-    _require_framework,
-)
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
 from neocortex.persistence.sqlite_immutable import SQLiteReadSession, preferred_sqlite_read_mode
-from neocortex.safety.kio_trash import trash_receipt_paths, verify_trash_receipt_evidence
+from neocortex.safety.kio_trash import (
+    is_metadata_binding,
+    metadata_binding,
+    trash_receipt_paths,
+    verify_trash_receipt_evidence,
+)
+# Restore keeps its receipt lifecycle, but shares the neutral descriptor
+# traversal and no-replace syscall with forward mutations.
+from neocortex.workflow.mutations import _open_parent_dirfd, _renameat2_noreplace
 
 
 CURATION_RESTORE_SCHEMA = "neocortex.curation-restore/v1"
@@ -66,12 +61,20 @@ def _readonly_state(database: Path):
 
 
 @dataclass(frozen=True, slots=True)
+class _RestoreEffect:
+    action: str
+    source: FileSnapshot
+    source_digest: str
+    target_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RestoreCandidate:
     action_id: int
     original_action_id: int
-    grant: AuthorizationGrant
-    effect: AuthorizationEffect
+    effect: _RestoreEffect
     root: Path
+    root_snapshot: FileSnapshot
     trash_path: Path
     info_path: Path
     trash_root: Path
@@ -145,6 +148,12 @@ def _digest(snapshot: FileSnapshot) -> str:
     return f"{FULL_ALGORITHM}:" + full_fingerprint(snapshot).hex()
 
 
+def _binding_matches_snapshot(snapshot: FileSnapshot, binding: str) -> bool:
+    if is_metadata_binding(binding):
+        return metadata_binding(snapshot) == binding
+    return _digest(snapshot) == binding
+
+
 def _snapshot_identity(snapshot: FileSnapshot) -> tuple[int, int, int]:
     return snapshot.volume_id, snapshot.file_id, snapshot.birthtime_ns
 
@@ -201,30 +210,12 @@ def _rename_noreplace(
                 or not stat_matches_snapshot(expected_source, source_metadata)
             ):
                 raise FileChangedError("restore source changed before rename")
-        libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = getattr(libc, "renameat2", None)
-        if renameat2 is None:
-            raise OSError(errno.ENOSYS, "renameat2 is unavailable")
-        renameat2.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        renameat2.restype = ctypes.c_int
-        if (
-            renameat2(
-                source_fd,
-                os.fsencode(source_name),
-                destination_fd,
-                os.fsencode(destination_name),
-                1,
-            )
-            != 0
-        ):
-            error_number = ctypes.get_errno()
-            raise OSError(error_number, os.strerror(error_number))
+        _renameat2_noreplace(
+            source_fd,
+            source_name,
+            destination_fd,
+            destination_name,
+        )
     finally:
         for descriptor in (source_file_fd, source_fd, destination_fd):
             if descriptor is not None:
@@ -280,56 +271,21 @@ def _restore_receipt_valid(
     )
 
 
-def _read_authorization_grant_from_connection(
-    connection: sqlite3.Connection,
-    *,
-    grant_id: str,
-) -> AuthorizationGrant | None:
-    """Read the grant through the caller's already-fenced connection.
-
-    The restore preview must not open a second connection to the Framework
-    owner: doing so could observe a different WAL snapshot from the action row
-    that selected the grant.  The repository parser remains the single source
-    of grant decoding and validation, while all SQL reads share one
-    ``SQLiteReadSession`` (or the writer connection owned by ``apply``).
-    """
-
-    _require_framework(connection)
-    if not authorization_extension_present(connection):
-        return None
-    validate_authorization_extension(connection)
-    cursor = connection.execute(
-        f"SELECT {AUTHORIZATION_GRANT_COLUMNS} FROM {AUTHORIZATION_GRANTS_TABLE} WHERE grant_id=?",
-        (grant_id,),
-    )
-    rows = cursor.fetchall()
-    if len(rows) > 1:
-        raise RuntimeError("AuthorizationGrant lookup is ambiguous")
-    if not rows:
-        return None
-    row = rows[0]
-    if not isinstance(row, sqlite3.Row):
-        row = sqlite3.Row(cursor, row)
-    return _grant_from_row(row)
-
-
 def _original_receipt_parts(
     receipt_json: str,
     *,
     action_id: int,
-    grant_id: str,
-    effect: AuthorizationEffect,
+    source: FileSnapshot,
+    source_digest: str,
 ) -> tuple[Path, Path, Path, FileSnapshot, int, int]:
-    """Validate the apply receipt and return its fixture Trash paths."""
+    """Validate one action receipt and return its fixture Trash paths."""
 
     try:
         receipt = json.loads(receipt_json)
         if not isinstance(receipt, dict):
             raise ValueError("original trash receipt is not an object")
         trash = receipt["trash"]
-        trash_root, trash_path, info_path = trash_receipt_paths(
-            trash, effect.source, effect.source_digest
-        )
+        trash_root, trash_path, info_path = trash_receipt_paths(trash, source, source_digest)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("original trash receipt is malformed") from exc
     if (
@@ -337,13 +293,11 @@ def _original_receipt_parts(
         or receipt.get("receipt_type") != "successful_return_and_observation"
         or receipt.get("operation") != "trash"
         or receipt.get("source_absent") is not True
-        or receipt.get("source_path") != effect.source.path
+        or receipt.get("source_path") != source.path
         or receipt.get("target_path") is not None
-        or receipt.get("effect_id") != effect.effect_id
-        or receipt.get("grant_id") != grant_id
-        or receipt.get("source_digest") != effect.source_digest
+        or receipt.get("source_digest") != source_digest
     ):
-        raise ValueError(f"trash receipt for action {action_id} is not bound to its grant effect")
+        raise ValueError(f"trash receipt for action {action_id} is not bound to its source")
     try:
         root_snapshot = snapshot_path(trash_root)
     except OSError as exc:
@@ -353,8 +307,8 @@ def _original_receipt_parts(
         trash_path,
         info_path,
         root_snapshot,
-        effect.source.volume_id,
-        effect.source.file_id,
+        source.volume_id,
+        source.file_id,
     )
 
 
@@ -387,13 +341,13 @@ def _verify_restored_source(candidate: RestoreCandidate) -> None:
     if (
         restored != candidate.effect.source
         or not stat_matches_snapshot(candidate.effect.source, metadata)
-        or _digest(restored) != candidate.effect.source_digest
+        or not _binding_matches_snapshot(restored, candidate.effect.source_digest)
     ):
         raise ValueError("restored source identity or digest differs")
 
 
 def _verify_restore_postconditions(candidate: RestoreCandidate) -> None:
-    _verify_grant_root(candidate)
+    _verify_root(candidate)
     _verify_restored_source(candidate)
     for path, role in (
         (candidate.trash_path, "restored trash file"),
@@ -404,20 +358,18 @@ def _verify_restore_postconditions(candidate: RestoreCandidate) -> None:
             raise ValueError("restore receipt conflicts with retained Trash evidence")
 
 
-def _verify_grant_root(candidate: RestoreCandidate) -> None:
-    expected = candidate.grant.root_snapshot
-    if expected is None:
-        raise ValueError("grant lacks a root snapshot")
+def _verify_root(candidate: RestoreCandidate) -> None:
+    expected = candidate.root_snapshot
     metadata = os.lstat(candidate.root)
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise ValueError("grant root is not a real directory")
+        raise ValueError("restore root is not a real directory")
     current = snapshot_path(candidate.root)
     if _snapshot_identity(current) != (
         expected.volume_id,
         expected.file_id,
         expected.birthtime_ns,
     ):
-        raise ValueError("grant root identity changed")
+        raise ValueError("restore root identity changed")
 
 
 class PosixRestoreBackend:
@@ -444,13 +396,7 @@ class PosixRestoreBackend:
             return RestoreOutcome(candidate.action_id, "blocked", "restore_root_not_directory")
         if (
             self.trash_root != candidate.trash_root
-            or candidate.grant.root_snapshot is None
-            or _snapshot_identity(root_snapshot)
-            != (
-                candidate.grant.root_snapshot.volume_id,
-                candidate.grant.root_snapshot.file_id,
-                candidate.grant.root_snapshot.birthtime_ns,
-            )
+            or _snapshot_identity(root_snapshot) != _snapshot_identity(candidate.root_snapshot)
         ):
             return RestoreOutcome(candidate.action_id, "blocked", "restore_root_identity_changed")
         files_root = self.trash_root / "files"
@@ -567,36 +513,71 @@ class PosixRestoreBackend:
             )
 
 
+def _source_snapshot_from_expected(raw: object, *, source_path: str) -> FileSnapshot:
+    """Decode the action owner's canonical identity without legacy state."""
+
+    try:
+        document = json.loads(str(raw))
+        source = document["source"]
+        if (
+            not isinstance(document, dict)
+            or not isinstance(source, dict)
+            or document.get("schema_version") != 1
+            or document.get("target_path") is not None
+            or source.get("path") != source_path
+        ):
+            raise ValueError("expected identity is not bound to the Trash source")
+        volume_id = int(str(source["volume_id"]), 16)
+        file_id = int(str(source["file_id"]), 16)
+        size = source["size"]
+        mtime_ns = source["mtime_ns"]
+        birthtime_ns = source["birthtime_ns"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("expected identity is malformed") from exc
+    if (
+        volume_id < 0
+        or file_id < 0
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or size < 0
+        or isinstance(mtime_ns, bool)
+        or not isinstance(mtime_ns, int)
+        or mtime_ns < 0
+        or isinstance(birthtime_ns, bool)
+        or not isinstance(birthtime_ns, int)
+        or birthtime_ns < -1
+    ):
+        raise ValueError("expected identity contains invalid metadata")
+    snapshot = FileSnapshot(source_path, volume_id, file_id, size, mtime_ns, birthtime_ns)
+    if json.loads(expected_identity_json(snapshot, source_path=source_path, target_path=None)) != document:
+        raise ValueError("expected identity is not canonical")
+    return snapshot
+
+
 def _candidate_from_action(
     state: FrameworkState | _ReadonlyState,
     action_id: int,
 ) -> tuple[RestoreCandidate, int, str]:
     row = state._connection.execute(
-        """SELECT run_id,status,action_type,source_path,target_path,evidence,
-        effect_receipt_json FROM file_actions WHERE action_id=?""",
+        """SELECT run_id,status,action_type,source_path,target_path,
+        effect_receipt_json,expected_identity_json
+        FROM file_actions WHERE action_id=?""",
         (action_id,),
     ).fetchone()
     if row is None:
         raise ValueError("file action does not exist")
-    if str(row[2]) != "trash_curation":
-        raise ValueError("only a curation trash action can be restored")
+    if not str(row[2]).startswith("trash_"):
+        raise ValueError("only a Trash action can be restored")
     if str(row[1]) not in {"applied", "recovery_required"}:
         raise ValueError("file action is not restorable from its current status")
     if row[3] is None or row[4] is not None or row[5] is None or row[6] is None:
-        raise ValueError("file action lacks a complete curation receipt")
+        raise ValueError("file action lacks a complete Trash receipt")
     try:
-        intent = json.loads(str(row[5]))
-        effect_id = str(intent["effect"]["effect_id"])
-        grant_id = str(intent["grant_id"])
-        grant = _read_authorization_grant_from_connection(
-            state._connection,
-            grant_id=grant_id,
-        )
-        if grant is None or grant.authorized_effects is None or grant.root_snapshot is None:
-            raise ValueError("authorization grant is unavailable for restore")
-        effect = next(
-            effect for effect in grant.authorized_effects if effect.effect_id == effect_id
-        )
+        source = _source_snapshot_from_expected(str(row[6]), source_path=str(row[3]))
+        receipt = json.loads(str(row[5]))
+        source_digest = receipt.get("source_digest")
+        if not isinstance(source_digest, str) or not source_digest:
+            raise ValueError("Trash receipt has no source digest")
         (
             trash_root,
             trash_path,
@@ -605,21 +586,35 @@ def _candidate_from_action(
             trash_volume_id,
             trash_file_id,
         ) = _original_receipt_parts(
-            str(row[6]),
+            str(row[5]),
             action_id=action_id,
-            grant_id=grant.grant_id,
-            effect=effect,
+            source=source,
+            source_digest=source_digest,
         )
-    except (KeyError, TypeError, ValueError, StopIteration, json.JSONDecodeError) as exc:
-        raise ValueError("file action curation receipt is malformed") from exc
-    if str(row[3]) != effect.source.path:
-        raise ValueError("file action source differs from its grant effect")
+        root_rows = state._connection.execute(
+            "SELECT root FROM initial_runs WHERE run_id=? LIMIT 2",
+            (int(row[0]),),
+        ).fetchall()
+        if len(root_rows) != 1:
+            raise ValueError("Trash action run has no unique root")
+        root = Path(str(root_rows[0][0]))
+        if not root.is_absolute():
+            raise ValueError("Trash action root is not absolute")
+        root_snapshot = snapshot_path(root)
+        effect = _RestoreEffect(
+            action="trash",
+            source=source,
+            source_digest=source_digest,
+            target_path=None,
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
+        raise ValueError("file action Trash receipt is malformed") from exc
     candidate = RestoreCandidate(
         action_id=action_id,
         original_action_id=action_id,
-        grant=grant,
         effect=effect,
-        root=Path(grant.root),
+        root=root,
+        root_snapshot=root_snapshot,
         trash_path=trash_path,
         info_path=info_path,
         trash_root=trash_root,
@@ -627,8 +622,8 @@ def _candidate_from_action(
         trash_volume_id=trash_volume_id,
         trash_file_id=trash_file_id,
     )
-    _verify_grant_root(candidate)
-    return candidate, int(row[0]), str(row[6])
+    _verify_root(candidate)
+    return candidate, int(row[0]), str(row[5])
 
 
 def restore_curation_preview(database: Path, action_id: int) -> dict[str, object]:
@@ -654,8 +649,7 @@ def restore_curation_preview(database: Path, action_id: int) -> dict[str, object
             "schema": CURATION_RESTORE_SCHEMA,
             "schema_version": 1,
             "action_id": action_id,
-            "grant_id": candidate.grant.grant_id,
-            "effect_id": candidate.effect.effect_id,
+            "action_type": "trash",
             "source_path": candidate.effect.source.path,
             "trash_path": str(candidate.trash_path),
             "info_path": str(candidate.info_path),
@@ -695,12 +689,11 @@ def restore_curation_action(
             intent = _canonical_json(
                 {
                     "actor": actor,
-                    "effect_id": original.effect.effect_id,
-                    "grant_id": original.grant.grant_id,
                     "original_action_id": action_id,
                     "original_receipt_digest": hashlib.sha256(
                         original_receipt.encode("utf-8")
                     ).hexdigest(),
+                    "source_path": original.effect.source.path,
                     "schema": RESTORE_INTENT_SCHEMA,
                 }
             )
@@ -767,10 +760,8 @@ def restore_curation_action(
             payload = json.loads(expected)
             payload.update(
                 {
-                    "grant_id": original.grant.grant_id,
                     "original_action_id": action_id,
                     "restore_actor": actor,
-                    "restore_effect_id": original.effect.effect_id,
                     "source_digest": original.effect.source_digest,
                 }
             )

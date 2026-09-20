@@ -16,15 +16,12 @@ from ..domain.errors import FileChangedError
 from ..domain.evidence import KeeperPolicy
 from ..fingerprinting import (
     FULL_ALGORITHM,
-    PARTIAL_ALGORITHM,
     files_equal_exact,
     snapshot_path,
     DEFAULT_IO_CHUNK_SIZE,
-    DEFAULT_SAMPLE_SIZE,
 )
 from ..inventory.index import DedupIndex
 from .pipeline import (
-    DEFAULT_PARTIAL_THRESHOLD as DEFAULT_PARTIAL_THRESHOLD,
     FINGERPRINT_WRITE_BATCH_SIZE as FINGERPRINT_WRITE_BATCH_SIZE,
     MAX_EXACT_HASH_COLLISION_SETS as MAX_EXACT_HASH_COLLISION_SETS,
     MAX_REDUNDANT_MEMBERS_PER_GROUP as MAX_REDUNDANT_MEMBERS_PER_GROUP,
@@ -45,17 +42,13 @@ class DedupPlanner:
         self,
         index: DedupIndex,
         *,
-        partial_threshold: int = DEFAULT_PARTIAL_THRESHOLD,
         keeper_policy: KeeperPolicy | None = None,
         keeper_validation: Callable[[], None] | None = None,
         resource_gate=None,
         cancellation=None,
         max_workers: int | None = None,
     ):
-        if partial_threshold < 0:
-            raise ValueError("partial_threshold cannot be negative")
         self._index = index
-        self._partial_threshold = partial_threshold
         self._keeper_policy = keeper_policy or KeeperPolicy()
         if keeper_validation is not None and not callable(keeper_validation):
             raise TypeError("keeper_validation must be callable")
@@ -90,14 +83,13 @@ class DedupPlanner:
         ) as grant, resource_grant_scope(grant):
             yield grant
 
-    def _fingerprint(self, snapshot: FileSnapshot, *, partial: bool) -> FingerprintObservation:
-        algorithm = PARTIAL_ALGORITHM if partial else FULL_ALGORITHM
+    def _fingerprint(self, snapshot: FileSnapshot) -> FingerprintObservation:
+        algorithm = FULL_ALGORITHM
         if self._cancellation is not None:
             from ..content_observation import observe_content_fingerprint
             return observe_content_fingerprint(
                 snapshot, algorithm,
-                cached_evidence=None if partial else self._index.fingerprint_cache_evidence(snapshot, algorithm),
-                expected_ctime_ns=None if partial else self._index.planning_observed_change_version(snapshot),
+                cached_evidence=self._index.fingerprint_cache_evidence(snapshot, algorithm),
                 checkpoint=self._checkpoint,
             )
         observation = self._index.observe_fingerprint(snapshot, algorithm)
@@ -106,12 +98,12 @@ class DedupPlanner:
 
     @contextmanager
     def _fingerprint_batch(
-        self, snapshots: Iterable[FileSnapshot], *, partial: bool, after_partial: bool = False,
+        self, snapshots: Iterable[FileSnapshot],
     ) -> Iterator[Iterator[FingerprintResult]]:
         from neocortex.runtime.control.elastic_workers import ImmediateResult, elastic_map
         from ..content_observation import observe_content_fingerprint
 
-        algorithm = PARTIAL_ALGORITHM if partial else FULL_ALGORITHM
+        algorithm = FULL_ALGORITHM
 
         def prepare(snapshot: FileSnapshot):
             # elastic_map invokes preparation and consumes results on this
@@ -119,35 +111,30 @@ class DedupPlanner:
             if self._cancellation is not None:
                 self._cancellation.checkpoint()
             try:
-                if after_partial:
-                    complete = self._index.planning_full_observation(snapshot)
-                    if complete is not None:
-                        return ImmediateResult((snapshot, complete))
-                evidence = None if partial else self._index.fingerprint_cache_evidence(snapshot, algorithm)
-                version = self._index.planning_observed_change_version(snapshot) if after_partial else None
-                return snapshot, evidence, version
+                evidence = self._index.fingerprint_cache_evidence(snapshot, algorithm)
+                return snapshot, evidence, None
             except (OSError, FileChangedError) as exc:
                 return ImmediateResult((snapshot, exc))
 
         def observe(task):
-            snapshot, evidence, version = task
+            snapshot, evidence, _version = task
             try:
                 result = observe_content_fingerprint(
-                    snapshot, algorithm, cached_evidence=evidence, expected_ctime_ns=version,
+                    snapshot, algorithm, cached_evidence=evidence,
                     checkpoint=self._checkpoint,
                 )
                 return snapshot, result
             except (OSError, FileChangedError) as exc:
                 return snapshot, exc
 
-        buffer_size = DEFAULT_SAMPLE_SIZE * 2 if partial else DEFAULT_IO_CHUNK_SIZE
+        buffer_size = DEFAULT_IO_CHUNK_SIZE
         with elastic_map(
             observe, snapshots, gate=self._resource_gate, prepare=prepare,
             estimated_bytes=lambda snapshot: min(snapshot.size, buffer_size) + 64 * 1024,
             max_workers=self._max_workers, native_threads=1,
             cancellation=self._cancellation, io_slots=1,
             io_device=lambda snapshot: str(snapshot.volume_id),
-            phase="dedup_sample" if partial else "dedup_full",
+            phase="dedup_full",
         ) as results:
             yield results
 
@@ -219,7 +206,6 @@ class DedupPlanner:
         return PlanningSession(
             self._index,
             scan_id,
-            partial_threshold=self._partial_threshold,
             progress=progress,
             preview_limit=preview_limit,
             exact_compare=exact_compare,

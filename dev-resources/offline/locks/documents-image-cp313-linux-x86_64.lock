@@ -1,6 +1,6 @@
 # CPython 3.13.5 GIL, Linux x86_64, glibc 2.41 target wheel resolution.
-# Versions reused from the CPython 3.14 product constraints where compatible;
-# this closure was resolved separately against original cp313/abi3 wheels.
+# This closure is resolved for the CPython 3.13 GIL ABI against original
+# cp313/abi3 wheels.
 # Install with --no-index --find-links dev-resources/offline/artifacts --require-hashes.
 # Artifact origin, compatibility tags and licenses: ../provenance.json.
 # Profile: documents-image; complete transitive closure for this profile only.

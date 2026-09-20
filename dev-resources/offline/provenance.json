@@ -1,6 +1,6 @@
 {
-  "artifact_bytes": 49039753,
-  "artifact_count": 22,
+  "artifact_bytes": 48819194,
+  "artifact_count": 21,
   "artifacts": [
     {
       "declared_license_files": [
@@ -1392,45 +1392,6 @@
       "wheel_tags": [
         "py3-none-any"
       ]
-    },
-    {
-      "declared_license_files": [
-        "LICENSE"
-      ],
-      "filename": "xxhash-3.8.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
-      "license_classifiers": [],
-      "license_expression": null,
-      "license_field": "BSD-2-Clause",
-      "licenses": [
-        {
-          "path": "licenses/xxhash-3.8.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64/xxhash-3.8.1.dist-info/licenses/LICENSE",
-          "sha256": "b3c620adc9a8812cc0c3c7fc09567fa9a9930d3546de955dfb955b168cf989ac",
-          "size_bytes": 1313,
-          "source_member": "xxhash-3.8.1.dist-info/licenses/LICENSE"
-        }
-      ],
-      "metadata_sha256": "094d7cef90a1a90124a7093cbf4cccfb9eb7336e16db01861be57ab01367076e",
-      "name": "xxhash",
-      "origin_verification": "PyPI HTTPS release metadata SHA-256 and byte size",
-      "profiles": [
-        "fast-hash"
-      ],
-      "requires_dist": [],
-      "requires_python": ">=3.8",
-      "sha256": "98ee81b4b7f3023c9cb04a78cc67610baffcb5812d92f2096cb5a5efc6f19437",
-      "size_bytes": 220559,
-      "source_metadata_sha256": "36227bd7a70d869f2c449f13b5638340d7193e933ed89113ab69fd319f38cdd6",
-      "source_metadata_url": "https://pypi.org/pypi/xxhash/3.8.1/json",
-      "source_sha256": "98ee81b4b7f3023c9cb04a78cc67610baffcb5812d92f2096cb5a5efc6f19437",
-      "source_upload_time": "2026-07-06T10:45:32.979428Z",
-      "source_url": "https://files.pythonhosted.org/packages/29/83/e361d3c1acd1b21e1d489616de6fa4aaf843365d8179f612e3743eac20a9/xxhash-3.8.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
-      "version": "3.8.1",
-      "wheel_metadata_sha256": "4bc9016e040d4cd72b2aa5092f221376fc64ba5936384c4eb69ca5dc52855d74",
-      "wheel_tags": [
-        "cp313-cp313-manylinux2014_x86_64",
-        "cp313-cp313-manylinux_2_17_x86_64",
-        "cp313-cp313-manylinux_2_28_x86_64"
-      ]
     }
   ],
   "kind": "neocortex_offline_dependency_provenance",
@@ -1441,9 +1402,6 @@
       "packaging==26.2",
       "pygments==2.21.0",
       "rich==15.0.0"
-    ],
-    "fast-hash": [
-      "xxhash==3.8.1"
     ],
     "build": [
       "build==1.5.0",
@@ -1479,9 +1437,6 @@
     "base": [
       "packaging==26.2",
       "rich==15.0.0"
-    ],
-    "fast-hash": [
-      "xxhash==3.8.1"
     ],
     "build": [
       "build==1.5.0",

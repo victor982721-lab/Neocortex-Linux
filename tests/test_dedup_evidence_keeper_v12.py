@@ -57,7 +57,7 @@ def test_policy_and_actual_proof_round_trip_without_authority(tmp_path: Path, ex
     assert keep.comparison_result == "reference"
     assert keep.compared_to_identity is None
     assert member.comparison_result == ("equal" if exact else "fingerprint_match")
-    assert member.comparison_method == ("byte_for_byte" if exact else "full_xxh3")
+    assert member.comparison_method == ("byte_for_byte" if exact else "sha256_full")
     assert member.compared_to_identity == group.keep.identity
     assert member.comparison_bytes == (group.size if exact else None)
     assert ("byte_for_byte_comparison" in member.missing_checks) is not exact
@@ -85,10 +85,10 @@ def test_failed_other_candidate_does_not_downgrade_successful_group_proof(tmp_pa
         planner = DedupPlanner(index)
         original = planner._fingerprint
 
-        def fail_one(snapshot, *, partial):
+        def fail_one(snapshot):
             if Path(snapshot.path).name == "d.bin":
                 raise FileChangedError("fixture candidate changed")
-            return original(snapshot, partial=partial)
+            return original(snapshot)
 
         with patch.object(planner, "_fingerprint", side_effect=fail_one):
             plan = planner.plan(scan.scan_id, exact_compare=True, preview_limit=20)

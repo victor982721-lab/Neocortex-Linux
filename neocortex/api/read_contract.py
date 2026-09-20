@@ -1,8 +1,8 @@
 """Small, dependency-free contract for public NeoCortex reads.
 
-The product has a number of historical adapters (the flat CLI, human CLI,
-MCP and the Qt read client).  They all return the same logical data, but used
-to validate different subsets of it.  This module is intentionally limited to
+The product has a number of adapters (the flat CLI, human CLI and MCP).  They
+all return the same logical data, but used to validate different subsets of it.
+This module is intentionally limited to
 the wire contract: it does not import a route, a database owner, or an
 optional engine.  Producers can therefore use it without changing the
 read-only/storage boundary.
@@ -20,8 +20,8 @@ from uuid import uuid4
 READ_CONTRACT_SCHEMA = "neocortex.read-api/v1"
 _ANSI_ESCAPE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-# Result payloads are ultimately rendered by a terminal, Qt widget or MCP
-# client.  Keep the defensive copy bounded independently from each adapter so
+# Result payloads are ultimately rendered by a terminal or MCP client.  Keep
+# the defensive copy bounded independently from each adapter so
 # a malformed producer cannot turn a read into an unbounded rendering job.
 MAX_SANITIZED_PAYLOAD_NODES = 20_000
 MAX_SANITIZED_PAYLOAD_DEPTH = 16
@@ -232,7 +232,7 @@ def sanitize_untrusted_text(
     limit: int | None = 800,
     single_line: bool = True,
 ) -> str:
-    """Make corpus-derived text safe for terminal and selectable UI output."""
+    """Make corpus-derived text safe for terminal and API output."""
 
     text = _ANSI_ESCAPE.sub("", str(value or ""))
     text = "".join(
@@ -257,7 +257,7 @@ def sanitize_untrusted_payload(
 
     The read contract deliberately permits extensible result objects, so a
     structural validator cannot enumerate every nested field.  This helper is
-    the common last-mile boundary for terminal, UI and MCP adapters: strings
+    the common last-mile boundary for terminal and MCP adapters: strings
     lose ANSI/C0 controls, object keys become JSON-safe strings, non-finite
     floats are replaced, and unknown objects cannot escape as renderer-hostile
     values.  A fixed omission string is transport diagnostics only; it never

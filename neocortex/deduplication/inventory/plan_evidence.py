@@ -44,7 +44,7 @@ def _payload(raw: str, model: type) -> dict[str, object] | None:
             ):
                 raise InventoryError(f"duplicate proof {field} is invalid")
             value[field] = tuple(sequence)
-    if value["comparison_method"] not in {"full_xxh3", "byte_for_byte"}:
+    if value["comparison_method"] not in {"sha256_full", "byte_for_byte"}:
         raise InventoryError("duplicate proof comparison method is invalid")
     if value["comparison_result"] not in {"reference", "fingerprint_match", "equal"}:
         raise InventoryError("duplicate proof comparison result is invalid")
@@ -66,7 +66,7 @@ def decode_group_proof(raw: str) -> DuplicateGroupProof | None:
     expected = (
         ("byte_for_byte", "equal")
         if value["requested_policy"] == "exact"
-        else ("full_xxh3", "fingerprint_match")
+        else ("sha256_full", "fingerprint_match")
     )
     if (value["comparison_method"], value["comparison_result"]) != expected:
         raise InventoryError("duplicate group proof does not match its requested policy")
@@ -125,13 +125,13 @@ def decode_member_proof(raw: str) -> DuplicateMemberProof:
     result = value["comparison_result"]
     if result == "reference":
         valid = (
-            value["comparison_method"] == "full_xxh3"
+            value["comparison_method"] == "sha256_full"
             and identity is None
             and value["comparison_bytes"] is None
         )
     elif result == "fingerprint_match":
         valid = (
-            value["comparison_method"] == "full_xxh3"
+            value["comparison_method"] == "sha256_full"
             and identity is not None
             and value["comparison_bytes"] is None
             and "byte_for_byte_comparison" in missing_checks

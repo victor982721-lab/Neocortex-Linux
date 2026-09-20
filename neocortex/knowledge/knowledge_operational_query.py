@@ -976,7 +976,7 @@ class KnowledgeOperationalQueryService:
         | None = None,
     ) -> OperationalQueryResult:
         from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
-        from neocortex.workflow.review.review_candidate_query import list_findings_page
+        from neocortex.workflow.findings_query import list_findings_page
 
         database = KnowledgeStatePaths.from_directory(request.state_directory).framework
         page = list_findings_page(

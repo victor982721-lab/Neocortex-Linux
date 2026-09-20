@@ -65,12 +65,6 @@ _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(?P<title>.+?)\s*#*\s*$")
 _EXPLICIT_ANCHOR = re.compile(r"\b(?:id|name)=[\"'](?P<anchor>[^\"']+)[\"']", re.IGNORECASE)
 _CLI_FLAG = re.compile(r"--[A-Za-z][A-Za-z0-9-]*")
 
-# These options are intentionally outside the two parser builders below.  The
-# UI entrypoint is handled before the integrated parser by
-# ``neocortex.interface.entrypoint`` and must remain an explicit exception,
-# not a wildcard that would hide obsolete documentation.
-_ENTRYPOINT_FLAGS = frozenset({"--ui"})
-
 # The installed help hides compatibility/configuration plumbing, while the
 # canonical CLI document still shows it where it is needed for a reproducible
 # invocation.  Keep this list exact so a newly hidden or stale option fails
@@ -262,14 +256,13 @@ def test_documented_cli_examples_match_installed_parser_help() -> None:
     installed_options = frozenset().union(*(options for options, _help in contracts))
     installed_help = "\n".join(help_text for _options, help_text in contracts)
 
-    unknown = sorted(documented_flags - installed_options - _ENTRYPOINT_FLAGS)
+    unknown = sorted(documented_flags - installed_options)
     assert unknown == [], f"docs/CLI.md references obsolete CLI flags: {unknown}"
 
     not_in_help = sorted(
         documented_flags
         - set(_CLI_FLAG.findall(installed_help))
         - _DOCUMENTED_HIDDEN_FLAGS
-        - _ENTRYPOINT_FLAGS
     )
     assert not_in_help == [], (
         f"documented flags are absent from build_parser/build_human_parser help: {not_in_help}"

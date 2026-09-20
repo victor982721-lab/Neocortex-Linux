@@ -551,9 +551,9 @@ def test_semantic_image_source_uses_only_latest_published_v7_generation(
     path = str(tmp_path / "fixture.jpg")
     size, mtime_ns, birthtime_ns = 100, 200, 300
     digests = {
-        "previous": b"A" * 16,
-        "published": b"B" * 16,
-        "building": b"C" * 16,
+        "previous": b"A" * 32,
+        "published": b"B" * 32,
+        "building": b"C" * 32,
     }
     with closing(sqlite3.connect(image_database)) as connection:
         connection.execute(

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, overload
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.runtime.control.bounded_subprocess import (
     SubprocessOutputLimitError,
@@ -598,7 +598,7 @@ def _validate_extracted_frame(
 
 
 def _frame_content_digest(path: Path) -> str:
-    digest = xxhash.xxh3_128()
+    digest = sha256.sha256_128()
     with path.open("rb") as stream:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
@@ -704,7 +704,7 @@ def _extract_frames(
             if frame_width > width or frame_height > height:
                 raise ValueError("PNG batch dimensions exceed the requested bounds")
             rasters.append((timestamps[index], destination, frame_width, frame_height,
-                            xxhash.xxh3_128(png).hexdigest()))
+                            sha256.sha256_128(png).hexdigest()))
         if len(rasters) != len(timestamps):
             raise ValueError("PNG batch and timestamp counts disagree")
     except ValueError as exc:

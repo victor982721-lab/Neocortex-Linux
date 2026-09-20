@@ -276,7 +276,7 @@ def _organization_execution_denials(
                 denials[plan_id] = "organization_plan_advisory_only"
             else:
                 # This legacy API has no explicit grant-consuming backend.
-                # A writable database flag is not an AuthorizationGrant.
+                # A writable database flag is not effect permission.
                 denials[plan_id] = "organization_authorized_backend_unavailable"
         except (OSError, ValueError, TypeError, KeyError) as exc:
             denials[plan_id] = f"organization_contract_invalid:{type(exc).__name__}"

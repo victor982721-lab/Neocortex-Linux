@@ -245,7 +245,7 @@ def _relation_row(
         "group_size": size,
         "redundant_count": 1,
         "group_reclaimable_bytes": size,
-        "full_fingerprint": "a" * 32,
+        "full_fingerprint": "a" * 64,
         "keeper_volume_id": _blob(keeper[0]),
         "keeper_file_id": _blob(keeper[1]),
         "keeper_birthtime_ns": keeper[2],
@@ -817,7 +817,7 @@ def test_malformed_head_only_degrades_identities_in_its_scan(tmp_path: Path, mon
             CREATE TABLE planned_duplicate_groups(group_id,scan_id,size,keep_path,redundant_count,reclaimable_bytes,full_fingerprint);
             CREATE TABLE planned_duplicate_members(group_id,member_order,role,path,volume_id,file_id,size,birthtime_ns);
             INSERT INTO duplicate_plan_summaries VALUES(2,20,1,1,100);
-            INSERT INTO planned_duplicate_groups VALUES(1,2,100,'C:/keeper.pdf',1,100,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+                INSERT INTO planned_duplicate_groups VALUES(1,2,100,'C:/keeper.pdf',1,100,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
             """
         )
         connection.executemany(
@@ -938,7 +938,7 @@ def test_inventory_relation_validation_preserves_roles_and_rejects_conflicts() -
 
     invalid_rows: list[Mapping[str, object]] = []
     for key, value in (
-        ("full_fingerprint", "A" * 32),
+        ("full_fingerprint", "A" * 64),
         ("member_count", 3),
         ("keep_count", 2),
         ("keep_path_matches", 0),
@@ -1965,7 +1965,7 @@ def test_inventory_reason_precedence_is_ambiguous_then_planned_then_uncovered(
     planned = _candidate((4, 5, 6), marker="planned")
     uncovered = _candidate((7, 8, 9), marker="uncovered")
     ambiguous_row = _relation_row((1, 2, 3))
-    ambiguous_row["full_fingerprint"] = "A" * 32
+    ambiguous_row["full_fingerprint"] = "A" * 64
     planned_row = _relation_row((4, 5, 6))
     snapshot = _snapshot(_publication(1, "duplicate-plan-v1:2:0:0:0"))
     paths = KnowledgeStatePaths.from_directory(tmp_path / "state")
@@ -2390,10 +2390,10 @@ def test_inventory_sql_distinguishes_absent_from_present_malformed_member(
         )
         connection.executemany("INSERT INTO files VALUES(?,?,?,?,?,?)", file_rows)
         group_rows = (
-            (1, 1, 100, "C:/fixture/keeper-1.pdf", 1, 100, "a" * 32),
-            (2, 1, 100, "C:/fixture/keeper-2.pdf", 1, 100, "b" * 32),
-            (3, 1, 100, "C:/fixture/keeper-3.pdf", 1, 100, "c" * 32),
-            (4, 1, 100, "C:/fixture/keeper-4.pdf", 1, 100, "d" * 32),
+            (1, 1, 100, "C:/fixture/keeper-1.pdf", 1, 100, "a" * 64),
+            (2, 1, 100, "C:/fixture/keeper-2.pdf", 1, 100, "b" * 64),
+            (3, 1, 100, "C:/fixture/keeper-3.pdf", 1, 100, "c" * 64),
+            (4, 1, 100, "C:/fixture/keeper-4.pdf", 1, 100, "d" * 64),
         )
         connection.executemany(
             "INSERT INTO planned_duplicate_groups VALUES(?,?,?,?,?,?,?)",

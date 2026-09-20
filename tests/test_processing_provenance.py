@@ -192,7 +192,7 @@ class RouteProcessingSignatureTests(unittest.TestCase):
                         side_effect=version_12,
                     ),
                     patch(
-                        "neocortex.foundation.processing_provenance.fingerprint_file_xxh3_128",
+                        "neocortex.foundation.processing_provenance.fingerprint_file_sha256_128",
                         return_value="a" * 32,
                     ),
                 ):
@@ -203,7 +203,7 @@ class RouteProcessingSignatureTests(unittest.TestCase):
                         side_effect=version_12,
                     ),
                     patch(
-                        "neocortex.foundation.processing_provenance.fingerprint_file_xxh3_128",
+                        "neocortex.foundation.processing_provenance.fingerprint_file_sha256_128",
                         return_value="b" * 32,
                     ),
                 ):
@@ -214,7 +214,7 @@ class RouteProcessingSignatureTests(unittest.TestCase):
                         side_effect=version_13,
                     ),
                     patch(
-                        "neocortex.foundation.processing_provenance.fingerprint_file_xxh3_128",
+                        "neocortex.foundation.processing_provenance.fingerprint_file_sha256_128",
                         return_value="b" * 32,
                     ),
                 ):
@@ -251,7 +251,7 @@ class RouteProcessingSignatureTests(unittest.TestCase):
         )
         self.assertEqual(
             {item["name"] for item in docx.processing_provenance.manifest["components"]},
-            {"python-runtime", "xxhash"},
+            {"python-runtime", "hashlib"},
         )
 
     def test_audio_signature_includes_ctranslate2_and_ffprobe(self) -> None:
@@ -365,10 +365,10 @@ class TesseractRuntimeProvenanceTests(unittest.TestCase):
                 )
 
             initial_fingerprints = {
-                item["name"]: item["xxh3_128"] for item in initial.component["traineddata"]
+                item["name"]: item["sha256_128"] for item in initial.component["traineddata"]
             }
             changed_fingerprints = {
-                item["name"]: item["xxh3_128"] for item in changed.component["traineddata"]
+                item["name"]: item["sha256_128"] for item in changed.component["traineddata"]
             }
             self.assertNotEqual(
                 initial_fingerprints["spa.traineddata"],

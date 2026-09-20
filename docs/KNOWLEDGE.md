@@ -25,8 +25,9 @@ inspección de linaje:
 - no autorizan rename, move, Papelera o borrado;
 - se abstienen ante schemas futuros, corrupción o snapshot inestable.
 
-`review value --refresh` no pertenece a esta frontera: escribe una página de
-Review en Framework y lo declara expresamente.
+La antigua superficie de value-review fue retirada. Las observaciones de valor,
+cuando existen en owners publicados, se leen como evidencia advisory; no crean
+colas ni autorizan efectos.
 
 ## Identidad
 
@@ -138,7 +139,7 @@ debe pedir más evidencia.
 La proyección `neocortex.context-response/v2` añade entidades, relaciones,
 contradicciones, presupuesto del grafo y telemetría bounded, sin cambiar la
 frontera de confianza ni evaluar `answer_sufficiency`. La función Python de bajo
-nivel conserva v1 por compatibilidad explícita; GUI, SDK y MCP solicitan v2.
+nivel conserva v1 por compatibilidad explícita; CLI, SDK y MCP solicitan v2.
 `KnowledgeReadBudget` permite limitar filas, vectores, temporales, deadline y
 cancelación sin escribir estado.
 

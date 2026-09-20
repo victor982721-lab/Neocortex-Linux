@@ -9,7 +9,12 @@ from typing import Any
 import pytest
 
 from neocortex.api import read_api
-from neocortex.api.read_contract import ReadOperation, validate_read_payload
+from neocortex.api.read_contract import (
+    ReadContractError,
+    ReadOperation,
+    sanitize_untrusted_payload,
+    validate_read_payload,
+)
 from neocortex.knowledge.knowledge_asset_health_contracts import (
     KnowledgeAssetHealthCompleteness,
     KnowledgeAssetHealthState,
@@ -194,11 +199,7 @@ def test_stable_evidence_fields_preserve_the_valid_read_envelope(
     assert payload["found"] is False
 
 
-def test_shared_read_client_sanitizes_untrusted_nested_results(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from neocortex.interface.read import ReadRequest, SharedReadClient
-
+def test_read_contract_sanitizes_untrusted_nested_results() -> None:
     payload: dict[str, object] = {
         "schema": "neocortex.read-api/v1",
         "kind": "neocortex_scoped_status",
@@ -222,20 +223,14 @@ def test_shared_read_client_sanitizes_untrusted_nested_results(
         ],
         "observed_epoch": {"scope": "personal", "scopes": {}},
     }
-    monkeypatch.setattr(read_api, "status_payload", lambda _scope: payload)
-
-    safe = SharedReadClient().execute(ReadRequest("status", scope="personal"))
+    safe = sanitize_untrusted_payload(payload)
 
     assert "\x1b" not in str(safe)
     assert safe["result"] == {"message": "safe forged"}
     assert safe["scopes"][0]["snapshot"]["snippet"] == "red\ntext"  # type: ignore[index]
 
 
-def test_shared_read_client_rejects_inconsistent_complete_outcomes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from neocortex.interface.read import ReadClientError, ReadRequest, SharedReadClient
-
+def test_read_contract_rejects_inconsistent_complete_outcomes() -> None:
     payload: dict[str, object] = {
         "schema": "neocortex.read-api/v1",
         "kind": "neocortex_scoped_status",
@@ -252,7 +247,5 @@ def test_shared_read_client_rejects_inconsistent_complete_outcomes(
         "scopes": [],
         "observed_epoch": {"scope": "personal", "scopes": {}},
     }
-    monkeypatch.setattr(read_api, "status_payload", lambda _scope: payload)
-
-    with pytest.raises(ReadClientError, match="status/coverage"):
-        SharedReadClient().execute(ReadRequest("status", scope="personal"))
+    with pytest.raises(ReadContractError, match="status/coverage"):
+        validate_read_payload(payload, ReadOperation.STATUS, scope="personal")

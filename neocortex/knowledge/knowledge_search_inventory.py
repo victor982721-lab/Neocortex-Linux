@@ -365,7 +365,7 @@ def validated_inventory_blob(
 def valid_full_fingerprint(value: object) -> bool:
     return (
         isinstance(value, str)
-        and len(value) == 32
+        and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
 

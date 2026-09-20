@@ -23,7 +23,7 @@ from typing import BinaryIO, Literal
 
 from neocortex import __version__
 
-from neocortex.foundation.hash_compat import HASH_BACKEND, xxhash
+from neocortex.foundation.hash_compat import HASH_BACKEND, sha256
 _METADATA_SCHEMA = "neocortex-watcher-life-lease-v1"
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_ARG_COUNT = 64
@@ -89,7 +89,7 @@ def watcher_lease_identity(
     return WatcherLeaseIdentity(
         root=canonical_root,
         state_directory=canonical_state,
-        xxh3_128=xxhash.xxh3_128_hexdigest(encoded),
+        xxh3_128=sha256.sha256_128_hexdigest(encoded),
     )
 
 

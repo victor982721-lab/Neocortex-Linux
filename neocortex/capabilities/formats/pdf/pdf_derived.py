@@ -16,7 +16,7 @@ from collections import deque
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 from neocortex.platform.policy import sqlite_path_collation
@@ -235,7 +235,7 @@ def _simhash(counters: list[int]) -> int:
 
 
 def _add_feature(counters: list[int], feature: str, weight: int = 1) -> None:
-    value = xxhash.xxh3_64_intdigest(feature.encode("utf-8"))
+    value = sha256.sha256_64_intdigest(feature.encode("utf-8"))
     for bit in range(SIMHASH_BITS):
         counters[bit] += weight if value & (1 << bit) else -weight
 
@@ -437,7 +437,7 @@ class PdfDerivedIndexer:
             for row in rows:
                 self._checkpoint()
                 text = zlib.decompress(row["text_zlib"]).decode("utf-8")
-                digest = xxhash.xxh3_128_hexdigest(text.encode("utf-8"))
+                digest = sha256.sha256_128_hexdigest(text.encode("utf-8"))
                 connection.execute(
                     "INSERT INTO page_fts(file_key,path,page_number,text) VALUES(?,?,?,?)",
                     (row["file_key"], row["path"], row["page_number"], text),
@@ -976,7 +976,7 @@ class PdfDerivedIndexer:
             (footer_counters, "document-footer-v1"),
         ):
             _add_layout_feature(target, seed, 2)
-        sequence = xxhash.xxh3_128()
+        sequence = sha256.sha256_128()
         source_counts: dict[str, int] = {}
         visual_errors = mapped_pages = header_ink = footer_ink = 0
 
@@ -1176,7 +1176,7 @@ class PdfDerivedIndexer:
             return relation_count
 
     def _active_similarity_digest(self, kind: str) -> str:
-        active = xxhash.xxh3_128()
+        active = sha256.sha256_128()
         for file_key, signature_hex in self._signature_rows(kind):
             self._checkpoint()
             active.update(file_key.encode("ascii"))
@@ -1400,7 +1400,7 @@ class PdfDerivedIndexer:
                 if len(members) < 2:
                     continue
                 members.sort()
-                digest = xxhash.xxh3_128()
+                digest = sha256.sha256_128()
                 for member in members:
                     digest.update(member.encode("ascii"))
                 group_key = digest.hexdigest()

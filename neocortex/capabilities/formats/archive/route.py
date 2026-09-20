@@ -37,7 +37,7 @@ from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.fingerprinting import snapshot_path, stat_matches_snapshot
@@ -263,7 +263,7 @@ def _archive_processing_provenance(
         },
         (
             python_runtime_component(),
-            distribution_component("xxhash", "xxhash"),
+            distribution_component("sha256", "sha256"),
             distribution_component("pymupdf", "PyMuPDF"),
             distribution_component("pillow", "Pillow"),
             distribution_component("pytesseract", "pytesseract"),
@@ -1150,7 +1150,7 @@ class _ArchiveObservationSpool:
 
 
 def _member_key(container_key: str, member_chain: str) -> str:
-    digest = xxhash.xxh3_128_hexdigest(
+    digest = sha256.sha256_128_hexdigest(
         f"{container_key}\x00{member_chain}".encode("utf-8", "surrogatepass")
     )
     return f"archive:{digest}"
@@ -1295,7 +1295,7 @@ def _store_member(
             status,
             None if encoded is None else zlib.compress(encoded, level=6),
             0 if text is None else len(text),
-            None if encoded is None else xxhash.xxh3_128_hexdigest(encoded),
+            None if encoded is None else sha256.sha256_128_hexdigest(encoded),
             content.detail,
             content.issue_code,
             content.detail if content.issue_code else None,
@@ -2290,7 +2290,7 @@ def _cached_archive_text(row: sqlite3.Row, *, max_text_chars: int) -> str:
         raise _ArchiveCacheInvalid(
             f"Archive member {row['file_key']} text representation metadata is inconsistent"
         )
-    if str(digest) != xxhash.xxh3_128_hexdigest(encoded):
+    if str(digest) != sha256.sha256_128_hexdigest(encoded):
         raise _ArchiveCacheInvalid(
             f"Archive member {row['file_key']} text representation fingerprint changed"
         )

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 
 # region [01] Layout signature constants
@@ -25,7 +25,7 @@ FONT_RE = re.compile(r"[^a-z0-9]+")
 
 
 def add_feature(counters: list[int], feature: str, weight: int = 1) -> None:
-    value = xxhash.xxh3_64_intdigest(feature.encode("utf-8"))
+    value = sha256.sha256_64_intdigest(feature.encode("utf-8"))
     for bit in range(SIMHASH_BITS):
         counters[bit] += weight if value & (1 << bit) else -weight
 

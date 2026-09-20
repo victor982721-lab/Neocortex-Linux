@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.curation.application import BackendOutcome
+from neocortex.workflow.mutations import BackendOutcome
 from neocortex.deduplication import DedupIndex, DedupPlanner
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.workflow.actions.actions import FrameworkActions, RedlistPrepassError

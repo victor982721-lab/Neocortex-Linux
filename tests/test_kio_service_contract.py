@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 import neocortex
-from neocortex.curation.application import KioTrashBackend
+from neocortex.workflow.mutations import KioTrashBackend
 from neocortex.deduplication import FULL_ALGORITHM, FileSnapshot, full_fingerprint, snapshot_path
 from neocortex.safety import kio_trash as kio
 

@@ -1,8 +1,8 @@
 """Central, side-effect-free platform and per-user path policy.
 
 The policy is intentionally independent from the operational framework so the
-inventory, CLI, desktop frontend, and release tooling can share one source of
-truth without creating state while merely inspecting the current platform.
+inventory, CLI, and release tooling can share one source of truth without
+creating state while merely inspecting the current platform.
 """
 
 from __future__ import annotations
@@ -108,7 +108,6 @@ class PlatformPolicy:
     runtimes_directory: Path
     stable_launcher: Path
     user_alias: Path
-    desktop_file: Path
     inventory_backend: str
     identity_backend: str
     path_collation: str
@@ -148,7 +147,6 @@ def current_platform_policy(*, platform_name: str | None = None) -> PlatformPoli
         runtimes_directory=data_root / "runtimes",
         stable_launcher=data_root / "bin" / "Neocortex",
         user_alias=Path.home() / ".local" / "bin" / "Neocortex",
-        desktop_file=linux_data_home() / "applications" / "neocortex.desktop",
         inventory_backend="portable-full-scan",
         identity_backend="posix-st_dev-st_ino",
         path_collation=POSIX_PATH_COLLATION,

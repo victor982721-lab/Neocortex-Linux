@@ -22,17 +22,17 @@ from test_knowledge_asset_health import _blob, _create_health_fixture, _quiesce,
 def _exact_duplicates(path: Path, *, exact: bool = True, current_member: bool = True) -> None:
     group_proof = DuplicateGroupProof(
         proof_version=PROOF_VERSION, requested_policy="exact" if exact else "fast",
-        comparison_method="byte_for_byte" if exact else "full_xxh3",
+        comparison_method="byte_for_byte" if exact else "sha256_full",
         comparison_result="equal" if exact else "fingerprint_match", missing_checks=(),
         keeper_policy_version="keeper-fixture-v1", keeper_reason="stable_path_tiebreaker",
     )
     keeper_proof = DuplicateMemberProof(
-        proof_version=PROOF_VERSION, comparison_method="full_xxh3", comparison_result="reference",
+        proof_version=PROOF_VERSION, comparison_method="sha256_full", comparison_result="reference",
         fingerprint_algorithm="xxh3_128", fingerprint_source="computed", missing_checks=(),
         aliases=("/corpus/docs/asset.txt",), alias_count=1, observed_link_count=1,
     )
     redundant_proof = replace(
-        keeper_proof, comparison_method="byte_for_byte" if exact else "full_xxh3",
+        keeper_proof, comparison_method="byte_for_byte" if exact else "sha256_full",
         comparison_result="equal" if exact else "fingerprint_match", compared_to_identity=(11, 3),
         comparison_bytes=800 if exact else None,
         missing_checks=() if exact else ("byte_for_byte_comparison",),

@@ -16,7 +16,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.deduplication import FileSnapshot
 
@@ -457,7 +457,7 @@ def _cached_office_representation(row: sqlite3.Row, *, max_chars: int) -> str | 
     fingerprint = row["text_xxh3_128"]
     if not isinstance(fingerprint, str):
         return None
-    if fingerprint != xxhash.xxh3_128_hexdigest(text.encode("utf-8")):
+    if fingerprint != sha256.sha256_128_hexdigest(text.encode("utf-8")):
         return None
     try:
         if int(row["part_count"]) < 0:
@@ -633,7 +633,7 @@ def _store_success(
 ) -> None:
     _remove_path_conflict(connection, snapshot)
     text_bytes = document.text.encode("utf-8")
-    fingerprint = xxhash.xxh3_128_hexdigest(text_bytes)
+    fingerprint = sha256.sha256_128_hexdigest(text_bytes)
     connection.execute(
         """INSERT INTO documents(
         file_key,format,path,size,mtime_ns,birthtime_ns,processing_signature,status,

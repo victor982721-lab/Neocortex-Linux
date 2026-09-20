@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypeVar
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from .semantic_chunking import TextChunkingConfig
 from .semantic_models import (
@@ -664,7 +664,7 @@ def _semantic_reuse_snapshot(
                     bridge,
                     validate_snapshot,
                 )
-                snapshot_hasher = xxhash.xxh3_128()
+                snapshot_hasher = sha256.sha256_128()
                 snapshot_hasher.update(
                     canonical_json(
                         {

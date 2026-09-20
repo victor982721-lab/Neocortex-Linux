@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.semantic.semantic_models import (
     BackendEmbedding,
@@ -62,7 +62,7 @@ class DeterministicTestBackend:
             ).encode("utf-8")
             vector = []
             for dimension in range(self.model.dimensions):
-                raw = xxhash.xxh3_64_intdigest(seed_material, seed=dimension)
+                raw = sha256.sha256_64_intdigest(seed_material, seed=dimension)
                 vector.append((raw / ((1 << 64) - 1)) * 2.0 - 1.0)
             normalized, _ = normalize_vector(vector, self.model.dimensions)
             results.append(

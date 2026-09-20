@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from neocortex.api.cli.cli_direct import run_operational_status
-from neocortex.interface.read.status import StatusRepository
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.orchestration.run_status import list_run_status
 from tests.portable_inventory import PortableInventoryCursor
@@ -44,11 +43,8 @@ def _cli_args(state_directory: Path, *, status_json: bool = True) -> argparse.Na
 
 def test_status_queries_do_not_create_sqlite_sidecars(tmp_path: Path) -> None:
     database = _clean_framework_copy(tmp_path)
-    state_directory = database.parent
 
     assert list_run_status(database, limit=1)
-    assert StatusRepository(state_directory).recent_runs(limit=1)
-    assert StatusRepository(state_directory).latest_event_details(1, "inventory") == {}
 
     assert not Path(f"{database}-wal").exists()
     assert not Path(f"{database}-shm").exists()
@@ -70,4 +66,3 @@ def test_cli_status_reports_active_wal_without_touching_it(tmp_path: Path) -> No
     assert "non-empty WAL" in output.getvalue()
     assert wal.read_bytes() == b"active-wal"
     assert wal.stat().st_size == len(b"active-wal")
-

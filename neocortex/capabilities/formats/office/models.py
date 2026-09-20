@@ -91,7 +91,7 @@ def _office_processing_provenance(max_text_chars: int) -> ProcessingProvenance:
         {"max_text_chars": max_text_chars},
         (
             python_runtime_component(),
-            distribution_component("xxhash", "xxhash"),
+            distribution_component("hashlib", "hashlib"),
         ),
         compatibility_tag=OFFICE_ROUTE_VERSION,
     )

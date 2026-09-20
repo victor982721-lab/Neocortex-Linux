@@ -778,7 +778,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("fast", "exact"),
         default="fast",
         help=(
-            "fast uses equal size plus full XXH3 for planning; Recycle Bin candidates "
+            "fast uses equal size plus complete SHA-256 for planning; Recycle Bin candidates "
             "receive a final byte-for-byte comparison before safe abstention; exact "
             "additionally compares all bytes while planning"
         ),
@@ -903,7 +903,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pdf-cache-validation",
         choices=("metadata", "full"),
         default="metadata",
-        help="validate cache by metadata or by the reusable full XXH3 fingerprint",
+        help="validate cache by metadata or by the reusable full SHA-256 fingerprint",
     )
     pdf.add_argument(
         "--tesseract-cmd",

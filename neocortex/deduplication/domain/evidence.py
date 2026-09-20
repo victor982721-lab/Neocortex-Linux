@@ -9,7 +9,7 @@ from unicodedata import category
 
 DedupPolicy = Literal["legacy_unknown", "fast", "exact"]
 PlanCoverage = Literal["legacy_unknown", "complete", "partial"]
-ComparisonMethod = Literal["not_recorded", "full_xxh3", "byte_for_byte"]
+ComparisonMethod = Literal["not_recorded", "sha256_full", "byte_for_byte"]
 ComparisonResult = Literal["not_recorded", "reference", "fingerprint_match", "equal"]
 PROOF_VERSION = "neocortex.duplicate-content-proof/v1"
 KEEPER_POLICY_VERSION = "neocortex.duplicate-keeper/v1"

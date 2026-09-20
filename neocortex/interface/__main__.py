@@ -1,7 +1,7 @@
 """Allow development launches with ``python -m neocortex.interface``."""
 
-from .application.app import main
+from .entrypoint import entrypoint
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(entrypoint())

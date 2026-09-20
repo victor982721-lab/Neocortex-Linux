@@ -1,8 +1,8 @@
 # Kubuntu/Linux
 
 NeoCortex `0.14.0` tiene como única plataforma activa Kubuntu/Ubuntu 26.04
-x86-64, con CPython 3.13–3.14 con GIL. CPython 3.14 es el runtime personal de
-referencia y 3.13 dispone de la instalación ordinaria offline descrita aquí.
+x86-64, con CPython `>=3.13.5,<3.14` con GIL. Todas las versiones patch de
+CPython 3.13 usan el mismo contrato ABI `cp313`.
 
 ## Rutas XDG
 
@@ -16,7 +16,6 @@ referencia y 3.13 dispone de la instalación ordinaria offline descrita aquí.
 | Release activa | `~/.local/share/Neocortex/current` |
 | Launcher | `~/.local/share/Neocortex/bin/Neocortex` |
 | Alias | `~/.local/bin/Neocortex` |
-| Entrada KDE | `~/.local/share/applications/neocortex.desktop` |
 
 `XDG_DOCUMENTS_DIR` se lee como datos, sin ejecutar `user-dirs.dirs`. Sólo se
 aceptan rutas absolutas o expansiones literales seguras de HOME.
@@ -40,9 +39,8 @@ producto Linux.
 No instales pip ni dependencias Python globalmente. El host puede requerir:
 
 ~~~bash
-sudo apt install python3.14-venv qpdf tesseract-ocr \
-  tesseract-ocr-spa tesseract-ocr-eng ffmpeg rsync \
-  desktop-file-utils
+sudo apt install python3.13-venv qpdf tesseract-ocr \
+  tesseract-ocr-spa tesseract-ocr-eng ffmpeg rsync
 ~~~
 
 Instala únicamente los idiomas y binarios necesarios. Las rutas deben hacer
@@ -50,33 +48,28 @@ preflight y declarar cobertura cuando falta una herramienta.
 
 ## Instalación ordinaria desde una extracción
 
-Kubuntu/CPython 3.14 sigue siendo la referencia productiva; CPython 3.13 con GIL
-también está soportado. GitHub **Code → Download ZIP** entrega los archivos
+CPython 3.13 con GIL es el único runtime productivo soportado. GitHub
+**Code → Download ZIP** entrega los archivos
 necesarios, sin preparación adicional ni historial Git. Usa un venv nuevo, sin
 `--system-site-packages`, para evitar paquetes y precargas del Python global.
 
 `dev-resources/offline/artifacts/` contiene los wheels originales del cierre
 transitivo para CPython 3.13/Linux x86_64, `locks/` fija versiones y SHA-256 por
 capacidad, y `provenance.json` conserva origen y licencias. No requiere cachés
-personales, Git LFS ni otra descarga. `xxhash` es un acelerador opcional: si no
-está instalado, NeoCortex usa SHA-256 de la biblioteca estándar conservando los
-anchos de digest y marca el backend en la procedencia; `constraints-linux-cp313.lock`
-incluye el perfil opcional `fast-hash`, mientras el lock productivo CPython 3.14
-permanece independiente. Los valores de ambos backends no son intercambiables:
-al cambiar de backend, los caches que requieran esa identidad se revalidan o
-reconstruyen. Las claves de idempotencia de acciones, reconciliaciones y CLI
-usan un digest SHA-256 estable independiente del acelerador, por lo que un
-cambio de backend no duplica una intención ya registrada.
+personales, Git LFS ni otra descarga. `constraints-linux-cp313-runtime.lock` es
+el lock de la release productiva (base + documentos/imagen); el lock agregado de
+suministro permanece en `constraints-linux-cp313.lock`. No existe un cierre
+paralelo para CPython 3.14. Dedupe y las claves de idempotencia usan SHA-256
+completo de la biblioteca estándar.
 
 | Capacidad | Extra / recurso | Incluido offline |
 |---|---|---|
 | Runtime base, inventario y texto | `packaging`, `rich` y transitivos | Sí, lock `runtime-base-cp313-linux-x86_64.lock` |
-| Acelerador opcional de hashing | `xxhash` | Sí, lock `fast-hash-cp313-linux-x86_64.lock` |
 | Construcción ordinaria | `build`, backend `setuptools` y transitivos | Sí, lock `build-cp313-linux-x86_64.lock` |
 | Pruebas base | `test-base`: pytest, backend `setuptools==83.0.0` para auditorías de empaquetado y transitivos, sin plugins obligatorios | Sí, lock `test-base-cp313-linux-x86_64.lock` |
 | Documentos e imagen | `documents`, `image`: Pillow, PyMuPDF, pdfminer.six, pytesseract y transitivos | Sí, lock `documents-image-cp313-linux-x86_64.lock` |
 | Inferencia | `semantic`, `audio` y pesos originales locales | No |
-| UI / MCP | `ui` / `agent` | No |
+| MCP / agente | `agent` | No |
 | Herramientas de desarrollo adicionales | `analysis` | No; no es requisito de las pruebas base |
 
 Desde la extracción, con CPython 3.13 disponible:
@@ -134,9 +127,7 @@ declaran su mínimo manylinux/glibc. El intérprete y los ejecutables de sistema
 se provisionan por separado: FFmpeg/ffprobe para multimedia y Tesseract con el
 idioma solicitado para OCR. Los formatos Office indexables son DOCX/XLSX/PPTX/ODT
 y se procesan con lectores nativos, sin convertidores externos. `qpdf` no es
-requisito global, ni la ausencia de Qt impide CLI.
-La UI necesita PySide6 y sus bibliotecas; `QT_QPA_PLATFORM=offscreen` o un
-display Xvfb permiten ejecución headless, pero no acreditan KDE/Wayland ni KIO.
+requisito global para todas las rutas.
 
 Las pruebas se seleccionan **antes de importar los módulos**:
 
@@ -147,7 +138,7 @@ cd "$Source"
 ~~~
 
 La selección predeterminada sigue siendo `all`; también existen `inference`,
-`ui`, `platform` y `agent`. Seleccionar una capacidad no instala dependencias
+`platform` y `agent`. Seleccionar una capacidad no instala dependencias
 ni convierte su ausencia en procesamiento correcto. Véase
 [ejecución y observabilidad](OPERATIONS.md) para rutas, estado y límites.
 La instalación sigue los contratos de [venv](https://docs.python.org/3.13/library/venv.html),
@@ -160,12 +151,12 @@ La release canónica no resuelve paquetes desde Internet. Exige un wheelhouse
 local con `wheelhouse-manifest.json`, wheels compatibles y hashes válidos.
 
 ~~~bash
-python3.14 tools/release_linux.py install \
+python3.13 tools/release_linux.py install \
   --corpus-root "$HOME/Documentos/NeoCortex/Corpus" \
   --wheelhouse "$Wheelhouse" \
   --sqlite-policy "$SQLitePolicy" \
-  --sqlite-policy-sha256 "$SQLitePolicySHA256" --require-models --desktop
-python3.14 tools/release_linux.py verify
+  --sqlite-policy-sha256 "$SQLitePolicySHA256" --require-models
+python3.13 tools/release_linux.py verify
 ~~~
 
 `install --corpus-root` define la raíz operativa persistente; es opcional y, si
@@ -188,9 +179,10 @@ integridad del archivo; la revisión del proveedor acredita el build concreto.
 
 Antes de crear el corpus o activar una release se verifican todos los hashes,
 tags Python/ABI/plataforma de los wheels, `Requires-Python`, dependencias
-transitivas, markers y extras solicitados por `full`. Los requisitos ausentes
-se enumeran con sus versiones. No modifiques constraints ni uses paquetes
-globales para completar el entorno. Un wheelhouse parcial no acredita `full`.
+transitivas y markers del perfil productivo. Los extras `semantic`, `audio` y
+`agent` siguen siendo perfiles optativos y requieren su propio wheelhouse y lock
+autenticados; no se infieren ni se instalan desde la release base. No modifiques
+constraints ni uses paquetes globales para completar el entorno.
 
 `--require-models` exige modelos locales completos antes de promover el launcher.
 El nombre anterior `--prepare-models` se conserva como alias de esta exigencia;
@@ -200,14 +192,15 @@ modelos compartidos se conservan fuera de las releases. La presencia de pesos
 y `pip check` no sustituyen el smoke de inferencia de las capacidades solicitadas.
 
 El paquete offline incluido para CPython 3.13 continúa limitado a los perfiles
-de la tabla anterior. La aceptación `full` necesita además inventariar el
-intérprete, bibliotecas nativas, ejecutables e idiomas de OCR, y los modelos y
-tokenizers originales con hashes y licencias. Esa aceptación se ejecuta desde
-el wheel instalado, con red denegada, HOME/XDG/TMP privados, sin `PYTHONPATH` ni
-cachés del checkout. Incluye primer procesamiento y replay de fixtures por
-capacidad, inventario instalado y SHA de fuente; un perfil base correcto no
-puede sustituirla. La prueba `test_semantic_numpy_binding.py` comprueba la ruta
-NumPy instalada concreta, sin acreditar de forma implícita toda versión `<3`.
+de la tabla anterior. Una aceptación ampliada con Semantic/audio/MCP necesita
+además inventariar el intérprete, bibliotecas nativas, ejecutables e idiomas de
+OCR, y los modelos y tokenizers originales con hashes y licencias. Esa aceptación
+se ejecuta desde el wheel instalado, con red denegada, HOME/XDG/TMP privados, sin
+`PYTHONPATH` ni cachés del checkout. Incluye primer procesamiento y replay de
+fixtures por capacidad, inventario instalado y SHA de fuente; un perfil base
+correcto no acredita de forma implícita las extras optativas. La prueba
+`test_semantic_numpy_binding.py` comprueba la ruta NumPy instalada concreta, sin
+acreditar de forma implícita toda versión `<3`.
 
 ## Evidencia nativa SQLite
 
@@ -256,7 +249,7 @@ Una release válida demuestra:
 3. receipt, manifest, launcher y alias concilian con `current`, y el contenido
    exacto y hash del launcher se comprueban antes de ejecutarlo;
 4. comandos públicos funcionan sin `PYTHONPATH`;
-5. desktop file y PySide6 offscreen pasan cuando se solicitó KDE;
+5. la ayuda, el estado y el smoke CLI pasan fuera del checkout;
 6. los smokes automáticos usan una raíz vacía temporal y el replay del producto
    usa fixtures contenidos, no el corpus real;
 7. sólo quedan `current` y el rollback inmediato;
@@ -276,7 +269,8 @@ configuración de Papelera. El backend usa claim same-filesystem, KIO nativo,
 receipt y restauración no-replace; no usa `gio`, shell ni borrado permanente.
 Una carrera, cuota con autolimpieza o evidencia insuficiente deja el efecto en
 `recovery_required`/`blocked` individualmente, sin detener recursos válidos.
-`curate apply` y `curate restore` conservan su frontera grant-bound separada.
+`--apply` y `curate restore` conservan sus fences físicas y receipts separadas;
+no existe una frontera grant-bound ni una autorización humana intermedia.
 
 ## Backend objetivo de Papelera
 
@@ -311,12 +305,6 @@ Aplicación:
 Nunca habrá fallback a `gio trash`, borrado directo o una cuarentena propia. Si
 KIO no existe, no puede escribir su configuración, devuelve un error ambiguo o
 no permite verificar el efecto, la operación queda abstendida y conciliable.
-
-## KDE
-
-`Neocortex --ui` usa PySide6 y los mismos contratos que CLI. La interfaz no
-eleva permisos ni habilita controles que el backend Linux rechaza. La apertura
-de una ventana no es evidencia de procesamiento ni autorización.
 
 ## Rollback
 

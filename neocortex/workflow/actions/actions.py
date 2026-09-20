@@ -69,6 +69,7 @@ ReserveWork = Callable[[str, int, int], None]
 CONTENT_PREFIX_BYTES = 64 * 1024
 REDLIST_REASON_EXAMPLE_LIMIT = 24
 REDLIST_REASON_CODE_LIMIT = 64
+DetectionKey = tuple[int, int, int, int, int]
 
 
 def _redlist_reason_code(value: object) -> str:
@@ -298,6 +299,15 @@ class FrameworkActions:
         # ordered pipeline through ``identify_and_normalize``.
         self._redlist_suppress_late_mutation = False
         self._normalize_without_full_hash = False
+        # Identify is deliberately a single content-aware pass.  Keep the
+        # decisions observed by that pass bound to the complete physical
+        # identity, rather than to a path that Normalize may replace.  The
+        # durable content_type_cache remains the cross-run source; this map
+        # prevents the same FrameworkActions instance from reopening the
+        # payload after Dedupe merely to publish route candidates.
+        self._identified_types: dict[DetectionKey, DetectedType | None] = {}
+        self._identified_detector_version: str | None = None
+        self._identify_summary: ActionSummary | None = None
         self._redlist_diagnostics: dict[str, object] = {
             "blocked": 0,
             "protected": 0,
@@ -427,6 +437,32 @@ class FrameworkActions:
         policy_path = self._normalized_paths.get(candidate, candidate)
         return redlist_match(policy_path) is not None
 
+    @staticmethod
+    def _detection_key(snapshot: FileSnapshot) -> DetectionKey:
+        """Bind one Identify result to the observed file metadata.
+
+        A path is intentionally absent from this key.  Normalize can replace
+        only the name while retaining the same inode and metadata; the bounded
+        content evidence remains valid for that successor.  Any identity,
+        size, mtime, or birth-time change therefore misses the key and forces
+        a fresh Identify decision.
+        """
+
+        return (
+            int(snapshot.volume_id),
+            int(snapshot.file_id),
+            int(snapshot.size),
+            int(snapshot.mtime_ns),
+            int(snapshot.birthtime_ns),
+        )
+
+    def _remember_identified_type(
+        self,
+        snapshot: FileSnapshot,
+        detected: DetectedType | None,
+    ) -> None:
+        self._identified_types[self._detection_key(snapshot)] = detected
+
     def identify_and_normalize(self) -> ActionSummary:
         """Run bounded Identify/Normalize before any duplicate planning.
 
@@ -436,20 +472,26 @@ class FrameworkActions:
         Policy/redlist and Dedupe are subsequent phases in the orchestrator.
         """
 
+        self._identified_types.clear()
+        self._identified_detector_version = DETECTOR_VERSION
+        self._identify_summary = None
         self._validate_apply_root()
         previous_suppress = self._redlist_suppress_late_mutation
         previous_no_hash = self._normalize_without_full_hash
         self._redlist_suppress_late_mutation = True
         self._normalize_without_full_hash = True
         try:
-            return self._validate_extensions(
+            summary = self._validate_extensions(
                 None,
                 ActionSummary(apply_actions=self._apply),
                 publish_routes=False,
+                prune_cache=False,
             )
         finally:
             self._redlist_suppress_late_mutation = previous_suppress
             self._normalize_without_full_hash = previous_no_hash
+        self._identify_summary = summary
+        return summary
 
     def execute(self, plan: DedupPlan, *, cleanup_empty_directories: bool = True) -> ActionSummary:
         self._validate_apply_root()
@@ -457,7 +499,12 @@ class FrameworkActions:
         self._deferred_reconciliation_upserts.clear()
         self._duplicate_work_reserved = False
         self._redlist_page_reserved = False
-        summary = ActionSummary(apply_actions=self._apply)
+        # The integrated runner has already completed Identify/Normalize.  In
+        # that canonical path, route publication consumes the decisions from
+        # that pass instead of invoking the detector a second time.  Direct
+        # FrameworkActions callers that skip Identify retain the historical
+        # one-shot fallback below for compatibility and focused action tests.
+        summary = self._identify_summary or ActionSummary(apply_actions=self._apply)
         started = time.perf_counter_ns()
         summary = self._trash_empty_files(plan, summary)
         self._record_phase("empty-files", started, summary)
@@ -468,7 +515,14 @@ class FrameworkActions:
         # otherwise route_candidates could retain a path already moved to
         # Trash and a later route would read a stale source identity.
         started = time.perf_counter_ns()
-        summary = self._validate_extensions(plan, summary)
+        if self._identify_summary is None:
+            summary = self._validate_extensions(plan, summary)
+        else:
+            summary = self._validate_extensions(
+                plan,
+                summary,
+                reuse_identified=True,
+            )
         self._record_phase("content-types", started, summary)
         if cleanup_empty_directories:
             started = time.perf_counter_ns()
@@ -2329,6 +2383,8 @@ class FrameworkActions:
         summary: ActionSummary,
         *,
         publish_routes: bool = True,
+        prune_cache: bool = True,
+        reuse_identified: bool = False,
     ) -> ActionSummary:
         # Keep direct phase callers safe as well as the normal ``execute``
         # route, whose duplicate phase normally flushes this queue first.
@@ -2403,7 +2459,7 @@ class FrameworkActions:
             if not page:
                 break
             after_path = page[-1].path
-            if self._reserve_work is not None:
+            if self._reserve_work is not None and not reuse_identified:
                 self._reserve_snapshot_work(
                     "content-prefix",
                     page,
@@ -2419,7 +2475,9 @@ class FrameworkActions:
                     continue
                 completed += 1
                 summary, route_candidate, cache_update = self._inspect_content_type_candidate(
-                    planned, summary
+                    planned,
+                    summary,
+                    reuse_identified=reuse_identified,
                 )
                 if cache_update is not None:
                     cache_updates.append(cache_update)
@@ -2433,10 +2491,13 @@ class FrameworkActions:
         flush_route_candidates()
         flush_cache_updates()
         self._flush_deferred_reconciliation()
-        summary = replace(
-            summary,
-            type_cache_pruned=self._state.prune_content_type_cache(self._run_id, DETECTOR_VERSION),
-        )
+        if prune_cache:
+            summary = replace(
+                summary,
+                type_cache_pruned=self._state.prune_content_type_cache(
+                    self._run_id, DETECTOR_VERSION
+                ),
+            )
         emit_progress(
             self._progress,
             ProgressEvent(
@@ -2473,14 +2534,54 @@ class FrameworkActions:
         self,
         planned: FileSnapshot,
         summary: ActionSummary,
+        *,
+        reuse_identified: bool = False,
     ) -> tuple[
         ActionSummary,
         tuple[str, FileSnapshot] | None,
         tuple[FileSnapshot, DetectedType | None] | None,
     ]:
-        summary, admitted = self._validate_content_type_candidate(planned, summary)
+        summary, admitted = self._validate_content_type_candidate(
+            planned,
+            summary,
+            count_files_checked=not reuse_identified,
+        )
         if not admitted:
             return summary, None, None
+        if reuse_identified:
+            key = self._detection_key(planned)
+            from_map = (
+                self._identified_detector_version == DETECTOR_VERSION
+                and key in self._identified_types
+            )
+            if from_map:
+                detected = self._identified_types[key]
+                usable = True
+                cache_update = None
+            else:
+                # A changed or newly-added file is outside the original
+                # Identify snapshot.  Re-identify only that identity; the
+                # unchanged population remains a zero-detector route pass.
+                summary, detected, usable = self._detect_planned_content_type(
+                    planned,
+                    summary,
+                )
+                cache_update = (planned, detected) if usable else None
+                if usable:
+                    summary = replace(
+                        summary,
+                        files_checked=summary.files_checked + 1,
+                    )
+            if not usable:
+                return summary, None, cache_update
+            summary, route_candidate = self._classify_detected_content_type(
+                planned,
+                detected,
+                summary,
+                normalize=False,
+                count_metrics=not from_map,
+            )
+            return summary, route_candidate, cache_update
         summary, detected, usable = self._detect_planned_content_type(
             planned,
             summary,
@@ -2498,6 +2599,8 @@ class FrameworkActions:
         self,
         planned: FileSnapshot,
         summary: ActionSummary,
+        *,
+        count_files_checked: bool = True,
     ) -> tuple[ActionSummary, bool]:
         if self._redlist_is_excluded(planned.path):
             # A redlisted source that remains physically present because a
@@ -2519,7 +2622,11 @@ class FrameworkActions:
             self._record_content_type_error(planned, exc)
             return replace(
                 summary,
-                files_checked=summary.files_checked + 1,
+                files_checked=(
+                    summary.files_checked + 1
+                    if count_files_checked
+                    else summary.files_checked
+                ),
                 errors=summary.errors + 1,
             ), False
         if not _same_snapshot(planned, current):
@@ -2527,10 +2634,17 @@ class FrameworkActions:
                 summary,
                 stale_inventory=summary.stale_inventory + 1,
             ), False
-        return replace(
-            summary,
-            files_checked=summary.files_checked + 1,
-        ), True
+        return (
+            replace(
+                summary,
+                files_checked=(
+                    summary.files_checked + 1
+                    if count_files_checked
+                    else summary.files_checked
+                ),
+            ),
+            True,
+        )
 
     def _detect_planned_content_type(
         self,
@@ -2542,6 +2656,7 @@ class FrameworkActions:
             DETECTOR_VERSION,
         )
         if cache_hit:
+            self._remember_identified_type(planned, detected)
             return (
                 replace(
                     summary,
@@ -2578,6 +2693,7 @@ class FrameworkActions:
                 None,
                 False,
             )
+        self._remember_identified_type(planned, detected)
         return summary, detected, True
 
     def _classify_detected_content_type(
@@ -2585,18 +2701,23 @@ class FrameworkActions:
         planned: FileSnapshot,
         detected: DetectedType | None,
         summary: ActionSummary,
+        *,
+        normalize: bool = True,
+        count_metrics: bool = True,
     ) -> tuple[ActionSummary, tuple[str, FileSnapshot] | None]:
         if detected is None:
-            return replace(
-                summary,
-                unknown_types=summary.unknown_types + 1,
-            ), None
-        summary = replace(summary, types_detected=summary.types_detected + 1)
+            if count_metrics:
+                summary = replace(summary, unknown_types=summary.unknown_types + 1)
+            return summary, None
+        if count_metrics:
+            summary = replace(summary, types_detected=summary.types_detected + 1)
         if detected.accepts(planned.path):
-            return replace(
-                summary,
-                extensions_matching=summary.extensions_matching + 1,
-            ), (detected.mime, planned)
+            if count_metrics:
+                summary = replace(
+                    summary,
+                    extensions_matching=summary.extensions_matching + 1,
+                )
+            return summary, (detected.mime, planned)
         target = _corrected_path(Path(planned.path), detected.canonical_extension)
         from neocortex.workflow.actions.redlist import redlist_match
 
@@ -2609,6 +2730,8 @@ class FrameworkActions:
                 summary,
             )
             return summary, None
+        if not normalize:
+            return summary, (detected.mime, planned)
         summary = self._rename_mismatch(planned, detected, summary)
         actual_path = (
             target if target.is_file() and not Path(planned.path).exists() else Path(planned.path)
@@ -2788,8 +2911,8 @@ class FrameworkActions:
                 target_path=str(target),
             )
             candidate = ApplyCandidate(
-                grant_id=f"framework:{self._run_id}",
-                grant_digest="sha256:" + "0" * 64,
+                owner_id=f"framework:{self._run_id}",
+                owner_digest="sha256:" + "0" * 64,
                 root=mutation_root,
                 effect=effect,
             )

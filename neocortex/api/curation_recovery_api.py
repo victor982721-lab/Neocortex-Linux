@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Required, TypedDict, cast
 from uuid import uuid4
 
-from neocortex.api.curation_application_api import _error_payload, _request_id, _safe_text
+from neocortex.api.read_contract import sanitize_untrusted_text
 from neocortex.curation.recovery import (
     CURATION_RESTORE_SCHEMA,
     RestoreBackend,
@@ -37,6 +37,49 @@ class CurationRecoveryStatusOutput(TypedDict, total=False):
     exit_code: Required[int]
 
 
+def _request_id(value: str | None, *, prefix: str) -> str:
+    if value is None:
+        return f"{prefix}-{uuid4().hex}"
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value) > 4_096
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("request_id is invalid")
+    return value
+
+
+def _safe_text(value: object, *, limit: int = 800) -> str:
+    return sanitize_untrusted_text(value, limit=limit, single_line=True)
+
+
+def _error_payload(
+    *,
+    schema: str,
+    operation: str,
+    request_id: str,
+    error: BaseException | str,
+    code: str,
+    retryable: bool,
+    kind: str,
+) -> dict[str, object]:
+    return {
+        "schema": schema,
+        "schema_version": 1,
+        "kind": kind,
+        "operation": operation,
+        "request_id": request_id,
+        "status": "blocked" if code == "invalid_request" else "unavailable",
+        "read_only": True,
+        "effects": {"state": "none", "corpus": "none", "external": "none"},
+        "result": None,
+        "error": {"code": code, "message": _safe_text(error), "retryable": retryable},
+        "exit_code": 2 if code == "invalid_request" else 1,
+    }
+
+
 def _paths(
     state_directory: Path | str | None,
     database: Path | str | None,
@@ -60,7 +103,6 @@ def _error(
             schema=schema,
             operation=operation,
             request_id=request_id,
-            grant_id=None,
             code=code,
             error=error,
             retryable=False,

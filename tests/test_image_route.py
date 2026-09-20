@@ -311,7 +311,7 @@ class ImageRouteTests(unittest.TestCase):
             self.assertEqual(len(fingerprints.values), 1)
             ((key, digest),) = fingerprints.values.items()
             self.assertEqual(key[-1], FULL_ALGORITHM)
-            self.assertEqual(len(digest), 16)
+            self.assertEqual(len(digest), 32)
 
     def test_candidate_limit_bounds_missing_fingerprints_on_cached_rows(self):
         with tempfile.TemporaryDirectory() as temporary:

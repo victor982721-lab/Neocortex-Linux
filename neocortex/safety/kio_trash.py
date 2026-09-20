@@ -1470,7 +1470,7 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
     """Restore one verified KIO receipt with atomic no-replace semantics.
 
     The helper is receipt-bound and independent of grant tables, so exact
-    dedupe actions can expose the same recovery path as grant-bound effects.
+    dedupe actions can expose the same recovery path as other receipt-bound effects.
     It never overwrites an existing destination and removes ``.trashinfo``
     only after the restored bytes are verified.
     """
@@ -1518,7 +1518,7 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
     if metadata_mode:
         if len(expected_digest) != 64 or any(c not in "0123456789abcdef" for c in expected_digest):
             raise ValueError("KIO restore metadata binding is invalid")
-    elif len(expected_digest) != 32 or any(c not in "0123456789abcdef" for c in expected_digest):
+    elif len(expected_digest) != 64 or any(c not in "0123456789abcdef" for c in expected_digest):
         raise ValueError("KIO restore digest is invalid")
 
     source_exists = os.path.lexists(source)
@@ -2006,8 +2006,8 @@ def _batch_digest(expected: FileSnapshot, supplied: str | None) -> str:
         digest = supplied.split(":", 1)[1] if ":" in supplied else ""
         if (
             not supplied.startswith(digest_prefix)
-            or len(supplied) != len(digest_prefix) + 32
-            or len(digest) != 32
+            or len(supplied) != len(digest_prefix) + 64
+            or len(digest) != 64
             or any(character not in "0123456789abcdef" for character in digest)
         ):
             raise KioTrashUnavailable(

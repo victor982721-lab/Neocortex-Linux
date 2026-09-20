@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.deduplication import FileSnapshot
 
@@ -705,7 +705,7 @@ def prepare_ocr_text_storage(
     return EncodedOcrText(
         compressed=zlib.compress(encoded),
         characters=len(text),
-        xxh3_128=xxhash.xxh3_128_hexdigest(encoded),
+        xxh3_128=sha256.sha256_128_hexdigest(encoded),
         truncated=truncated,
     )
 
@@ -731,7 +731,7 @@ def _decode_ocr_text(row: sqlite3.Row) -> ImageOcrTextRecord:
     if characters != len(text):
         raise ValueError("OCR text character count does not match its payload")
     fingerprint = str(row["ocr_text_xxh3_128"] or "")
-    actual_fingerprint = xxhash.xxh3_128_hexdigest(decoded)
+    actual_fingerprint = sha256.sha256_128_hexdigest(decoded)
     if fingerprint != actual_fingerprint:
         raise ValueError("OCR text XXH3 fingerprint does not match its payload")
     return ImageOcrTextRecord(

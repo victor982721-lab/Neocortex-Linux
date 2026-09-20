@@ -2,7 +2,6 @@ from __future__ import annotations
 
 
 import asyncio
-import copy
 import json
 from collections.abc import Callable
 
@@ -127,17 +126,19 @@ def test_untrusted_text_removes_terminal_controls_without_flattening_json() -> N
     )
 
 
-def test_shared_client_rejects_a_complete_payload_with_wrong_query(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from neocortex.api import read_api
-    from neocortex.interface.read import ReadClientError, ReadRequest, SharedReadClient
-
+def test_read_contract_rejects_a_complete_payload_with_wrong_query() -> None:
     payload = _search_payload()
-    monkeypatch.setattr(read_api, "search_payload", lambda *_args, **_kwargs: copy.deepcopy(payload))
 
-    with pytest.raises(ReadClientError, match="query"):
-        SharedReadClient().execute(ReadRequest("search", scope="personal", query="breaker", limit=4))
+    with pytest.raises(ReadContractError, match="query"):
+        validate_read_payload(
+            payload,
+            ReadOperation.SEARCH,
+            scope="personal",
+            query="breaker",
+            mode="evidence",
+            include_history=False,
+            limit=4,
+        )
 
 
 def test_no_operation_does_not_start_an_inventory_run(

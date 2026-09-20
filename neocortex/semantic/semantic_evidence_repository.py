@@ -373,7 +373,7 @@ def load_label_prototypes(
         fingerprint = _fingerprint_from_row(row)
         text = str(row["prototype_text"])
         if fingerprint_text(text) != fingerprint:
-            raise SemanticStateError("prototype text does not match its XXH3 identity")
+            raise SemanticStateError("prototype text does not match its SHA-256 identity")
         dimensions = int(row["dimensions"])
         vector = normalize_vector(
             decode_vector(

@@ -39,7 +39,6 @@ TARGET_ENVIRONMENT = {
 }
 PROFILES = {
     "runtime-base": ("runtime",),
-    "fast-hash": ("fast-hash",),
     "build": ("build",),
     "test-base": ("test-base",),
     "documents-image": ("documents", "image"),
@@ -159,8 +158,8 @@ def test_offline_artifacts_have_original_hashes_licenses_and_compatible_tags() -
                 assert _hash(license_path) == license_entry["sha256"]
                 assert license_path.read_bytes() == wheel.read(license_entry["source_member"])
     assert filenames == {path.name for path in (SUPPLY / "artifacts").iterdir()}
-    # Inference engines, Qt and large model weights are deliberately not supplied.
-    assert names.isdisjoint({"fastembed", "onnxruntime", "ctranslate2", "faster-whisper", "pyside6", "mcp"})
+    # Inference engines and large model weights are deliberately not supplied.
+    assert names.isdisjoint({"fastembed", "onnxruntime", "ctranslate2", "faster-whisper", "mcp"})
 
 
 @pytest.mark.parametrize("profile", tuple(PROFILES))

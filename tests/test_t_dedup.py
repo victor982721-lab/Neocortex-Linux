@@ -24,7 +24,6 @@ from neocortex.deduplication import (
     KeeperPolicy,
     files_equal_exact,
     full_fingerprint,
-    partial_fingerprint,
     snapshot_path,
 )
 from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
@@ -47,9 +46,6 @@ class HashingTests(unittest.TestCase):
             right_snapshot = snapshot_path(right)
             other_snapshot = snapshot_path(other)
             self.assertEqual(full_fingerprint(left_snapshot), full_fingerprint(right_snapshot))
-            self.assertEqual(
-                partial_fingerprint(left_snapshot), partial_fingerprint(right_snapshot)
-            )
             self.assertTrue(files_equal_exact(left_snapshot, right_snapshot))
             self.assertFalse(files_equal_exact(left_snapshot, other_snapshot))
 
@@ -380,7 +376,7 @@ class PlannerTests(unittest.TestCase):
             database = Path(directory) / "state.db"
             with DedupIndex(database) as index:
                 scan = index.scan(root, batch_size=2)
-                plan = DedupPlanner(index, partial_threshold=0).plan(scan.scan_id, preview_limit=1)
+                plan = DedupPlanner(index).plan(scan.scan_id, preview_limit=1)
                 self.assertEqual(scan.files_seen, 4)
                 self.assertEqual(len(plan.groups), 1)
                 group = plan.groups[0]
@@ -410,12 +406,12 @@ class PlannerTests(unittest.TestCase):
             (root / "b").write_bytes(b"x" * 20_000)
             with DedupIndex(Path(directory) / "state.db") as index:
                 scan = index.scan(root)
-                planner = DedupPlanner(index, partial_threshold=0)
+                planner = DedupPlanner(index)
                 first = planner.plan(scan.scan_id)
                 second = planner.plan(scan.scan_id)
-                self.assertEqual(first.statistics.partial_hash_files, 2)
+                self.assertEqual(first.statistics.partial_hash_files, 0)
                 self.assertEqual(first.statistics.full_hash_files, 2)
-                self.assertEqual(second.statistics.partial_hash_files, 2)
+                self.assertEqual(second.statistics.partial_hash_files, 0)
                 self.assertEqual(second.statistics.full_hash_files, 2)
                 self.assertEqual(second.statistics.cache_validation_reads, 2)
                 self.assertEqual(second.statistics.full_digest_reuses, 0)
@@ -505,13 +501,13 @@ class PlannerTests(unittest.TestCase):
 
             with DedupIndex(Path(directory) / "state.db") as index:
                 scan = index.scan(root)
-                planner = DedupPlanner(index, partial_threshold=0)
+                planner = DedupPlanner(index)
                 original_fingerprint = planner._fingerprint
 
-                def fingerprint(snapshot, *, partial):
+                def fingerprint(snapshot):
                     if Path(snapshot.path).name == "a.bin":
                         raise FileChangedError("candidate changed")
-                    return original_fingerprint(snapshot, partial=partial)
+                    return original_fingerprint(snapshot)
 
                 with patch.object(planner, "_fingerprint", side_effect=fingerprint):
                     plan = planner.plan(scan.scan_id, exact_compare=False)

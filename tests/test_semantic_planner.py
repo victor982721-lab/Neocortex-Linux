@@ -168,7 +168,7 @@ def _create_image_state(
     size = 100
     mtime_ns = 20
     birthtime_ns = 10
-    raw_digest = b"\x11" * 16
+    raw_digest = b"\x11" * 32
     ocr_payload = None if ocr_text is None else zlib.compress(ocr_text.encode())
     ocr_chars = None if ocr_text is None else len(ocr_text)
     ocr_digest = None if ocr_text is None else fingerprint_text(ocr_text).xxh3_128
@@ -472,6 +472,8 @@ def test_plan_rejects_schema_mismatch_without_migration(tmp_path: Path) -> None:
     database = _create_pdf_state(tmp_path, ("fixture",))
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE metadata SET value='10' WHERE key='schema_version'")
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     before = database.read_bytes()
 
     with pytest.raises(SemanticPlanBlocked, match=rf"expected {PDF_SCHEMA_VERSION}"):
@@ -1763,7 +1765,7 @@ def test_attached_dedup_data_version_fence_blocks_mid_plan_mutation(
     from neocortex.semantic import semantic_planner as planner_module
 
     real_projector = planner_module._plan_images
-    replacement_digest = b"\x22" * 16
+    replacement_digest = b"\x22" * 32
 
     def project_then_mutate(*args, **kwargs):
         result = real_projector(*args, **kwargs)

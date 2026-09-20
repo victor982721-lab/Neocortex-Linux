@@ -38,7 +38,8 @@ def test_manifest_covers_every_content_route_and_is_joined() -> None:
         assert capability.semantic_source_kinds
         assert set(capability.catalog_source_kinds).issubset(capability.semantic_source_kinds)
         assert capability.locators
-        assert {"cli", "human", "mcp", "ui"}.issubset(capability.public_surfaces)
+        assert {"cli", "human", "mcp"}.issubset(capability.public_surfaces)
+        assert "ui" not in capability.public_surfaces
     video = content_capability_by_id("video")
     assert video.route_dependencies == (
         CapabilityDependency(

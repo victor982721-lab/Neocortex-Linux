@@ -10,7 +10,7 @@ from dataclasses import asdict
 from typing import Any
 
 import pytest
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.documents import document_taxonomy_models
 from neocortex.documents.document_taxonomy import (
@@ -44,7 +44,7 @@ def _payload_fingerprint(value: Any) -> str:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    return xxhash.xxh3_128_hexdigest(payload)
+    return sha256.sha256_128_hexdigest(payload)
 
 
 def test_taxonomy_facade_preserves_public_model_identity() -> None:
@@ -81,10 +81,10 @@ def test_builtin_inventory_and_signature_remain_exact() -> None:
         "technical-document-naming-v9"
     )
     assert _payload_fingerprint(asdict(taxonomy)) == (
-        "0c7d9f33ecf4efde233515acef0d3e9b"
+        "9ed8a23d87c3eed6d92d0cec7647cc2f"
     )
     assert _payload_fingerprint(semantic_label_inventory()) == (
-        "22faa11fac9e30730bc0db9af80e886a"
+        "90854a04700bd569d30082bef8a11d13"
     )
 
 
@@ -99,7 +99,7 @@ def test_builtin_inventory_and_signature_remain_exact() -> None:
                 title="IEEE Std C37.20.2-2015 Metal-Clad Switchgear",
                 leading_text="This standard applies to circuit breakers.",
             ),
-            "85ac27dddc9a768c5a1f054eb483dc01",
+            "8295b2174dd4b6a758bcfbe1905e7277",
         ),
         (
             DocumentSignals(
@@ -110,7 +110,7 @@ def test_builtin_inventory_and_signature_remain_exact() -> None:
                 author="ANDRITZ HYDRO",
                 leading_text="Lista de verificación de pruebas eléctricas.",
             ),
-            "5bbed903a9aff4b849bfce5229c8de2f",
+            "54611049d1afafd9cf159b04b7d3810c",
         ),
         (
             DocumentSignals(
@@ -121,7 +121,7 @@ def test_builtin_inventory_and_signature_remain_exact() -> None:
                 author="OMICRON electronics",
                 leading_text="Test equipment for protection and control.",
             ),
-            "0d36eee4d5a1a6846c7fb84d1a971edb",
+            "f38b739a5eb8c2ba5468d1177ad9de1d",
         ),
         (
             DocumentSignals(
@@ -133,7 +133,7 @@ def test_builtin_inventory_and_signature_remain_exact() -> None:
                     "Net Weight: 104 kg\nDimensions: 90 x 60 x 40 cm"
                 ),
             ),
-            "5639a60f00192192fa0a3d2594aac311",
+            "738bd61325a1008a68f349609448d316",
         ),
         (
             DocumentSignals(
@@ -145,7 +145,7 @@ def test_builtin_inventory_and_signature_remain_exact() -> None:
                     "Grabación de la reunión de trabajo. Orden del día y acuerdos."
                 ),
             ),
-            "df2731ad446cce636fa293adcc226fc3",
+            "60fd10a3808ace3fc6624e68c18f6958",
         ),
     ),
 )

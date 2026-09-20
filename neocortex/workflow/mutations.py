@@ -1,16 +1,16 @@
 """Neutral physical mutation backends used by the framework action owner.
 
-This module is deliberately below the authorization and review layers.  It
-contains only the physical identity binding and the two Linux mutation seams
-needed by the framework workflow: a descriptor-relative POSIX rename and the
-prepared KIO Trash adapter.  Authorization grants, ReviewTasks, curation
-plans, and their repositories remain owned by their respective callers.
+This module is deliberately below planning and policy.  It contains only the
+physical identity binding and the two Linux mutation seams needed by the
+framework workflow: a descriptor-relative POSIX rename and the prepared KIO
+Trash adapter.  Planning, policy, receipts, and recovery remain owned by
+their respective callers.
 
 The public backend contract is intentionally small.  A caller supplies an
 ``ApplyCandidate`` whose ``effect`` exposes the source snapshot, source
 binding, action, and (for rename) target path.  Duck typing here is
-intentional: the integrated framework action owner and the grant-bound
-curation owner may use their own effect records without importing one another.
+intentional: action owners may use their own effect records without importing
+one another.
 """
 
 from __future__ import annotations
@@ -52,32 +52,8 @@ from neocortex.workflow.actions.file_action_recovery import effect_receipt_json
 ApplyStatus = Literal["applied", "blocked", "recovery_required"]
 
 
-class _BackendOutcomeMeta(type):
-    """Keep old fixture outcomes consumable without importing curation.
-
-    The framework action owner historically accepted the structurally
-    identical ``curation.application.BackendOutcome``.  A few external
-    fixture seams still return that value while the import boundary moves to
-    this neutral owner.  Recognizing only that exact legacy class by module
-    and name preserves the transition without importing or depending on the
-    curation package.
-    """
-
-    def __instancecheck__(cls, value: object) -> bool:
-        if type.__instancecheck__(cls, value):
-            return True
-        value_type = type(value)
-        return (
-            value_type.__module__ == "neocortex.curation.application"
-            and value_type.__name__ == "BackendOutcome"
-            and getattr(value, "status", None)
-            in {"applied", "blocked", "recovery_required"}
-            and isinstance(getattr(value, "reason", None), str)
-        )
-
-
 @dataclass(frozen=True, slots=True)
-class BackendOutcome(metaclass=_BackendOutcomeMeta):
+class BackendOutcome:
     """Typed result returned by an injected physical backend."""
 
     status: ApplyStatus
@@ -119,11 +95,11 @@ class ApplyCandidate:
 
     ``effect`` is intentionally an opaque record.  The physical backends
     inspect only the small public attributes documented by their callers and
-    do not import authorization or review contracts.
+    do not import planning or policy contracts.
     """
 
-    grant_id: str
-    grant_digest: str
+    owner_id: str
+    owner_digest: str
     root: Path
     effect: object
 
@@ -373,33 +349,19 @@ class PosixRenameBackend:
                 raise MutationSnapshotChanged(
                     "rename source changed immediately before syscall"
                 )
-            libc = ctypes.CDLL(None, use_errno=True)
-            renameat2 = getattr(libc, "renameat2", None)
-            if renameat2 is None:
-                return BackendOutcome("blocked", "renameat2_unavailable")
-            renameat2.argtypes = [
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_uint,
-            ]
-            renameat2.restype = ctypes.c_int
             if before_syscall is not None:
                 before_syscall()
             effect_crossed = True
-            if (
-                renameat2(
+            try:
+                _renameat2_noreplace(
                     source_parent_fd,
-                    os.fsencode(source_name),
+                    source_name,
                     target_parent_fd,
-                    os.fsencode(target_name),
-                    1,
+                    target_name,
                 )
-                != 0
-            ):
+            except OSError as exc:
                 effect_crossed = False
-                error_number = ctypes.get_errno()
+                error_number = exc.errno
                 if error_number == errno.EEXIST:
                     return BackendOutcome(
                         "recovery_required" if before_syscall is not None else "blocked",
@@ -410,10 +372,20 @@ class PosixRenameBackend:
                         "recovery_required" if before_syscall is not None else "blocked",
                         "exdev_same_filesystem_required",
                     )
+                if error_number in {
+                    errno.ENOSYS,
+                    errno.EINVAL,
+                    errno.EOPNOTSUPP,
+                    getattr(errno, "ENOTSUP", errno.EOPNOTSUPP),
+                }:
+                    return BackendOutcome(
+                        "recovery_required" if before_syscall is not None else "blocked",
+                        "renameat2_unavailable",
+                    )
                 return BackendOutcome(
                     "recovery_required" if before_syscall is not None else "blocked",
                     "rename_syscall_failed",
-                    os.strerror(error_number),
+                    str(exc),
                 )
             for descriptor in dict.fromkeys(
                 descriptor
@@ -508,6 +480,46 @@ def _open_parent_dirfd(root_fd: int, parts: tuple[str, ...]) -> tuple[int, str]:
     except BaseException:
         os.close(current)
         raise
+
+
+def _renameat2_noreplace(
+    source_parent_fd: int,
+    source_name: str,
+    target_parent_fd: int,
+    target_name: str,
+) -> None:
+    """Invoke Linux ``renameat2(RENAME_NOREPLACE)`` exactly once.
+
+    Descriptor acquisition and identity checks belong to the caller because
+    restore uses two different roots.  Keeping the syscall binding here makes
+    every POSIX no-replace adapter share the same primitive and never fall back
+    to an overwriting rename or copy/delete sequence.
+    """
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 is unavailable")
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    if (
+        renameat2(
+            source_parent_fd,
+            os.fsencode(source_name),
+            target_parent_fd,
+            os.fsencode(target_name),
+            1,
+        )
+        != 0
+    ):
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
 
 
 class KioTrashBackend:

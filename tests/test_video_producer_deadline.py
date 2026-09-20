@@ -9,7 +9,7 @@ from PIL import Image
 
 from neocortex.capabilities.formats.video import frames
 from neocortex.capabilities.formats.video.models import VideoProcessingError
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.runtime.control.global_resources import (
     CoordinatedMemoryGate, GlobalResourceCoordinator, GlobalResourceLimits, ResourceSample,
@@ -85,4 +85,4 @@ def test_batch_hashes_validated_capture_without_rereading_each_raster(tmp_path, 
     )
     assert len(result) == 1
     assert result[0].path.read_bytes() == payload
-    assert result[0].content_xxh3_128 == xxhash.xxh3_128(payload).hexdigest()
+    assert result[0].content_xxh3_128 == sha256.sha256_128(payload).hexdigest()

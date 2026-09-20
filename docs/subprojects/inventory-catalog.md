@@ -18,6 +18,11 @@ Consulta
 - Fingerprint reduce candidatos; igualdad destructiva exige comparación exacta.
   Bytes nominales redundantes no prueban espacio físico recuperable y mtime no
   representa revisión documental ni concede autoridad para elegir keeper.
+- Dedupe usa un único contrato de contenido: `size → sha256_full_v1 →
+  byte-for-byte`. Los tamaños únicos no se leen para hashing; cada bucket
+  repetido se hashea completo con `hashlib.sha256`. No existe fingerprint
+  parcial ni backend alterno. `sha256_128`/`sha256_64` sólo son derivaciones
+  compactas explícitas para contratos que realmente requieren esa anchura.
 - Un plan de organización no mueve archivos. Distingue clasificación, elegibilidad,
   propuesta, operación ejecutable y autorización; no introduzcas fuentes de `/tmp`
   o de otra raíz en el ámbito del corpus por compartir el catálogo.

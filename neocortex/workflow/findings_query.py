@@ -1,4 +1,4 @@
-"""Snapshot-bound pagination of the existing legacy Review candidate owner."""
+"""Snapshot-bound pagination of persisted, non-authorizing findings."""
 
 from __future__ import annotations
 
@@ -19,15 +19,124 @@ from neocortex.persistence.sqlite_immutable import (
 )
 from neocortex.persistence.sqlite_schema_contract import read_application_schema_version
 
-from .review import (
-    REVIEW_RECOMMENDATIONS,
-    REVIEW_STATUSES,
-    ReviewCandidateRecord,
+from neocortex.workflow.findings import (
+    FINDING_RECOMMENDATIONS,
     ReviewRecommendation,
-    ReviewStatus,
-    _REVIEW_CANDIDATE_COLUMNS,
-    _review_candidate_record,
 )
+
+@dataclass(frozen=True, slots=True)
+class FindingRecord:
+    """One persisted route finding, kept separate from any human workflow."""
+
+    route_name: str
+    path: str
+    volume_id: int
+    file_id: int
+    size: int
+    mtime_ns: int
+    birthtime_ns: int
+    reason_code: str
+    source_status: str
+    recommendation: ReviewRecommendation
+    retryable: bool
+    confidence: float
+    evidence: dict[str, object]
+    detector_version: str
+    status: str
+    first_detected_ns: int
+    last_detected_ns: int
+    last_detected_generation: int
+    resolved_ns: int | None
+    resolved_generation: int | None
+    resolution_note: str | None
+
+
+_FINDING_COLUMNS = """route_name,path,volume_id,file_id,size,mtime_ns,
+birthtime_ns,reason_code,source_status,
+recommendation,retryable,confidence,evidence_json,detector_version,status,
+first_detected_ns,last_detected_ns,last_seen_run_id,resolved_ns,
+resolved_run_id,resolution_note"""
+
+
+def _finding_record(row) -> FindingRecord:
+    import json
+    evidence = json.loads(str(row["evidence_json"]))
+    if not isinstance(evidence, dict):
+        raise sqlite3.DatabaseError("finding evidence must be a JSON object")
+    return FindingRecord(
+        route_name=str(row["route_name"]),
+        path=str(row["path"]),
+        volume_id=int(str(row["volume_id"]), 16),
+        file_id=int(str(row["file_id"]), 16),
+        size=int(row["size"]),
+        mtime_ns=int(row["mtime_ns"]),
+        birthtime_ns=int(row["birthtime_ns"]),
+        reason_code=str(row["reason_code"]),
+        source_status=str(row["source_status"]),
+        recommendation=str(row["recommendation"]),
+        retryable=bool(row["retryable"]),
+        confidence=float(row["confidence"]),
+        evidence=evidence,
+        detector_version=str(row["detector_version"]),
+        status=str(row["status"]),
+        first_detected_ns=int(row["first_detected_ns"]),
+        last_detected_ns=int(row["last_detected_ns"]),
+        last_detected_generation=int(row["last_seen_run_id"]),
+        resolved_ns=None if row["resolved_ns"] is None else int(row["resolved_ns"]),
+        resolved_generation=(None if row["resolved_run_id"] is None else int(row["resolved_run_id"])),
+        resolution_note=(None if row["resolution_note"] is None else str(row["resolution_note"])),
+    )
+
+FINDING_STATUSES = frozenset({"open", "resolved"})
+FindingStatus = str
+
+
+def list_findings(
+    database: str | Path,
+    *,
+    limit: int,
+    route_name: str | None = None,
+    recommendation: ReviewRecommendation | None = None,
+    status: FindingStatus = "open",
+) -> list[FindingRecord]:
+    """Return a bounded, read-only view of persisted route findings."""
+
+    if not 1 <= limit <= 10_000:
+        raise ValueError("finding limit must be between 1 and 10000")
+    if recommendation is not None and recommendation not in FINDING_RECOMMENDATIONS:
+        raise ValueError(f"invalid finding recommendation: {recommendation}")
+    if status not in FINDING_STATUSES:
+        raise ValueError(f"invalid finding status: {status}")
+    connection = connect_existing_framework(Path(database), readonly=True, timeout_seconds=60)
+    try:
+        clauses = ["status=?"]
+        parameters: list[object] = [status]
+        if route_name is not None:
+            clauses.append("route_name=?")
+            parameters.append(route_name)
+        if recommendation is not None:
+            clauses.append("recommendation=?")
+            parameters.append(recommendation)
+        parameters.append(limit)
+        rows = connection.execute(
+            "SELECT "
+            + _FINDING_COLUMNS
+            + " FROM findings WHERE "
+            + " AND ".join(clauses)
+            + """ ORDER BY
+            CASE recommendation
+                WHEN 'deletion_candidate' THEN 0
+                WHEN 'manual_review' THEN 1
+                WHEN 'keep_protected' THEN 2
+                ELSE 3
+            END,
+            confidence DESC,route_name,path,reason_code LIMIT ?""",
+            parameters,
+        ).fetchall()
+    finally:
+        connection.close()
+    return [_finding_record(row) for row in rows]
+
 
 
 _RANK_SQL = """CASE recommendation WHEN 'deletion_candidate' THEN 0
@@ -39,8 +148,8 @@ def _digest(value: object) -> str:
     return "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
-def review_candidate_projection(
-    record: ReviewCandidateRecord, *, snapshot_id: str,
+def finding_projection(
+    record: FindingRecord, *, snapshot_id: str,
 ) -> dict[str, object]:
     """Preserve a legacy finding without upgrading its label into actionability."""
 
@@ -82,7 +191,7 @@ def review_candidate_projection(
 
 
 @dataclass(frozen=True, slots=True)
-class ReviewCandidateListCursor:
+class FindingListCursor:
     snapshot_id: str
     query_signature: str
     rank: int
@@ -117,9 +226,9 @@ class ReviewCandidateListCursor:
         return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
     @classmethod
-    def from_token(cls, token: str) -> ReviewCandidateListCursor:
+    def from_token(cls, token: str) -> FindingListCursor:
         if not isinstance(token, str) or not 1 <= len(token) <= 65536:
-            raise ValueError("review cursor token must be bounded non-empty text")
+            raise ValueError("finding cursor token must be bounded non-empty text")
         try:
             raw = base64.b64decode(token + "=" * (-len(token) % 4), altchars=b"-_", validate=True)
             value = json.loads(raw)
@@ -130,27 +239,27 @@ class ReviewCandidateListCursor:
                 raise ValueError("cursor token must be canonical")
             return cursor
         except (ValueError, TypeError, UnicodeDecodeError) as exc:
-            raise ValueError("invalid review cursor token") from exc
+            raise ValueError("invalid finding cursor token") from exc
 
 
 @dataclass(frozen=True, slots=True)
-class ReviewCandidateRecordPage:
-    items: tuple[ReviewCandidateRecord, ...]
+class FindingRecordPage:
+    items: tuple[FindingRecord, ...]
     availability: Literal["ready", "absent", "failed", "snapshot_changed"]
     snapshot_id: str | None
     total_matching: int | None
-    next_cursor: ReviewCandidateListCursor | None
+    next_cursor: FindingListCursor | None
     reason_code: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.items, tuple) or len(self.items) > 10000 or any(
-            not isinstance(item, ReviewCandidateRecord) for item in self.items
+            not isinstance(item, FindingRecord) for item in self.items
         ):
             raise ValueError("items must be a bounded typed immutable tuple")
         if self.availability not in {"ready", "absent", "failed", "snapshot_changed"}:
-            raise ValueError("unsupported review page availability")
-        if self.next_cursor is not None and not isinstance(self.next_cursor, ReviewCandidateListCursor):
-            raise ValueError("next_cursor must be a typed review cursor")
+            raise ValueError("unsupported finding page availability")
+        if self.next_cursor is not None and not isinstance(self.next_cursor, FindingListCursor):
+            raise ValueError("next_cursor must be a typed finding cursor")
         if self.availability == "ready":
             if self.snapshot_id is None or type(self.total_matching) is not int or (
                 self.total_matching < len(self.items)
@@ -167,8 +276,8 @@ class ReviewCandidateRecordPage:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema": "neocortex.review-candidates-page/v1",
-            "items": [review_candidate_projection(item, snapshot_id=self.snapshot_id or "unavailable")
+            "schema": "neocortex.findings-page/v1",
+            "items": [finding_projection(item, snapshot_id=self.snapshot_id or "unavailable")
                       for item in self.items],
             "availability": self.availability,
             "snapshot_id": self.snapshot_id,
@@ -179,7 +288,7 @@ class ReviewCandidateRecordPage:
             "next_cursor": None if self.next_cursor is None else self.next_cursor.to_token(),
             "complete": self.availability == "ready" and self.total_matching == len(self.items),
             "reason_code": self.reason_code,
-            "scope": "legacy_findings_matching_filters",
+            "scope": "findings_matching_filters",
             "owner": "framework",
             "surface": "findings",
             "read_only": True,
@@ -195,41 +304,41 @@ def list_findings_page(
     limit: int,
     route_name: str | None = None,
     recommendation: ReviewRecommendation | None = None,
-    status: ReviewStatus = "open",
-    after: ReviewCandidateListCursor | str | None = None,
-) -> ReviewCandidateRecordPage:
+    status: FindingStatus = "open",
+    after: FindingListCursor | str | None = None,
+) -> FindingRecordPage:
     """Count and page one immutable logical view, never mask absence as zero."""
 
     if type(limit) is not int or not 1 <= limit <= 10000:
-        raise ValueError("review limit must be between 1 and 10000")
-    if recommendation is not None and recommendation not in REVIEW_RECOMMENDATIONS:
-        raise ValueError("invalid review recommendation")
-    if status not in REVIEW_STATUSES:
-        raise ValueError("invalid review status")
+        raise ValueError("finding limit must be between 1 and 10000")
+    if recommendation is not None and recommendation not in FINDING_RECOMMENDATIONS:
+        raise ValueError("invalid finding recommendation")
+    if status not in FINDING_STATUSES:
+        raise ValueError("invalid finding status")
     if route_name is not None and (
         not isinstance(route_name, str) or not route_name.strip() or len(route_name) > 256
     ):
         raise ValueError("route_name must be bounded non-blank text")
-    cursor = ReviewCandidateListCursor.from_token(after) if isinstance(after, str) else after
-    if cursor is not None and not isinstance(cursor, ReviewCandidateListCursor):
-        raise ValueError("after must be a ReviewCandidateListCursor or its token")
+    cursor = FindingListCursor.from_token(after) if isinstance(after, str) else after
+    if cursor is not None and not isinstance(cursor, FindingListCursor):
+        raise ValueError("after must be a FindingListCursor or its token")
     signature = _digest({"route_name": route_name, "recommendation": recommendation, "status": status})
     if cursor is not None and cursor.query_signature != signature:
-        raise ValueError("review cursor belongs to different query filters")
+        raise ValueError("finding cursor belongs to different query filters")
     selected = Path(database)
     try:
         fence = capture_sqlite_read_fence(selected)
         snapshot_id = _digest(asdict(fence))
         if cursor is not None and cursor.snapshot_id != snapshot_id:
-            return ReviewCandidateRecordPage((), "snapshot_changed", snapshot_id, None, None,
-                                             "review_source_snapshot_changed")
+            return FindingRecordPage((), "snapshot_changed", snapshot_id, None, None,
+                                             "finding_source_snapshot_changed")
         connection = connect_existing_framework(selected, readonly=True)
         try:
             connection.execute("BEGIN")
             version = read_application_schema_version(connection, label="framework")
             if version != SCHEMA_VERSION:
-                return ReviewCandidateRecordPage((), "failed", snapshot_id, None, None,
-                                                 "review_owner_schema_incompatible")
+                return FindingRecordPage((), "failed", snapshot_id, None, None,
+                                                 "finding_owner_schema_incompatible")
             clauses = ["status=?"]
             parameters: list[object] = [status]
             for field, value in (("route_name", route_name), ("recommendation", recommendation)):
@@ -245,33 +354,37 @@ def list_findings_page(
                 parameters.extend((cursor.rank, -cursor.confidence, cursor.route_name, cursor.path,
                                    cursor.reason_code, cursor.volume_id, cursor.file_id))
             rows = connection.execute(
-                "SELECT " + _REVIEW_CANDIDATE_COLUMNS + "," + _RANK_SQL + " AS priority_rank"
+                "SELECT " + _FINDING_COLUMNS + "," + _RANK_SQL + " AS priority_rank"
                 " FROM findings WHERE " + where + " ORDER BY priority_rank,confidence DESC,"
                 "route_name COLLATE BINARY,path COLLATE BINARY,reason_code COLLATE BINARY,"
                 "volume_id,file_id LIMIT ?", (*parameters, limit + 1),
             ).fetchall()
-            items = tuple(_review_candidate_record(row) for row in rows[:limit])
+            items = tuple(_finding_record(row) for row in rows[:limit])
         finally:
             connection.close()
         if capture_sqlite_read_fence(selected) != fence:
-            return ReviewCandidateRecordPage((), "snapshot_changed", None, None, None,
-                                             "review_source_snapshot_changed")
+            return FindingRecordPage((), "snapshot_changed", None, None, None,
+                                             "finding_source_snapshot_changed")
         next_cursor = None
         if len(rows) > limit:
             last = rows[limit - 1]
-            next_cursor = ReviewCandidateListCursor(
+            next_cursor = FindingListCursor(
                 snapshot_id, signature, int(last["priority_rank"]), float(last["confidence"]),
                 str(last["route_name"]), str(last["path"]), str(last["reason_code"]),
                 str(last["volume_id"]), str(last["file_id"]),
             )
-        return ReviewCandidateRecordPage(items, "ready", snapshot_id, count, next_cursor)
+        return FindingRecordPage(items, "ready", snapshot_id, count, next_cursor)
     except FileNotFoundError:
-        return ReviewCandidateRecordPage((), "absent", None, None, None, "review_owner_absent")
+        return FindingRecordPage((), "absent", None, None, None, "finding_owner_absent")
     except (ImmutableSQLiteUnavailable, sqlite3.Error, RuntimeError, ValueError):
-        return ReviewCandidateRecordPage((), "failed", None, None, None, "review_owner_read_failed")
+        return FindingRecordPage((), "failed", None, None, None, "finding_owner_read_failed")
 
 
 __all__ = [
-    "ReviewCandidateListCursor", "ReviewCandidateRecordPage", "list_findings_page",
-    "review_candidate_projection",
+    "FindingListCursor",
+    "FindingRecord",
+    "FindingRecordPage",
+    "finding_projection",
+    "list_findings",
+    "list_findings_page",
 ]

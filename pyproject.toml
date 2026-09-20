@@ -10,12 +10,11 @@ readme = "README.md"
 authors = [{name = "Víctor"}]
 maintainers = [{name = "Víctor"}]
 license = "LicenseRef-Proprietary"
-requires-python = ">=3.13,<3.15"
+requires-python = ">=3.13.5,<3.14"
 classifiers = [
     "Private :: Do Not Upload",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
     "packaging>=26,<27",
@@ -33,11 +32,6 @@ Neocortex = "neocortex.interface.entrypoint:entrypoint"
 [project.optional-dependencies]
 agent = [
     "mcp==1.29.0",
-]
-# Optional native accelerator.  The product remains functional without it and
-# falls back to SHA-256 from the Python standard library.
-fast-hash = [
-    "xxhash>=3.8,<4",
 ]
 # Build frontend and base tests are independent of optional runtimes/analyzers.
 # Packaging audit tests import the same isolated backend declared by
@@ -83,9 +77,6 @@ semantic = [
     "threadpoolctl>=3.6,<4",
     "Pillow>=12.3,<13",
 ]
-ui = [
-    "PySide6>=6.11,<7",
-]
 full = [
     "ctranslate2>=4.8,<5",
     "fastembed==0.8.0",
@@ -96,7 +87,6 @@ full = [
     "Pillow>=12.3,<13",
     "PyMuPDF>=1.27,<2",
     "pdfminer.six>=20260107",
-    "PySide6>=6.11,<7",
     "pytesseract>=0.3.13,<0.4",
 ]
 dev = [
@@ -119,7 +109,6 @@ extend-exclude = [
     "build",
     "dist",
     "node_modules",
-    "neocortex/interface/presentation/windows",
 ]
 
 [tool.pytest.ini_options]
@@ -139,7 +128,7 @@ ignore = [
 "tests/**/*.py" = ["B017"]
 
 [tool.mypy]
-# Type-check against the supported floor; local installed-wheel gates also use 3.14.
+# Type-check against the only supported runtime floor; installed-wheel gates use CPython 3.13.
 # R1-R4 benchmark/metric artifacts are hash-pinned acceptance inputs and are
 # intentionally audited as sealed data rather than edited for static cleanup.
 python_version = "3.13"
@@ -151,10 +140,10 @@ show_column_numbers = true
 warn_redundant_casts = true
 warn_unreachable = true
 warn_unused_ignores = true
-exclude = "(?x)(^|/)(build|dist|node_modules|\\.venv|\\.mypy_cache|\\.pytest_cache|\\.ruff_cache)/|(^|/)(neocortex/interface/presentation/windows|tools/benchmark_knowledge_functional\\.py|tools/knowledge_development_measurement\\.py|tools/knowledge_functional_v2_metrics\\.py|tools/knowledge_scoped_observation_metrics\\.py)"
+exclude = "(?x)(^|/)(build|dist|node_modules|\\.venv|\\.mypy_cache|\\.pytest_cache|\\.ruff_cache)/|(^|/)(tools/benchmark_knowledge_functional\\.py|tools/knowledge_development_measurement\\.py|tools/knowledge_functional_v2_metrics\\.py|tools/knowledge_scoped_observation_metrics\\.py)"
 
 [tool.pyright]
-# Preserve 3.13-compatible source while runtime validation covers CPython 3.14.
+# Keep static analysis aligned with the CPython 3.13-only runtime contract.
 pythonVersion = "3.13"
 pythonPlatform = "Linux"
 typeCheckingMode = "basic"
@@ -166,10 +155,9 @@ reportImportCycles = "warning"
 # do not embed a private absolute path; callers in another checkout may still
 # override it with Pyright's ``--venvpath`` option.
 venvPath = "../../.local/share/Neocortex/tooling"
-venv = "quality-cp314-20260907"
+venv = "quality-cp313-20260920"
 extraPaths = ["."]
 exclude = [
-    "**/neocortex/interface/presentation/windows/**",
     # Semgrep positive/negative fixtures intentionally contain invalid calls
     # to exercise syntax rules and are not product Python.
     "**/tests/fixtures/semgrep_invariants/**",
@@ -191,4 +179,3 @@ include = [
 
 [tool.setuptools.package-data]
 "neocortex" = ["py.typed"]
-"neocortex.interface.presentation" = ["assets/*.svg", "assets/*.png", "assets/*.ico"]

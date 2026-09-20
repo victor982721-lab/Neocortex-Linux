@@ -1,10 +1,10 @@
-"""Sidecar-safe, read-only projections of curation authorization state.
+"""Sidecar-safe, read-only projections of curation effects and recovery.
 
 This module is intentionally below the curation domain rather than the public
-API/agent server.  The desktop can inspect grants, physical attempts,
-receipts, and durable recovery observations without importing a writer or
-inventing a mutation control.  It never probes the corpus and never creates a
-missing Framework owner.
+API/agent server. The desktop can inspect physical attempts, receipts, and
+durable recovery observations without importing a writer or inventing a
+mutation control. It never probes the corpus and never creates a missing
+Framework owner.
 """
 
 from __future__ import annotations
@@ -16,11 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from neocortex.persistence.framework_authorization_schema import (
-    AUTHORIZATION_GRANTS_TABLE,
-    authorization_extension_present,
-    validate_authorization_extension,
-)
 from neocortex.persistence.framework_schema import (
     SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION,
     validate_framework_schema,
@@ -29,8 +24,6 @@ from neocortex.persistence.sqlite_immutable import (
     SQLiteReadSession,
     preferred_sqlite_read_mode,
 )
-from neocortex.workflow.authorization.repository import _COLUMNS as AUTHORIZATION_COLUMNS
-from neocortex.workflow.authorization.repository import _grant_from_row
 
 
 CURATION_READ_SCHEMA = "neocortex.curation-read/v1"
@@ -58,19 +51,6 @@ def _json_object(value: object) -> dict[str, object] | None:
     return decoded if isinstance(decoded, dict) else None
 
 
-def _intent_metadata(value: object) -> tuple[str | None, str | None]:
-    payload = _json_object(value)
-    if payload is None:
-        return None, None
-    grant_id = payload.get("grant_id")
-    effect = payload.get("effect")
-    effect_id = effect.get("effect_id") if isinstance(effect, dict) else None
-    return (
-        grant_id if isinstance(grant_id, str) else None,
-        effect_id if isinstance(effect_id, str) else None,
-    )
-
-
 def _receipt_metadata(value: object) -> tuple[str | None, str, str | None, str | None]:
     if value is None:
         return None, "absent", None, None
@@ -89,50 +69,6 @@ def _receipt_metadata(value: object) -> tuple[str | None, str, str | None, str |
 
 
 @dataclass(frozen=True, slots=True)
-class CurationGrantView:
-    """Bounded grant metadata; the actor label is not treated as a principal."""
-
-    grant_id: str
-    plan_digest: str
-    root: str
-    actor: str
-    action: str
-    backend: str
-    item_count: int
-    effect_count: int
-    max_actions: int
-    max_bytes: int
-    issued_ns: int
-    expires_ns: int
-    receipt_digest: str
-    receipt_state: Literal["canonical", "invalid"]
-    receipt_effects_digest: str | None
-    review_heads_digest: str | None
-    principal_state: Literal["not_authenticated"] = "not_authenticated"
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "grant_id": self.grant_id,
-            "plan_digest": self.plan_digest,
-            "root": self.root,
-            "actor": self.actor,
-            "action": self.action,
-            "backend": self.backend,
-            "item_count": self.item_count,
-            "effect_count": self.effect_count,
-            "max_actions": self.max_actions,
-            "max_bytes": self.max_bytes,
-            "issued_ns": self.issued_ns,
-            "expires_ns": self.expires_ns,
-            "receipt_digest": self.receipt_digest,
-            "receipt_state": self.receipt_state,
-            "receipt_effects_digest": self.receipt_effects_digest,
-            "review_heads_digest": self.review_heads_digest,
-            "principal_state": self.principal_state,
-        }
-
-
-@dataclass(frozen=True, slots=True)
 class CurationAttemptView:
     """One durable file-action attempt and its receipt metadata."""
 
@@ -142,8 +78,6 @@ class CurationAttemptView:
     status: str
     source_path: str
     target_path: str | None
-    grant_id: str | None
-    effect_id: str | None
     started_ns: int
     completed_ns: int | None
     detail: str | None
@@ -161,8 +95,6 @@ class CurationAttemptView:
             "status": self.status,
             "source_path": self.source_path,
             "target_path": self.target_path,
-            "grant_id": self.grant_id,
-            "effect_id": self.effect_id,
             "started_ns": self.started_ns,
             "completed_ns": self.completed_ns,
             "detail": self.detail,
@@ -205,7 +137,6 @@ class CurationReadSnapshot:
     """Safe desktop projection with no corpus or Framework writes."""
 
     status: Literal["complete", "unavailable"]
-    grants: tuple[CurationGrantView, ...] = ()
     attempts: tuple[CurationAttemptView, ...] = ()
     recovery: tuple[CurationRecoveryView, ...] = ()
     error_code: str | None = None
@@ -223,7 +154,6 @@ class CurationReadSnapshot:
             "status": self.status,
             "read_only": True,
             "effects": {"state": "none", "corpus": "none", "external": "none"},
-            "grants": [grant.to_dict() for grant in self.grants],
             "attempts": [attempt.to_dict() for attempt in self.attempts],
             "recovery": [item.to_dict() for item in self.recovery],
             "error": (
@@ -255,43 +185,6 @@ def _validate_framework_read(connection: sqlite3.Connection) -> None:
     validate_framework_schema(connection)
 
 
-def _read_grants(connection: sqlite3.Connection, limit: int) -> tuple[CurationGrantView, ...]:
-    if not authorization_extension_present(connection):
-        return ()
-    validate_authorization_extension(connection)
-    rows = connection.execute(
-        f"SELECT {AUTHORIZATION_COLUMNS} FROM {AUTHORIZATION_GRANTS_TABLE} "
-        "ORDER BY issued_ns DESC, grant_id DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
-    result: list[CurationGrantView] = []
-    for row in rows:
-        grant = _grant_from_row(row)
-        receipt_json = str(row["receipt_json"])
-        receipt = _json_object(receipt_json)
-        result.append(
-            CurationGrantView(
-                grant_id=grant.grant_id,
-                plan_digest=grant.plan_digest,
-                root=_bounded_text(grant.root, limit=4_096),
-                actor=_bounded_text(grant.actor, limit=256),
-                action=grant.action,
-                backend=grant.backend,
-                item_count=len(grant.item_ids),
-                effect_count=len(grant.authorized_effects or ()),
-                max_actions=grant.max_actions,
-                max_bytes=grant.max_bytes,
-                issued_ns=grant.issued_ns,
-                expires_ns=grant.expires_ns,
-                receipt_digest=_digest(receipt_json),
-                receipt_state="canonical" if receipt is not None else "invalid",
-                receipt_effects_digest=grant.authorized_effects_digest,
-                review_heads_digest=grant.review_task_heads_digest,
-            )
-        )
-    return tuple(result)
-
-
 def _read_attempt_rows(
     connection: sqlite3.Connection,
     limit: int,
@@ -316,7 +209,6 @@ def _read_attempt_rows(
     attempts: list[CurationAttemptView] = []
     recovery: list[CurationRecoveryView] = []
     for row in rows:
-        grant_id, effect_id = _intent_metadata(row["evidence"])
         receipt_digest, receipt_state, receipt_type, receipt_operation = _receipt_metadata(
             row["effect_receipt_json"]
         )
@@ -331,8 +223,6 @@ def _read_attempt_rows(
                 if row["target_path"] is None
                 else _bounded_text(row["target_path"], limit=4_096)
             ),
-            grant_id=grant_id,
-            effect_id=effect_id,
             started_ns=int(row["started_ns"]),
             completed_ns=None if row["completed_ns"] is None else int(row["completed_ns"]),
             detail=None if row["detail"] is None else _bounded_text(row["detail"], limit=800),
@@ -384,7 +274,7 @@ def read_curation_snapshot(
     *,
     limit: int = CURATION_READ_MAX_ITEMS,
 ) -> CurationReadSnapshot:
-    """Read grants, attempts, receipts and recovery without creating state."""
+    """Read attempts, receipts and recovery without creating state."""
 
     if (
         isinstance(limit, bool)
@@ -405,13 +295,11 @@ def read_curation_snapshot(
         ) as connection:
             connection.row_factory = sqlite3.Row
             _validate_framework_read(connection)
-            grants = _read_grants(connection, limit)
             attempts, recovery = _read_attempt_rows(connection, limit)
     except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
         return _unavailable("state_unavailable", exc)
     return CurationReadSnapshot(
         status="complete",
-        grants=grants,
         attempts=attempts,
         recovery=recovery,
     )
@@ -421,7 +309,6 @@ __all__ = (
     "CURATION_READ_MAX_ITEMS",
     "CURATION_READ_SCHEMA",
     "CurationAttemptView",
-    "CurationGrantView",
     "CurationReadSnapshot",
     "CurationRecoveryView",
     "read_curation_snapshot",

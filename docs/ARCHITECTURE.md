@@ -26,10 +26,10 @@ Neocortex / python -m neocortex
              │
      interface.entrypoint
              │
-     ┌───────┼────────┐
-     │       │        │
-    CLI     GUI      MCP/API
-     └───────┼────────┘
+     ┌───────┼───────┐
+     │       │       │
+    CLI    MCP/API  SDK
+     └───────┼───────┘
              │
        runtime/orchestrator
              │
@@ -461,10 +461,9 @@ crear timestamps, modificar el cache ni repetir OCR o embeddings. Un localizador
 malformado deja su ranking parcial, sin anular rankings independientes.
 
 Las propuestas de organización son advisory y no requieren `--apply`; no
-conceden permiso para mover, renombrar o borrar originales. La GUI proyecta la
-misma selección, presupuesto, estados y stage Semantic que la CLI: el perfil
-completo usa `--all`, el piloto mantiene límites acotados y una selección guardada
-no se amplía por inferencia.
+conceden permiso para mover, renombrar o borrar originales. La CLI conserva la
+misma selección, presupuesto, estados y stage Semantic en sus modos de perfil
+completo y selección acotada; una selección guardada no se amplía por inferencia.
 
 Una nueva ejecución `--all` no es una reanudación obligatoria del intento
 anterior. Si queda un pendiente Semantic, valida su manifest/raíz y los heads
@@ -482,8 +481,8 @@ reanudación explícita por defaults ni se ocultan parciales.
 
 ### Progreso y cancelación
 
-`neocortex.progress` define `ProgressEvent` y métricas estructuradas. Terminal,
-GUI y grabadores consumen el mismo evento. En Linux los procesos externos usan
+`neocortex.progress` define `ProgressEvent` y métricas estructuradas. Terminal y
+grabadores consumen el mismo evento. En Linux los procesos externos usan
 sesión/grupo propios; la cancelación alcanza el árbol y registra el estado final.
 
 Durante el stage Semantic, Framework mantiene su heartbeat escritor. Su consulta
@@ -646,8 +645,8 @@ organizativa no son equivalentes. El diagnóstico consulta owners especializados
 sin copiar sus datos a otro almacén monolítico.
 
 El envelope `neocortex.context-response/v2` proyecta, de forma bounded, entidades,
-relaciones, contradicciones, grafo y telemetría. `SharedReadClient`, GUI y
-conveniencias SDK solicitan v2; la fachada Python v1 permanece disponible sólo
+relaciones, contradicciones, grafo y telemetría. CLI, MCP y conveniencias SDK
+solicitan v2; la fachada Python v1 permanece disponible sólo
 por compatibilidad explícita. `KnowledgeReadBudget` limita filas, vectores,
 temporales, deadline y cancelación sin escribir estado ni introducir caches sin
 invalidación por heads/fences.
@@ -681,56 +680,25 @@ pipeline y `processing_signature` del head de imágenes publicado y se guarda en
 el owner Semantic. Si el contrato deriva o no existe, la búsqueda visual falla
 cerrada con una abstención explicable en vez de presentar vecinos no calibrados.
 
-### Review y curación
+### Curación automática y evidencia
 
-Los lectores de ReviewTask resuelven reemplazos por clave lógica y eventos por
-tarea, sin materializar el historial completo de otras fuentes. La vista
-publicada conserva el predecesor exacto cuando un reemplazo todavía no está
-publicado. Una página máxima valida también su fila adicional en lotes acotados
-dentro de la misma transacción antes de emitir el cursor.
+`curate plan`, `curate scan` y `curate verify` consultan publicaciones acotadas,
+revalidan identidad y bytes y devuelven cobertura, razones e incertidumbre. No
+crean tareas humanas, colas, eventos ni grants. El lector paginado de
+`workflow.findings_query` conserva observaciones no autoritativas del owner
+`findings`; no las convierte en planes de ejecución.
 
-Framework conserva batches, tareas, decisiones y eventos. **CURRENT:**
-`curate plan` y `--curation-preview` componen propuestas existentes sin crear
-estado ni tocar archivos.
+`--apply` es la única autorización de usuario para propuestas automáticas de
+alta confianza dentro de una raíz contenida. FrameworkActions revalida la raíz,
+identidad, política y no-follow junto al efecto, registra `file_actions` y
+receipts, y deja `recovery_required` ante una frontera ambigua. POSIX rename y
+KIO Trash viven en el owner neutral de mutaciones; no existe un backend físico
+paralelo de curation ni una capa de autorización humana.
 
-**IMPLEMENTED:** `neocortex.curation.lifecycle` enlaza un `plan_digest` completo
-con el owner ReviewTask existente. `curate review` publica una página como tareas
-advisory, conserva el item y snapshot, pagina con cursor, usa una source fence y
-reproduce el mismo batch de forma idempotente. `curate decide` vuelve a comprobar
-digest y snapshot y añade por CAS un evento humano `resolved` o `dismissed` con
-scope y actor. Ninguna de las dos operaciones crea `file_actions`, invoca KIO,
-autoriza efectos o toca corpus/sistemas externos.
-
-`neocortex.curation.authorization` implementa `curate authorize`. Exige
-un plan completo, ReviewTasks `resolved`, digest/snapshot/fence vigentes y un
-efecto permitido; persiste un `AuthorizationGrant` inmutable y acotado en la
-extensión opcional `curation_authorization_grants` del owner Framework. La
-extensión se crea sólo por la operación explícita, no añade otro owner y bloquea
-UPDATE/DELETE. El grant liga actor, acción, backend Linux, items/tareas,
-`max_actions`, `max_bytes`, emisión y expiración.
-
-Emitirlo escribe sólo estado: no crea `file_actions`, no invoca KIO y mantiene
-`physical_effect_applied=false`. **IMPLEMENTED sobre fixtures y backends
-inyectados:** `neocortex.curation.application` consume el manifest físico del
-grant, revalida plan, heads, expiración, raíz, identidad, hash y presupuestos,
-registra un `file_action` por efecto, verifica el receipt y conserva
-`recovery_required` ante ambigüedad. `PosixRenameBackend` usa no-replace
-same-filesystem y `KioTrashBackend` exige evidencia estructurada de destino.
-`neocortex.curation.recovery` añade preview read-only y restore con un intento
-`restore_curation`, confirmación exacta, `renameat2(RENAME_NOREPLACE)`, hash,
-identidad de raíz/Trash y receipt durable; una caída posterior al movimiento se
-concilia sin reintento. La CLI no selecciona backend automáticamente; la
-promoción KIO real y restore de escritorio siguen siendo gates posteriores. La
-conciliación append-only se expone mediante `reconcile_curation_actions` y no
-reintenta efectos. El contrato se describe en
-[FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
-
-La vista `neocortex.curation.read` permite consultar grants, intentos, receipts y
-recovery sin abrir el corpus ni crear estado; la GUI sólo presenta y copia esa
-información. El contrato `neocortex.authenticated-principal/v1` rechaza actores
-textuales y principals no atestados, pero no habilita todavía autorización MCP.
-La sincronización de caches para move/rename usa lock ordering explícito sólo en
-fixtures; `trash` conserva una política de invalidación separada.
+La vista `neocortex.curation.read` proyecta intentos, receipts y recovery sin
+abrir el corpus ni crear estado. Restore y su confirmación exacta siguen siendo
+un flujo separado de recovery; consultar evidencia no autoriza reintentar,
+restaurar o ampliar la ejecución.
 
 ## Persistencia
 
@@ -818,14 +786,10 @@ ausencia posterior de una base.
 - **API/SDK Python:** no exponen una variante paralela del factory reset; la
   operación destructiva completa permanece en la CLI `--factory-reset` y
   conserva el `--state-directory` explícito para fixtures.
-- **GUI:** presentación PySide6 que delega trabajo a workers; no redefine reglas.
-- **MCP:** servidor stdio local con consultas read-only y las escrituras de
-  estado advisory `curation_review`/`curation_decide`; estas últimas declaran
-  `readOnlyHint=false`, `destructiveHint=false` y no conceden autoridad. No
-  expone `authorize`, `apply`, `restore` ni conciliación escrita; el principal
-  autenticado sólo está definido como contrato de preparación.
+- **MCP:** servidor stdio local con consultas read-only de plan, scan y verify;
+  no publica tareas humanas, autorización, aplicación ni conciliación escrita.
 
-Las cuatro superficies deben conservar operación, scope, cobertura, epoch,
+Las tres superficies deben conservar operación, scope, cobertura, epoch,
 errores y evidencia equivalentes. La salida estructurada es contrato; el texto
 humano no debe convertirse de nuevo en datos mediante parsing.
 
@@ -877,8 +841,8 @@ Archive/ZIP sigue siendo únicamente una ruta de contenido.
 `--organization-apply` y las operaciones directas de cada formato conservan
 sus rechazos read-only. En Linux, `--all --apply` y `--dedupe --apply` sí cruzan
 la frontera explícita de archivos regulares mediante KIO receipt-bound; no hay
-mutación implícita en las corridas sin `--apply`. `curate apply` sigue siendo
-grant-bound y requiere un backend inyectado en una raíz contenida.
+mutación implícita en las corridas sin `--apply`. No existe una ruta de
+autorización humana paralela.
 
 La frontera `maintenance --scope historical-temp` es independiente de esas
 acciones: su plan nunca muta, y `--apply` sólo puede retirar una entrada con
@@ -996,7 +960,7 @@ conserva tiempo y motivo de cada selección. La captura comprueba cancelación
 durante lectura y espera, y recoge el proceso propio antes de devolver el error.
 
 Las superficies de ayuda y los contratos de configuración no importan motores
-ni Qt. El diagnóstico de paquetes usa requisitos de `pyproject.toml` en fuente
+ni backends de presentación. El diagnóstico de paquetes usa requisitos de `pyproject.toml` en fuente
 o `Requires-Dist` del paquete instalado, sin una lista paralela de versiones;
 inspección de metadata, localización de ejecutable, archivos de modelo y éxito
 de procesamiento no son equivalentes.
@@ -1024,8 +988,8 @@ owner, con lectura fijada, copia por páginas y comprobación acotada. Conserva
 únicamente la generación de candidatos, las recomendaciones abiertas ligadas a
 ella y la evidencia mínima de fases de replay; el backup completo queda para
 llamadas legacy sin una generación explícita. `FrameworkRouteState` usa esa
-vista inmutable sólo para candidatos; eventos, ReviewTasks, acciones y lifecycle
-conservan el owner original. La copia vive hasta que terminan todos los
+vista inmutable sólo para candidatos; acciones y lifecycle
+conservan sus owners. La copia vive hasta que terminan todos los
 workers, incluso ante error o cancelación, sin abrir un lector ordinario en el
 origen ni relajar los fences de `SQLiteReadSession`. La estimación multimodal conserva
 el orden de los selectores MIME y omite sus solapamientos por precedencia,
@@ -1045,12 +1009,12 @@ manifest y owner heads antes de publicar, y se abstiene fail-closed ante drift.
   generacional de todos esos owners;
 - la proyección de evidencia mantiene `reference_only` si faltan snippet o
   localizador verificado; no inventa estructura ni suficiencia de respuesta;
-- existe el contrato `authenticated-principal/v1`, pero falta conectarlo con una
-  sesión MCP confiable; MCP no expone `authorize`, `apply` ni `restore`;
+- MCP conserva sólo consultas de evidencia; no expone autorización, aplicación
+  ni conciliación escrita;
 - Framework construye `KioTrashBackend` en Linux al solicitar efectos. La ruta
-  exige política de plataforma, revalidación física y recibo. El coordinador
-  `curate apply` conserva su backend explícito; las fixtures del adapter no
-  certifican disponibilidad KDE/KIO ni restore de escritorio en el equipo instalado;
+  exige política de plataforma, revalidación física y recibo. Las fixtures del
+  adapter no certifican disponibilidad KDE/KIO ni restore de escritorio en el
+  equipo instalado;
 - `document_cache_sync` distingue `trash` de move/rename y exige una política de
   invalidación del owner; ese contrato no certifica por sí solo la sincronización
   de todos los consumidores después de un efecto real;

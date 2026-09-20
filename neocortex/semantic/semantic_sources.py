@@ -31,7 +31,6 @@ from neocortex.platform.content_capability_manifest import (
 )
 
 from neocortex.foundation.file_identity import FileIdentityError, decode_file_identity
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from .derivation_contracts import MaterializationRef
 from neocortex.knowledge.knowledge_contracts import RevisionRef, RevisionState
 from .semantic_models import (
@@ -40,7 +39,6 @@ from .semantic_models import (
     TextSection,
     TextSourceRecord as TextSourceRecord,
     fingerprint_bytes,
-    fingerprint_chunks,
     fingerprint_text,
 )
 from .semantic_quality import (
@@ -1510,7 +1508,11 @@ def _snapshot_from_image_row(row: sqlite3.Row) -> FileSnapshot:
     )
 
 
-def _stream_file_fingerprint(snapshot: FileSnapshot) -> ContentFingerprint:
+def _stream_file_fingerprint(snapshot: FileSnapshot) -> bytes:
+    """Return the complete SHA-256 digest for one verified image source."""
+
+    hasher = hashlib.sha256()
+
     def chunks() -> Iterator[bytes]:
         buffer = bytearray(FILE_HASH_BUFFER_BYTES)
         view = memoryview(buffer)
@@ -1526,20 +1528,22 @@ def _stream_file_fingerprint(snapshot: FileSnapshot) -> ContentFingerprint:
                     f"image source changed during fingerprinting: {snapshot.path}"
                 )
 
-    return fingerprint_chunks(chunks())
+    for chunk in chunks():
+        hasher.update(chunk)
+    return hasher.digest()
 
 
 def _image_descriptor_fingerprint(
     digest: bytes | memoryview,
     size: int,
 ) -> ContentFingerprint:
-    """Wrap a raw full-file XXH3-128 result in one stable cache descriptor."""
+    """Wrap a raw full-file SHA-256 result in one stable cache descriptor."""
 
     value = bytes(digest)
-    if len(value) != 16:
-        raise SemanticSourceError("dedup full fingerprint must contain 16 bytes")
+    if len(value) != hashlib.sha256().digest_size:
+        raise SemanticSourceError("dedup full fingerprint must contain 32 bytes")
     return fingerprint_bytes(
-        f"dedup-full-{HASH_ALGORITHM_128}-descriptor-v1\0".encode("utf-8")
+        f"dedup-full-{FULL_ALGORITHM}-descriptor-v1\0".encode("utf-8")
         + value
         + size.to_bytes(8, "little", signed=False)
     )
@@ -1651,6 +1655,7 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
     complete = True
     truncated = False
     missing_full_digest = False
+    invalid_full_digest = False
     source_statuses: set[str] = set()
     try:
         image_fence = _required_source_fence(image_database)
@@ -1690,9 +1695,18 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
                 include_ocr_payload=False,
             )
             for row in rows:
-                if row["full_digest"] is None:
+                full_digest = row["full_digest"]
+                if full_digest is None:
                     complete = False
                     missing_full_digest = True
+                else:
+                    try:
+                        digest_length = len(bytes(full_digest))
+                    except (TypeError, ValueError):
+                        digest_length = -1
+                    if digest_length != hashlib.sha256().digest_size:
+                        complete = False
+                        invalid_full_digest = True
                 if bool(row["ocr_text_truncated"]):
                     truncated = True
                 for name in (
@@ -1756,6 +1770,8 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
         else (
             "dedup_full_fingerprint_missing"
             if missing_full_digest
+            else "dedup_full_fingerprint_invalid"
+            if invalid_full_digest
             else "image_ocr_truncated"
             if truncated
             else "image_source_not_complete"
@@ -1825,11 +1841,10 @@ def iter_image_source_records(
             raw_digest = bytes(row["full_digest"])
             fingerprint_acquisition = "dedup-cache"
         else:
-            streamed_fingerprint = _stream_file_fingerprint(snapshot)
-            raw_digest = bytes.fromhex(streamed_fingerprint.xxh3_128)
+            raw_digest = _stream_file_fingerprint(snapshot)
             fingerprint_acquisition = "streamed-source"
         fingerprint = _image_descriptor_fingerprint(raw_digest, snapshot.size)
-        fingerprint_basis = f"raw-full-{HASH_ALGORITHM_128}-size-descriptor-v1"
+        fingerprint_basis = f"raw-full-{FULL_ALGORITHM}-size-descriptor-v1"
         raw_content_xxh3_128 = raw_digest.hex()
         processing_signature = str(row["processing_signature"] or "unprocessed")
         source_status = str(row["source_status"] or "unknown")

@@ -12,6 +12,7 @@ import sqlite3
 
 import pytest
 
+from neocortex.persistence import framework_schema
 from neocortex.persistence.framework_schema import FrameworkStateIncompatible
 from neocortex.persistence.framework_schema import initialize_framework_schema
 from neocortex.persistence.framework_schema import SCHEMA_VERSION
@@ -28,6 +29,92 @@ def _objects(connection: sqlite3.Connection) -> set[tuple[str, str]]:
             "SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
         )
     }
+
+
+def test_fresh_contract_excludes_retired_review_and_authorization_objects() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        initialize_framework_schema(connection, lambda: None)
+        objects = _objects(connection)
+        names = {name for name, _kind in objects}
+
+        assert not any(
+            name.startswith(("review_", "curation_authorization_"))
+            for name in names
+        )
+        assert {kind for _name, kind in objects} == {"table", "index", "trigger"}
+        framework_schema.validate_framework_schema(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    ("version", "builder", "validator"),
+    (
+        (
+            19,
+            framework_schema._build_v19_exact_schema,
+            framework_schema.validate_framework_schema_v19,
+        ),
+        (
+            20,
+            framework_schema._build_v20_exact_schema,
+            framework_schema.validate_framework_schema_v20,
+        ),
+        (
+            21,
+            framework_schema._build_v21_exact_schema,
+            framework_schema.validate_framework_schema_v21,
+        ),
+        (
+            22,
+            framework_schema._build_v23_exact_schema,
+            framework_schema.validate_framework_schema_v22,
+        ),
+        (
+            23,
+            framework_schema._build_v23_exact_schema,
+            framework_schema.validate_framework_schema_v23,
+        ),
+    ),
+)
+def test_legacy_reader_contract_is_core_only_and_tolerates_retired_objects(
+    version: int,
+    builder,
+    validator,
+) -> None:
+    """Knowledge reads core run/action watermarks, never Review/Grant state."""
+
+    connection = sqlite3.connect(":memory:")
+    try:
+        builder(connection)
+        connection.execute(
+            "INSERT INTO metadata(key,value) VALUES('schema_version',?)",
+            (str(version),),
+        )
+        # A deployed historical owner may still carry these tables.  The
+        # bounded reader must not need their DDL or open their rows.
+        connection.execute("CREATE TABLE review_decisions(decision_id INTEGER PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE curation_authorization_grants(grant_id TEXT PRIMARY KEY)"
+        )
+        validator(connection)
+    finally:
+        connection.close()
+
+
+def test_current_validator_rejects_retired_review_and_authorization_objects() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        initialize_framework_schema(connection, lambda: None)
+        connection.execute("CREATE TABLE review_decisions(decision_id INTEGER PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE curation_authorization_grants(grant_id TEXT PRIMARY KEY)"
+        )
+        with pytest.raises(RuntimeError, match="unexpected table"):
+            framework_schema.validate_framework_schema(connection)
+    finally:
+        connection.close()
 
 
 def test_current_version_with_malformed_table_is_rejected_without_repair(

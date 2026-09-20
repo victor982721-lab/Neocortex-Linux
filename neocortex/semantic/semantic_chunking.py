@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Iterable, Iterator, Sequence
 
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256
 
 from .semantic_models import (
     ContentFingerprint,
@@ -194,7 +194,7 @@ def _chunk_identifier(
     )
     return (
         f"chunk-{HASH_ALGORITHM_128}:"
-        f"{xxhash.xxh3_128_hexdigest(identity.encode('utf-8'))}"
+        f"{sha256.sha256_128_hexdigest(identity.encode('utf-8'))}"
     )
 
 

@@ -306,15 +306,15 @@ def test_exact_chunking_batches_real_supervisor_rpcs_without_changing_published_
         backend.close()
     assert len(chunks) == 327
     assert sizes == [32] * 10 + [7]
-    # Baseline 453f743: complete IDs, offsets, normalized text and fingerprints.
-    assert _projection_hash(chunks) == "f21c276721fb9c4d94663e1e34b6cfbdc0b83c899ad8355029deb88e2c6c3125"
+    # SHA-256 migration: complete IDs, offsets, normalized text and fingerprints.
+    assert _projection_hash(chunks) == "d0a5b5aa04b6b994260fb34b9c22617ff7c1cf6b16f3655127c8b01175563de7"
 
 
 @pytest.mark.parametrize("text,max_chars,limit,mode,count,digest", (
     ("Δίκτυο 漢字🙂 e\u0301\t protección\n\n eléctrica! " * 90, 160, 37, "chars", 181,
-     "c83d4593a76a2ee32dd8e5957abed64bc95d9e552e5b88ba6d83d3177cb2590e"),
+     "f055d9d0057effd56fb0e87b63fbc2a9b3526286eef916b243f5ec7a393618ec"),
     ("Árbol nube energía, λ界\n" * 120, 128, 25, "nonmonotonic", 120,
-     "ae587d4c6a96f469aa5a028f70e1f007777dec5c18140e58b1474125e1c915b6"),
+     "451f563d4ed9df46b5badcc0a82e2acd88eae98cbb4974c375f2f731c64c5745"),
 ))
 def test_exact_shrinking_keeps_unicode_offsets_and_nonmonotonic_token_counts(
     text: str, max_chars: int, limit: int, mode: str, count: int, digest: str,

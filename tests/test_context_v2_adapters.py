@@ -223,12 +223,10 @@ def test_flat_context_uses_explicit_state_root_and_negotiates(
     assert _fingerprints(published_text_state) == before
 
 
-def test_python_context_keeps_low_level_v1_and_gui_client_uses_v2(
+def test_python_context_keeps_low_level_v1_and_explicit_v2_transport(
     published_text_state: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from neocortex.interface.read import ReadRequest, SharedReadClient
-
     actual_context = read_api.context_payload
     assert actual_context("protección")["schema"] == "neocortex.read-api/v1"
     calls: list[dict[str, Any]] = []
@@ -239,7 +237,11 @@ def test_python_context_keeps_low_level_v1_and_gui_client_uses_v2(
 
     monkeypatch.setattr(read_api, "context_payload", record)
     before = _fingerprints(published_text_state)
-    payload = SharedReadClient().execute(ReadRequest("ask", query="protección", scope="personal"))
+    payload = read_api.context_payload(
+        "protección",
+        scope="personal",
+        response_version=2,
+    )
     assert payload["schema"] == "neocortex.context-response/v2"
     assert len(calls) == 1
     assert calls[0]["response_version"] == 2

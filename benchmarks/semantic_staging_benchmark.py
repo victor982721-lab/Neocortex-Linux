@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import xxhash
+from neocortex.foundation.hash_compat import sha256
 # endregion [01]
 
 # region [02] Implementación
@@ -212,7 +212,7 @@ def _logical_digests(database: Path) -> dict[str, str]:
     measurable projection.
     """
 
-    digests = {scope: xxhash.xxh3_128() for scope in ("body", "metadata")}
+    digests = {scope: sha256.sha256_128() for scope in ("body", "metadata")}
 
     def update(scope: str, row: tuple[object, ...]) -> None:
         digest = digests[scope]

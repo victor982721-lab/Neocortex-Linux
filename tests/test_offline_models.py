@@ -55,7 +55,7 @@ before = set(sys.modules)
 from neocortex.runtime.config.model_management import inspect_models
 report = inspect_models(models_root=__import__('pathlib').Path({str(tmp_path / 'absent')!r}))
 added = set(sys.modules) - before
-forbidden = ('fastembed', 'onnxruntime', 'faster_whisper', 'ctranslate2', 'PySide6', 'numpy', 'xxhash')
+forbidden = ('fastembed', 'onnxruntime', 'faster_whisper', 'ctranslate2', 'numpy', 'xxhash')
 assert not any(name.split('.')[0] in forbidden for name in added), sorted(added)
 assert 'neocortex.semantic.semantic_preparation' not in added
 assert 'neocortex.semantic.semantic_backends' not in added

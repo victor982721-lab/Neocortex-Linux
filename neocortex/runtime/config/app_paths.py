@@ -1,4 +1,4 @@
-"""Stable per-user application paths shared by CLI and desktop frontends."""
+"""Stable per-user application paths for the CLI and its runtime owners."""
 
 from __future__ import annotations
 
@@ -47,12 +47,6 @@ def default_generated_artifact_directories() -> tuple[Path, ...]:
     return tuple(
         project / directory for project in projects for directory in ("build", "dist", "wheelhouse")
     )
-
-
-def default_ui_settings_path() -> Path:
-    if os.name != "nt" and "LOCALAPPDATA" not in os.environ:
-        return current_platform_policy().config_directory / "ui.ini"
-    return local_application_data_directory() / "ui.ini"
 
 
 def source_repository_directory() -> Path:

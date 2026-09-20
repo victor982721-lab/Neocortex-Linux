@@ -54,7 +54,7 @@ def pytest_addoption(parser: Any) -> None:
         default="all",
         help=(
             "Collect explicit NeoCortex test capabilities before optional imports: "
-            "all (default), or comma-separated base,documents,image,inference,ui,platform,agent. "
+            "all (default), or comma-separated base,documents,image,inference,platform,agent. "
             "Selected missing dependencies are errors, not automatic skips."
         ),
     )

@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any, IO
 
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.capabilities.formats.xml_safety import safe_xml_iterparse
@@ -45,7 +45,7 @@ def normalized_text_digest(text: str) -> str:
     import unicodedata
 
     normalized = " ".join(unicodedata.normalize("NFKC", text).casefold().split())
-    return xxhash.xxh3_128_hexdigest(normalized.encode("utf-8"))
+    return sha256.sha256_128_hexdigest(normalized.encode("utf-8"))
 
 
 def _collect_element_text(
@@ -234,7 +234,7 @@ def layout_result(
         sort_keys=True,
         separators=(",", ":"),
     )
-    signature = xxhash.xxh3_128_hexdigest(encoded.encode("utf-8"))
+    signature = sha256.sha256_128_hexdigest(encoded.encode("utf-8"))
     return layout_class, signature, encoded
 
 

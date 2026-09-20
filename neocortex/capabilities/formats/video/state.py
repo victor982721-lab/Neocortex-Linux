@@ -855,7 +855,7 @@ def _validate_frame_dimensions(frame: VideoFrameEvidence) -> None:
 
 def _validate_frame_digest(digest: str) -> None:
     if len(digest) != 32 or any(character not in "0123456789abcdef" for character in digest):
-        raise ValueError("video frame digest must be a lowercase XXH3-128 hex value")
+        raise ValueError("video frame digest must be a lowercase SHA-256-derived 128-bit hex value")
 
 
 def _validate_frame_ocr(frame: VideoFrameEvidence) -> None:

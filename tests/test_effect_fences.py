@@ -9,14 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import neocortex.curation.application as application
+import neocortex.workflow.mutations as application
 import neocortex.safety.kio_trash as kio_trash
-from neocortex.curation.application import ApplyCandidate, PosixRenameBackend
+from neocortex.workflow.mutations import ApplyCandidate, PosixRenameBackend
 from neocortex.deduplication import FULL_ALGORITHM, full_fingerprint, snapshot_path
 from neocortex.deduplication.domain.errors import InventoryError
 from neocortex.deduplication.inventory.traversal import RootIdentity, validate_inventory_root
 from neocortex.safety.kio_trash import KioTrashStatus, KioTrashVerification, move_to_trash
-from neocortex.workflow.authorization.contracts import AuthorizationEffect
 
 
 def _client(path: Path) -> Path:
@@ -33,7 +32,7 @@ def _rename_candidate(root: Path) -> ApplyCandidate:
     source.write_bytes(b"rename fence fixture")
     snapshot = snapshot_path(source)
     digest = FULL_ALGORITHM + ":" + full_fingerprint(snapshot).hex()
-    effect = AuthorizationEffect(
+    effect = SimpleNamespace(
         effect_id="effect:fence",
         item_id="item:fence",
         task_id="task:fence",
@@ -44,7 +43,7 @@ def _rename_candidate(root: Path) -> ApplyCandidate:
         source_digest=digest,
         target_path=str(target),
     )
-    return ApplyCandidate("grant:fence", "sha256:" + "0" * 64, root, effect)
+    return ApplyCandidate("framework:fence", "sha256:" + "0" * 64, root, effect)
 
 
 def test_kio_rejects_replaced_executable_before_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

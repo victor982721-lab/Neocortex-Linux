@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 
 import pytest
-from neocortex.foundation.hash_compat import xxhash
+from neocortex.foundation.hash_compat import sha256
 
 import neocortex.documents.document_taxonomy as taxonomy_module
 from neocortex.documents.document_taxonomy import (
@@ -34,181 +34,181 @@ _EXPECTED: dict[str, tuple[str, float, str, str]] = {
         "normativa",
         0.96,
         "baja",
-        "2c70d654629fdc4c02d04b254a059609",
+        "91c163837a525bd75042732cb7c7dff5",
     ),
     "normative_iec_formal": (
         "normativa",
         0.96,
         "baja",
-        "18dbe95042b740a4f25eed0015f277a3",
+        "728341d2afcb8871a392b55c9c534ceb",
     ),
     "normative_nom_formal": (
         "normativa",
         0.96,
         "baja",
-        "f111e8b38f00b63acbe5483724c2728c",
+        "2a6b0e297366603c05e8a533aac15db7",
     ),
     "normative_nmx_formal": (
         "normativa",
         0.96,
         "baja",
-        "0e676cc9eee0c91516907d61e0ae037e",
+        "75739e5adcc2a7d7358b56633f1e1c29",
     ),
     "normative_astm_formal": (
         "normativa",
         0.96,
         "baja",
-        "8b0ff3fec1476ff1d5a25e9f5dca7348",
+        "5157440176e0127d3017a659854ccf46",
     ),
     "normative_cfe_specification": (
         "normativa",
         0.96,
         "baja",
-        "2c4e0032d9c645156ea92abb55f7f47e",
+        "e6972b7bcfd8faaac5292d346da52c4e",
     ),
     "normative_neta_formal": (
         "normativa",
         0.96,
         "baja",
-        "10b35feaf8f8a3aec7210ace4c5bfc0d",
+        "59d51e5aa2b8c03c7cf06c47c5e9667c",
     ),
     "normative_iso_formal": (
         "normativa",
         0.96,
         "baja",
-        "260e5a1597e20b35c629697c8448d1a6",
+        "73b947685910de32751225a4226b7a3a",
     ),
     "reference_som_procedure": (
         "procedimiento",
         0.81,
         "media",
-        "9c25cc595cd17acf0bca7d14e39171d7",
+        "7f6069dfb7a175dbafb3733e13b55c5a",
     ),
     "reference_inspection_report": (
         "informe_inspeccion",
         0.76,
         "media",
-        "0e9e18d26043c7a09e303e5c9ccae304",
+        "78a34e68e3f32535e29669148ce9a0c1",
     ),
     "reference_invoice": (
         "normativa",
         0.96,
         "baja",
-        "19194d9cc0a19b6b8dbf63062cfd6c69",
+        "57b20055744b0387e904ce4ba4081f4b",
     ),
     "reference_calibration_certificate": (
         "otro",
         0.35,
         "alta",
-        "ef73fa646d298ea5a4ac912ddf4348b3",
+        "930e4659339fc09448a40fd48cb4af95",
     ),
     "reference_equipment_manual": (
         "manual_equipo",
         0.76,
         "media",
-        "ab819e6fe3840a2b6adbd78fd11c4f87",
+        "9b5c61e8698163e2217b5fdef354d416",
     ),
     "reference_meeting_minutes": (
         "minuta_acta",
         0.69,
         "media",
-        "d6998d5759cd09d0e0d76a38ce39b7d0",
+        "ee9349a3ab353112d80901b09f98a055",
     ),
     "reference_laboratory_report": (
         "reporte_resultados_pruebas",
         0.76,
         "media",
-        "6896c4c53e61ba752cc5d892fc22aa4b",
+        "20e9682b3c100ebb4e50bacad22c8597",
     ),
     "reference_measurement_register": (
         "protocolo_pruebas",
         0.76,
         "media",
-        "ad7fecc333f4870cac0b469564085838",
+        "db02d25bc72fc15044575e94ea5bdafd",
     ),
     "reference_technical_offer": (
         "otro",
         0.35,
         "alta",
-        "2440d61f922c02981fa253c0e7ca493d",
+        "e5f3035286c3b76ad42c96cbe18addde",
     ),
     "reference_nonconformance": (
         "reporte_no_conformidad",
         0.98,
         "baja",
-        "9afafd1326ba2a22771b3ce0d1d1d155",
+        "ed35670ede2317b235881a207aefa3b5",
     ),
     "boundary_empty": (
         "otro",
         0.35,
         "alta",
-        "2055ee2a4c801d99dd65740dbb24f1be",
+        "126fb14bc24f9c4e45631ebabc426f5e",
     ),
     "boundary_partial_generic": (
         "otro",
         0.27,
         "alta",
-        "04eab9b734cd55a0624cf7f6a6c62013",
+        "e293ad2f7d1719f82574d10f35d0fcce",
     ),
     "boundary_managed_normative_without_evidence": (
         "otro",
         0.35,
         "alta",
-        "351b10a5c65af1efa161887f9dd19112",
+        "6d92a8393fc3e5cc491d7f2790727eea",
     ),
     "boundary_normative_words_without_identifier": (
         "informe_analisis",
         0.97,
         "baja",
-        "02e0f1d1d6c1de699deae05826dc767c",
+        "6c0046e4f3d25110bc68ebf8ad21d1da",
     ),
     "boundary_technical_topic_only": (
         "referencia_tecnica",
         0.74,
         "media",
-        "de4a50bc7150c9073273cfab1d4b180b",
+        "4a89d6eb2bff460dbd76f49b287a3de7",
     ),
     "boundary_audio_year_token": (
         "audio_transcrito",
         0.62,
         "alta",
-        "6964ed154f13a327cdce8768011d161c",
+        "9e14a8f8c7b5eeabf568df650ff0bc1b",
     ),
     "cross_andritz_form": (
         "lista_verificacion",
         0.95,
         "baja",
-        "5bbed903a9aff4b849bfce5229c8de2f",
+        "54611049d1afafd9cf159b04b7d3810c",
     ),
     "cross_omicron_manual": (
         "manual_equipo",
         0.8,
         "media",
-        "0d36eee4d5a1a6846c7fb84d1a971edb",
+        "f38b739a5eb8c2ba5468d1177ad9de1d",
     ),
     "cross_packing_list": (
         "lista_empaque_embarque",
         0.98,
         "baja",
-        "5639a60f00192192fa0a3d2594aac311",
+        "738bd61325a1008a68f349609448d316",
     ),
     "cross_audio_meeting": (
         "reunion_grabada",
         0.97,
         "baja",
-        "df2731ad446cce636fa293adcc226fc3",
+        "60fd10a3808ace3fc6624e68c18f6958",
     ),
     "cross_field_service_report": (
         "informe_tecnico",
         0.77,
         "media",
-        "5226a74b42d0f5e6c8774b6fc9289aa6",
+        "f441f464fa027c5d15c17136acb585fb",
     ),
     "cross_technical_email": (
         "otro",
         0.35,
         "alta",
-        "1eafb3d8d8fda3cde67b5714cf6f08eb",
+        "f117ab907f798afcc848ca61213dc1c9",
     ),
 }
 
@@ -439,7 +439,7 @@ def _payload_fingerprint(value: object) -> str:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    return xxhash.xxh3_128_hexdigest(payload)
+    return sha256.sha256_128_hexdigest(payload)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.case_id)

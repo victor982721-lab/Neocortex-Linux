@@ -11,7 +11,6 @@ import sys
 import time
 import venv
 import zipfile
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,7 +44,6 @@ def _policy(tmp_path: Path) -> PlatformPolicy:
         runtimes_directory=data / "runtimes",
         stable_launcher=data / "bin" / "Neocortex",
         user_alias=tmp_path / "home" / ".local" / "bin" / "Neocortex",
-        desktop_file=tmp_path / "home" / ".local" / "share" / "applications" / "neocortex.desktop",
         inventory_backend="portable-full-scan",
         identity_backend="posix-st_dev-st_ino",
         path_collation="BINARY",
@@ -61,7 +59,7 @@ def _native_fixture() -> tuple[release_linux.ReleaseVerification, dict]:
     """Synthetic exact-build evidence; it never accredits a production binary."""
     attestation = {
         "schema": sqlite_native.ATTESTATION_SCHEMA,
-        "python": {"implementation": "cpython", "version": "3.14.0", "cache_tag": "cpython-314",
+        "python": {"implementation": "cpython", "version": "3.13.15", "cache_tag": "cpython-313",
                    "executable": {"sha256": "a" * 64}},
         "sqlite": {"version": "fixture", "source_id": "TEST FIXTURE ONLY",
                    "compile_options": ["ENABLE_FTS5"], "module": {"sha256": "b" * 64},
@@ -78,7 +76,7 @@ def _native_fixture() -> tuple[release_linux.ReleaseVerification, dict]:
             "reviewed_on": "2026-09-18", "source_url": "https://vendor.example/test-only",
         }}],
     }
-    interpreter = {"implementation": "cpython", "version": "3.14.0", "cache_tag": "cpython-314",
+    interpreter = {"implementation": "cpython", "version": "3.13.15", "cache_tag": "cpython-313",
                    "executable": "bin/python"}
     record = sqlite_native.native_runtime_record(
         attestation, policy, expected_policy_sha256=sqlite_native.canonical_sha256(policy),
@@ -190,7 +188,7 @@ def _wheelhouse_fixture(tmp_path: Path, *specs: tuple[str, str]) -> Path:
             {
                 "schema_version": release_linux.WHEELHOUSE_SCHEMA_VERSION,
                 "kind": "neocortex_wheelhouse",
-                "python": "cp314",
+                "python": "cp313",
                 "platform": "linux_x86_64",
                 "artifacts": entries,
             },
@@ -226,7 +224,7 @@ def _minimal_release_wheelhouse(
 
 def test_release_identifier_is_version_sha_python_and_platform_bound() -> None:
     assert release_linux.release_id("a" * 40) == (
-        f"{release_linux.__version__}-{'a' * 12}-cp314-linux-x86_64"
+        f"{release_linux.__version__}-{'a' * 12}-cp313-linux-x86_64"
     )
     with pytest.raises(ValueError):
         release_linux.release_id("A" * 40)
@@ -235,16 +233,16 @@ def test_release_identifier_is_version_sha_python_and_platform_bound() -> None:
 @pytest.mark.parametrize(
     "name",
     [
-        "0.9.0-aaaaaaaaaaaa-cp314-linux-x86_64",
-        "0.10.0-bbbbbbbbbbbb-cp314-linux-x86_64",
-        "0.10.0-rc.1-" + "c" * 12 + "-cp314-linux-x86_64",
-        "0.10.0-" + "d" * 40 + "-cp314-linux-x86_64",
+        "0.9.0-aaaaaaaaaaaa-cp313-linux-x86_64",
+        "0.10.0-bbbbbbbbbbbb-cp313-linux-x86_64",
+        "0.10.0-rc.1-" + "c" * 12 + "-cp313-linux-x86_64",
+        "0.10.0-" + "d" * 40 + "-cp313-linux-x86_64",
     ],
 )
 def test_release_identifier_parser_is_cross_version_but_strict(name: str) -> None:
     assert release_linux.parse_release_id(name) is not None
     assert release_linux.parse_release_id("0.9.0-backup") is None
-    assert release_linux.parse_release_id(name.replace("cp314", "cp313")) is None
+    assert release_linux.parse_release_id(name.replace("cp313", "cp314")) is None
 
 
 def test_offline_environment_drops_indexes_credentials_and_import_overrides() -> None:
@@ -323,24 +321,23 @@ def test_install_requires_an_explicit_local_wheelhouse_before_preparing_corpus(
         **_fixture_policy_options(source),
             corpus_root=corpus,
             prepare_models=False,
-            desktop=False,
         )
     assert not corpus.exists()
 
 
-@pytest.mark.parametrize("python_version", ((3, 13), (3, 14)))
+@pytest.mark.parametrize("python_version", ((3, 13, 5), (3, 14, 0), (3, 13, 4)))
 def test_reference_platform_guard_keeps_the_production_interpreter_contract(
-    monkeypatch: pytest.MonkeyPatch, python_version: tuple[int, int],
+    monkeypatch: pytest.MonkeyPatch, python_version: tuple[int, int, int],
 ) -> None:
     monkeypatch.setattr(release_linux, "sys", SimpleNamespace(
         platform="linux", implementation=SimpleNamespace(name="cpython"),
         version_info=python_version,
     ))
     monkeypatch.setattr(release_linux, "platform", SimpleNamespace(machine=lambda: "x86_64"))
-    if python_version == (3, 14):
+    if python_version == (3, 13, 5):
         release_linux._require_reference_platform()
     else:
-        with pytest.raises(release_linux.LinuxReleaseError, match=r"CPython 3\.14"):
+        with pytest.raises(release_linux.LinuxReleaseError, match=r"CPython >=3\.13\.5,<3\.14"):
             release_linux._require_reference_platform()
 
 
@@ -609,16 +606,18 @@ def test_pip_bootstrap_policy_is_hash_pinned_and_matches_constraints() -> None:
     assert len(release_linux.PIP_BOOTSTRAP_SHA256) == 64
 
 
-def test_linux_cp314_runtime_lock_is_exact_and_complete() -> None:
+def test_linux_cp313_runtime_lock_is_exact_for_the_available_offline_closure() -> None:
     lock = PROJECT_ROOT / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
     entries = release_linux._runtime_dependency_lock(lock)
 
-    assert len(entries) >= 50
+    # The installed product is the authenticated base runtime.  Inference,
+    # audio, MCP, and document profiles remain separately provisioned extras.
+    assert len(entries) == 14
     assert entries["pip"] == release_linux.PIP_BOOTSTRAP_VERSION
     assert "neocortex-framework" not in entries
     assert all(name == release_linux._normalized_distribution_name(name) for name in entries)
     assert "nudenet" not in entries
-    assert not {"pytest", "ruff", "mypy", "coverage", "pip-audit"} & entries.keys()
+    assert not {"ruff", "mypy", "coverage", "pip-audit"} & entries.keys()
 
 
 def test_release_install_uses_the_runtime_lock_as_a_second_constraint(
@@ -1012,10 +1011,10 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
         # This fixture tests staging/publication; runtime execution is replaced
         # by verify_candidate below. Keep the executable and symlink structural
         # contract local, without requiring a host-wide CPython installation.
-        interpreter = release_root / "bin" / "python3.14"
+        interpreter = release_root / "bin" / "python3.13"
         interpreter.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
         interpreter.chmod(0o755)
-        (release_root / "bin" / "python").symlink_to("python3.14")
+        (release_root / "bin" / "python").symlink_to("python3.13")
         command = release_root / "bin" / "Neocortex"
         command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         command.chmod(0o755)
@@ -1048,7 +1047,6 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
         **_fixture_policy_options(source),
         corpus_root=corpus_root if explicit_corpus else None,
         prepare_models=False,
-        desktop=False,
         wheelhouse=wheelhouse,
     )
 
@@ -1099,10 +1097,10 @@ def test_virtualenv_metadata_drops_transient_direct_url_and_rebinds_cfg(tmp_path
     staging = tmp_path / "staging" / "candidate"
     final = tmp_path / "releases" / release_linux.release_id("b" * 40)
     (staging / "bin").mkdir(parents=True)
-    (staging / "lib" / "python3.14" / "site-packages" / "demo-1.0.dist-info").mkdir(
+    (staging / "lib" / "python3.13" / "site-packages" / "demo-1.0.dist-info").mkdir(
         parents=True
     )
-    direct = staging / "lib" / "python3.14" / "site-packages" / "demo-1.0.dist-info" / "direct_url.json"
+    direct = staging / "lib" / "python3.13" / "site-packages" / "demo-1.0.dist-info" / "direct_url.json"
     direct.write_text(
         '{"url": "file:///tmp/staging/demo.whl"}\n',
         encoding="utf-8",
@@ -1176,9 +1174,9 @@ def test_prune_old_releases_keeps_current_and_immediate_rollback(
 
 def test_prune_old_releases_covers_all_supported_versions(tmp_path: Path) -> None:
     layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
-    current = _release(layout, "0.10.0-" + "a" * 12 + "-cp314-linux-x86_64")
-    rollback = _release(layout, "0.9.0-" + "b" * 12 + "-cp314-linux-x86_64")
-    old = _release(layout, "0.8.0-" + "c" * 12 + "-cp314-linux-x86_64")
+    current = _release(layout, "0.10.0-" + "a" * 12 + "-cp313-linux-x86_64")
+    rollback = _release(layout, "0.9.0-" + "b" * 12 + "-cp313-linux-x86_64")
+    old = _release(layout, "0.8.0-" + "c" * 12 + "-cp313-linux-x86_64")
 
     assert release_linux._prune_old_releases(layout, current=current, rollback=rollback) == (
         old.name,
@@ -1271,7 +1269,6 @@ def test_launcher_works_through_user_alias_when_alias_lives_elsewhere(tmp_path: 
     release_linux._publish_public_access(
         layout,
         tmp_path / "Corpus con espacio",
-        desktop=False,
     )
 
     completed = subprocess.run(
@@ -1300,7 +1297,7 @@ def test_launcher_preserves_process_corpus_override_without_persisting_it(
     )
     _activate(layout, release)
     operational_root = tmp_path / "Operational ' corpus $HOME"
-    release_linux._publish_public_access(layout, operational_root, desktop=False)
+    release_linux._publish_public_access(layout, operational_root)
     environment = dict(os.environ)
     environment.pop("NEOCORTEX_CORPUS_ROOT", None)
     smoke_root = tmp_path / "smoke corpus"
@@ -1341,9 +1338,7 @@ def verification_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Linu
     current = _release(layout, release_linux.release_id(sha))
     _activate(layout, current)
     layout.policy.corpus_root.mkdir(parents=True)
-    _, hashes = release_linux._publish_public_access(
-        layout, layout.policy.corpus_root, desktop=False,
-    )
+    _, hashes = release_linux._publish_public_access(layout, layout.policy.corpus_root)
     release_linux._write_receipt(
         layout,
         {
@@ -1472,27 +1467,6 @@ def test_verification_rejects_an_effective_corpus_outside_the_smoke_fixture(
         release_linux.verify_release(verification_layout, runner=runner)
 
 
-def test_desktop_entry_quotes_launcher_paths_with_spaces(tmp_path: Path) -> None:
-    policy = _policy(tmp_path)
-    spaced_data = tmp_path / "data with space" / "Neocortex"
-    policy = replace(
-        policy,
-        data_directory=spaced_data,
-        releases_directory=spaced_data / "releases",
-        current_release=spaced_data / "current",
-        stable_launcher=spaced_data / "bin" / "Neocortex",
-    )
-    layout = LinuxReleaseLayout(tmp_path / "source", policy)
-    payload = release_linux._desktop_payload(layout)
-    desktop = tmp_path / "neocortex.desktop"
-    desktop.write_bytes(payload)
-
-    assert b'Exec="' in payload
-    validator = shutil.which("desktop-file-validate")
-    if validator is not None:
-        subprocess.run((validator, desktop), check=True, timeout=10)
-
-
 def test_failed_rollback_receipt_restores_the_prior_activation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1528,7 +1502,7 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
     monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation",
                         lambda *_a, **_k: _native_fixture()[0].native_runtime["attestation"])
     source = tmp_path / "source"
-    (source / "neocortex" / "interface" / "presentation" / "assets").mkdir(parents=True)
+    source.mkdir()
     _write_runtime_lock(source)
     (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
@@ -1564,7 +1538,6 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
         **_fixture_policy_options(source),
             corpus_root=tmp_path / "corpus",
             prepare_models=False,
-            desktop=False,
             wheelhouse=wheelhouse,
         )
 
@@ -1610,7 +1583,6 @@ def test_install_preserves_active_release_when_its_manifest_is_unusable(
             layout,
         **_fixture_policy_options(source),
             prepare_models=False,
-            desktop=False,
             wheelhouse=wheelhouse,
         )
 
@@ -1644,8 +1616,10 @@ def test_install_preserves_noncurrent_manifestless_release_used_by_a_process(
     wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
     with pytest.raises(release_linux.LinuxReleaseError, match="in use by host processes"):
         release_linux.install_release(
-            layout, prepare_models=False, desktop=False, wheelhouse=wheelhouse,
-        **_fixture_policy_options(source),
+            layout,
+            prepare_models=False,
+            wheelhouse=wheelhouse,
+            **_fixture_policy_options(source),
         )
 
     assert candidate.is_dir() and (candidate / "bin" / "Neocortex").is_file()
@@ -1695,7 +1669,6 @@ def test_missing_offline_models_never_promote_or_trigger_acquisition(
         **_fixture_policy_options(source),
             corpus_root=tmp_path / "corpus",
             prepare_models=True,
-            desktop=True,
             wheelhouse=wheelhouse,
             runner=fail_prepare,
         )
@@ -1703,7 +1676,6 @@ def test_missing_offline_models_never_promote_or_trigger_acquisition(
     assert release_linux._current_target(layout) == old.resolve()
     assert not layout.launcher.exists()
     assert not layout.alias.exists()
-    assert not layout.desktop.exists()
     assert len(smoke_roots) == 1 and not smoke_roots[0].exists()
 
 
@@ -1756,7 +1728,6 @@ def test_repromote_recovers_recorded_rollback_and_prunes_stale_releases(
         **_fixture_policy_options(source),
         corpus_root=tmp_path / "corpus",
         prepare_models=False,
-        desktop=False,
         wheelhouse=wheelhouse,
     )
 
@@ -1908,7 +1879,12 @@ def test_sqlite_policy_preflight_fails_before_corpus_or_activation(tmp_path: Pat
 
         monkeypatch.setattr(release_linux, "_preflight_install", preflight)
     with pytest.raises(release_linux.LinuxReleaseError, match=r"policy|trusted binding"):
-        release_linux.install_release(layout, prepare_models=False, desktop=False, wheelhouse=wheelhouse, **options)
+        release_linux.install_release(
+            layout,
+            prepare_models=False,
+            wheelhouse=wheelhouse,
+            **options,
+        )
     assert not layout.policy.corpus_root.exists()
     assert not layout.current.exists()
     assert not layout.launcher.exists()
@@ -1963,7 +1939,7 @@ def test_v2_public_verify_binds_receipt_policy_and_current_measurement(tmp_path:
     current = _release(layout, release_linux.release_id("a" * 40), native=True)
     _activate(layout, current)
     layout.policy.corpus_root.mkdir(parents=True)
-    _, public = release_linux._publish_public_access(layout, layout.policy.corpus_root, desktop=False)
+    _, public = release_linux._publish_public_access(layout, layout.policy.corpus_root)
     manifest = json.loads((current / release_linux.RELEASE_MANIFEST_NAME).read_text())
     receipt = {
         "schema_version": 2, "kind": "linux_release_receipt", "operation": "install",

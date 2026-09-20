@@ -12,7 +12,7 @@ from pathlib import Path
 from neocortex.platform.policy import stat_birthtime_ns
 from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256, sha256_hasher
 
 from .semantic_config import fastembed_cache_contract
 from .semantic_models import (
@@ -186,7 +186,9 @@ def _verify_declared_revision(
 
 
 def _raw_file_xxh3_128(path: Path) -> str:
-    digest = xxhash.xxh3_128()
+    """Return the complete SHA-256 digest for an image source."""
+
+    digest = sha256_hasher()
     with path.open("rb") as stream:
         while block := stream.read(1024 * 1024):
             digest.update(block)
@@ -209,7 +211,7 @@ def _verify_image_source(
         expected_digest = request.source_revision.get("raw_content_xxh3_128")
         if (
             not isinstance(expected_digest, str)
-            or len(expected_digest) != 32
+            or len(expected_digest) != 64
             or any(character not in "0123456789abcdef" for character in expected_digest)
         ):
             raise ValueError("image requests require source_revision.raw_content_xxh3_128")
@@ -219,11 +221,11 @@ def _verify_image_source(
         raise
     except OSError as exc:
         raise SourceRevisionMismatchError(
-            f"image source is unavailable for XXH3 verification: {path}"
+            f"image source is unavailable for SHA-256 verification: {path}"
         ) from exc
     if after != before:
         raise SourceRevisionMismatchError(
-            f"image source changed while its XXH3 digest was verified: {path}"
+            f"image source changed while its SHA-256 digest was verified: {path}"
         )
     if actual_digest != expected_digest:
         raise SourceRevisionMismatchError(
@@ -429,7 +431,7 @@ class FastEmbedBackend:
             f"exact-token-fit-v1\0{self.model.model_signature}\0"
             f"{contract.repository_id}\0{revision}\0{token_limit}"
         )
-        digest = xxhash.xxh3_128_hexdigest(identity.encode("utf-8"))
+        digest = sha256.sha256_128_hexdigest(identity.encode("utf-8"))
         return f"exact-token-fit-v1:{HASH_ALGORITHM_128}:{digest}", token_limit
 
     def _untruncated_token_counts(

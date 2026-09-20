@@ -679,7 +679,7 @@ def test_catalog_materialization_preserves_exact_identity_and_provenance(
     candidate = candidates[0]
     assert candidate.resource.resource_id == "resource:file:1:2:10"
     assert candidate.resource.current_path == "C:/docs/catalog-1.pdf"
-    assert candidate.revision.revision_id == ("revision:catalog:203402563930d8e61b528d734c673848")
+    assert candidate.revision.revision_id == ("revision:catalog:3db4def7ef61619f5ce1c8d7e1ae0fdd")
     assert candidate.revision.producer == "document-catalog-v6"
     assert candidate.revision.processing_signature == "catalog-fixture-v1"
     assert candidate.revision.generation == 1

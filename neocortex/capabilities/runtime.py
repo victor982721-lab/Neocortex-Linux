@@ -515,20 +515,6 @@ CAPABILITY_SPECS: Mapping[str, RuntimeCapabilitySpec] = MappingProxyType(
             ),
             extra="semantic",
         ),
-        "ui": RuntimeCapabilitySpec(
-            "ui",
-            _with_base(
-                _distribution(
-                    "pyside6",
-                    "PySide6",
-                    "PySide6",
-                    required=True,
-                    missing_reason="ui_runtime_unavailable",
-                    extra="ui",
-                ),
-            ),
-            extra="ui",
-        ),
     }
 )
 
@@ -555,7 +541,7 @@ CAPABILITY_MANIFESTS: tuple[CapabilityManifest, ...] = (
         provider="neocortex-builtin",
         provider_version="text-route-v2",
         lifecycle=CapabilityLifecycle.PRODUCTION,
-        supported_platforms=("linux", "windows"),
+        supported_platforms=("linux",),
         modalities=("document",),
         input_schemas=(TEXT_RAW_INPUT_SCHEMA,),
         output_schemas=(TEXT_REPRESENTATION_OUTPUT_SCHEMA,),
@@ -575,9 +561,8 @@ CAPABILITY_MANIFESTS: tuple[CapabilityManifest, ...] = (
         network_required=False,
         privacy=CapabilityPrivacy.LOCAL_ONLY,
         optional_extra="documents",
-        # XXH3 is an optional accelerator.  The product's hash compatibility
-        # layer supplies a deterministic stdlib fallback, so its absence must
-        # never make the builtin text implementation unavailable.
+        # Content identity uses the deterministic standard-library SHA-256
+        # backend; no optional native hash provider gates this capability.
         required_components=(),
         required_binaries=(),
         mime_binary_alternatives=(),

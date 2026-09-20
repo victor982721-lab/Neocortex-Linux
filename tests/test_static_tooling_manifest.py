@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 from pathlib import Path
 
@@ -16,12 +15,6 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parents[1]
 INVENTORY = REPOSITORY / "dev-resources" / "offline" / "static-tools"
 MANIFEST_PATH = INVENTORY / "manifest.json"
-RUNTIME_WHEELHOUSE = Path(
-    os.environ.get(
-        "NEOCORTEX_WHEELHOUSE",
-        "/home/winterboss/Documentos/NeoCortex/Wheelhouse/Linux-CPython-3.14",
-    )
-)
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -49,11 +42,12 @@ def test_static_tooling_manifest_is_self_consistent() -> None:
 
     runtime = payload["runtime_reference"]
     assert isinstance(runtime, dict)
-    lock = (INVENTORY / str(runtime["lock_path"])).resolve()
-    assert lock == (REPOSITORY / "constraints-linux-cp314.lock")
-    assert _sha256(lock) == runtime["lock_sha256"]
-    assert SHA256.fullmatch(str(runtime["wheelhouse_manifest_sha256"]))
-    assert runtime["wheelhouse_artifact_count"] == 69
+    assert runtime["status"] == "historical-only"
+    assert "CPython 3.14" in runtime["reason"]
+    assert "CPython 3.13-only" in runtime["reason"]
+    assert "lock_path" not in runtime
+    assert "wheelhouse_manifest_sha256" not in runtime
+    assert "wheelhouse_artifact_count" not in runtime
 
     expected_roots = {
         "ruff": ("0.15.17", "analyzer"),
@@ -110,19 +104,10 @@ def test_static_tooling_manifest_is_self_consistent() -> None:
     ]
     assert missing == payload["missing_wheels"]
 
-    # Runtime artifacts are referenced by hash rather than copied into the
-    # static inventory.  If the canonical wheelhouse is mounted, validate the
-    # referenced hashes against it as an additional live check.
-    canonical_manifest = RUNTIME_WHEELHOUSE / "wheelhouse-manifest.json"
-    if canonical_manifest.is_file():
-        assert _sha256(canonical_manifest) == runtime["wheelhouse_manifest_sha256"]
-        canonical = {
-            (item["name"], item["version"]): item["sha256"]
-            for item in json.loads(canonical_manifest.read_text(encoding="utf-8"))["artifacts"]
-        }
-        for entry in entries:
-            if entry["artifact_status"] == "runtime-shared":
-                assert canonical[(entry["name"], entry["version"])] == entry["artifact_sha256"]
+    # This snapshot is deliberately decoupled from the product runtime lock.
+    # A CPython 3.13 runtime or wheelhouse must not be inferred from historical
+    # CPython 3.14 static-tool records, and this test must not inspect a host
+    # wheelhouse or install any tooling.
 
 
 def test_available_static_tool_requirements_match_manifest() -> None:

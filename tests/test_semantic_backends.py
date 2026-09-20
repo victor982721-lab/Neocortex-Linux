@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import hashlib
 from pathlib import Path
 from typing import Sequence
 
@@ -150,7 +151,7 @@ def test_image_source_xxh3_and_declared_revision_are_checked(tmp_path: Path) -> 
         source_revision={
             "size_bytes": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
-            "raw_content_xxh3_128": fingerprint.xxh3_128,
+            "raw_content_xxh3_128": hashlib.sha256(path.read_bytes()).hexdigest(),
         },
     )
     revision = _verify_image_source(request)

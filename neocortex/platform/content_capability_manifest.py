@@ -112,7 +112,7 @@ class ContentCapability:
     route_dependencies: tuple[CapabilityDependency, ...] = ()
     locators: tuple[str, ...] = ()
     coverage_policy: CoveragePolicy = "complete_or_partial"
-    public_surfaces: tuple[str, ...] = ("cli", "human", "mcp", "ui")
+    public_surfaces: tuple[str, ...] = ("cli", "human", "mcp")
 
     def __post_init__(self) -> None:
         _id("content capability id", self.capability_id)

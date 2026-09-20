@@ -22,7 +22,7 @@ from neocortex.deduplication import (
     snapshot_path,
 )
 from neocortex.deduplication.io import native_io_path
-from neocortex.curation.application import BackendOutcome
+from neocortex.workflow.mutations import BackendOutcome
 from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.platform.content_types import DetectedType, detect_content_type
 from neocortex.persistence.framework_state_writer import FrameworkState
@@ -964,7 +964,7 @@ class ActionTests(unittest.TestCase):
                 FrameworkState(framework_database) as state,
             ):
                 scan = index.scan(corpus)
-                plan = DedupPlanner(index, partial_threshold=0).plan(scan.scan_id)
+                plan = DedupPlanner(index).plan(scan.scan_id)
                 run_id = begin_signed_normal_run(state, corpus)
 
                 with patch("neocortex.workflow.actions.actions.send2trash") as recycle:

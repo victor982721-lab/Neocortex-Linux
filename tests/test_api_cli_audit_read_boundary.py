@@ -19,8 +19,6 @@ from neocortex.api.read_contract import (
     sanitize_untrusted_payload,
     validate_read_payload,
 )
-from neocortex.interface.read.client import SharedReadClient
-from neocortex.interface.read.models import ReadClientError, ReadRequest
 
 
 TEST_CAPABILITIES = ("base",)
@@ -41,17 +39,6 @@ def test_success_or_empty_cannot_carry_a_nonnull_error(code: int) -> None:
     payload["error"] = {"code": "error", "message": "producer failed"}
     with pytest.raises(ReadContractError, match="error"):
         validate_read_payload(payload, ReadOperation.STATUS, scope="personal")
-
-
-@pytest.mark.parametrize("code", [0, 3])
-def test_shared_client_rejects_success_or_empty_with_error(
-    code: int, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    payload = _status_payload(code)
-    payload["error"] = {"code": "error", "message": "producer failed"}
-    monkeypatch.setattr(read_api, "status_payload", lambda _scope: payload)
-    with pytest.raises(ReadClientError, match="error"):
-        SharedReadClient().execute(ReadRequest("status", "personal"))
 
 
 @pytest.mark.parametrize(
@@ -78,14 +65,6 @@ def test_noncolliding_sanitized_keys_remain_supported() -> None:
         "1": "first",
         "x": "second",
     }
-
-
-def test_shared_client_rejects_ambiguous_nested_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    payload = _status_payload()
-    payload["result"] = {"x\t": "first", "x ": "second"}
-    monkeypatch.setattr(read_api, "status_payload", lambda _scope: payload)
-    with pytest.raises(ReadClientError, match=r"keys.*collid"):
-        SharedReadClient().execute(ReadRequest("status", "personal"))
 
 
 @pytest.mark.parametrize(
@@ -132,38 +111,29 @@ def test_each_published_reader_reports_missing_dependency_in_its_envelope(
     assert not state.exists()
 
 
-def test_missing_xxhash_uses_stdlib_fallback_in_a_fresh_process(
+def test_sha256_backend_is_available_in_a_fresh_process(
     tmp_path: Path,
 ) -> None:
-    # Block the optional native wheel in a fresh interpreter rather than
-    # replacing the public reader, without changing the canonical venv or
-    # creating live state.
+    # Verify the canonical stdlib backend in a fresh interpreter without
+    # changing the canonical venv or creating live state.
     script = """
 import json
 from pathlib import Path
 import sys
 
-class MissingXXHash:
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname == "xxhash" or fullname.startswith("xxhash."):
-            raise ModuleNotFoundError("No module named 'xxhash'", name="xxhash")
-
-sys.meta_path.insert(0, MissingXXHash())
 from neocortex.foundation.hash_compat import (
     HASH_BACKEND,
-    HAS_NATIVE_XXHASH,
-    xxhash,
+    sha256,
 )
-assert not HAS_NATIVE_XXHASH
-assert HASH_BACKEND == "sha256-fallback"
-payload = b"fallback-payload" * 128
-one_shot = xxhash.xxh3_128_hexdigest(payload)
-incremental = xxhash.xxh3_128()
+assert HASH_BACKEND == "hashlib"
+payload = b"sha256-payload" * 128
+one_shot = sha256.sha256_128_hexdigest(payload)
+incremental = sha256.sha256_128()
 incremental.update(payload[:17])
 incremental.update(payload[17:])
 assert incremental.hexdigest() == one_shot
 assert len(one_shot) == 32
-assert len(xxhash.xxh3_64_hexdigest(payload, seed=1)) == 16
+assert len(sha256.sha256_64_hexdigest(payload, seed=1)) == 16
 from neocortex.api import read_api
 from neocortex.api.read_contract import ReadOperation, validate_read_payload
 
@@ -211,7 +181,7 @@ print(json.dumps({"backend": HASH_BACKEND, "outcomes": outcomes}))
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["backend"] == "sha256-fallback"
+    assert payload["backend"] == "hashlib"
     assert set(payload["outcomes"]) == {
         "status",
         "search",

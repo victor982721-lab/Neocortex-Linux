@@ -1021,7 +1021,7 @@ def _create_inventory_duplicate_state(state: Path) -> None:
                 reclaimable_bytes,full_fingerprint
             ) VALUES(
                 1,1,100,'C:/docs/estudio.docx',1,100,
-                '00000000000000000000000000000000'
+                '0000000000000000000000000000000000000000000000000000000000000000'
             );
             """
         )

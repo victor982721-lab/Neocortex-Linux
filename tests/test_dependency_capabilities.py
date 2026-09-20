@@ -59,13 +59,11 @@ FULL_DEPENDENCIES = (
     "Pillow>=12.3,<13",
     "PyMuPDF>=1.27,<2",
     "pdfminer.six>=20260107",
-    "PySide6>=6.11,<7",
     "pytesseract>=0.3.13,<0.4",
 )
 
 OPTIONAL_DEPENDENCIES = {
     "agent": AGENT_DEPENDENCIES,
-    "fast-hash": ("xxhash>=3.8,<4",),
     "build": DEV_DEPENDENCIES,
     "test-base": ("pytest>=9.1,<10", "setuptools==83.0.0"),
     "analysis": ANALYSIS_DEPENDENCIES,
@@ -83,7 +81,6 @@ OPTIONAL_DEPENDENCIES = {
         "threadpoolctl>=3.6,<4",
         "Pillow>=12.3,<13",
     ),
-    "ui": ("PySide6>=6.11,<7",),
     "full": FULL_DEPENDENCIES,
 }
 
@@ -145,7 +142,7 @@ def test_project_metadata_separates_canonical_runtime_and_extras() -> None:
 
     full_union = {
         dependency
-        for name in ("agent", "documents", "audio", "image", "semantic", "ui")
+        for name in ("agent", "documents", "audio", "image", "semantic")
         for dependency in extras[name]
     }
     assert set(extras["full"]) == full_union
@@ -175,7 +172,6 @@ def _version_reader(available_modules: set[str]):
         for value in (
             *BASE_DEPENDENCIES,
             *FULL_DEPENDENCIES,
-            *OPTIONAL_DEPENDENCIES["fast-hash"],
         )
         for requirement in (Requirement(value),)
     }
@@ -230,7 +226,6 @@ def test_missing_optional_runtimes_are_explicitly_unavailable_or_degraded() -> N
     assert statuses["image"].state is CapabilityState.UNAVAILABLE
     assert "image_decode_unavailable" in statuses["image"].degradation_reasons
     assert statuses["semantic"].state is CapabilityState.UNAVAILABLE
-    assert statuses["ui"].state is CapabilityState.UNAVAILABLE
 
 
 def test_hash_accelerator_is_not_a_runtime_prerequisite() -> None:
@@ -384,7 +379,6 @@ def test_base_surfaces_and_absent_knowledge_state_ignore_optional_engines(
 
         blocked_roots = {
             "PIL",
-            "PySide6",
             "ctranslate2",
             "cv2",
             "fastembed",
@@ -520,7 +514,6 @@ def test_base_knowledge_reads_existing_image_state_without_pillow(
 
         blocked_roots = {
             "PIL",
-            "PySide6",
             "ctranslate2",
             "cv2",
             "fastembed",

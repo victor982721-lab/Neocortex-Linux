@@ -17,7 +17,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Literal
 
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256
 from neocortex.platform.policy import UNAVAILABLE_BIRTHTIME_NS
 
 from neocortex.runtime.config.app_paths import (
@@ -276,7 +276,7 @@ class InternalPathsPolicy:
         payload = _manifest_payload(captured)
         signature = (
             f"{INTERNAL_PATHS_POLICY_VERSION}:{HASH_ALGORITHM_128.replace('-', '_')}:"
-            f"{xxhash.xxh3_128_hexdigest(payload)}"
+            f"{sha256.sha256_128_hexdigest(payload)}"
         )
         return cls(captured, signature)
 
@@ -296,7 +296,7 @@ class InternalPathsPolicy:
         _validate_policy_topology(ordered)
         expected_signature = (
             f"{INTERNAL_PATHS_POLICY_VERSION}:{HASH_ALGORITHM_128.replace('-', '_')}:"
-            f"{xxhash.xxh3_128_hexdigest(_manifest_payload(ordered))}"
+            f"{sha256.sha256_128_hexdigest(_manifest_payload(ordered))}"
         )
         if ordered != self.entries or expected_signature != self.signature:
             raise ValueError("internal path policy is inconsistent with its signature")
@@ -510,7 +510,7 @@ def effective_inventory_policy_signature(
     ).encode("utf-8")
     return (
         f"{version}:{HASH_ALGORITHM_128.replace('-', '_')}:"
-        f"{xxhash.xxh3_128_hexdigest(payload)}"
+        f"{sha256.sha256_128_hexdigest(payload)}"
     )
 
 

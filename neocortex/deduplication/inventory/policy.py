@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256_128_hexdigest
 from neocortex.platform.policy import current_platform_policy
 
 
@@ -353,7 +353,7 @@ class InventoryExclusionPolicy:
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
-        digest = xxhash.xxh3_128_hexdigest(payload)
+        digest = sha256_128_hexdigest(payload)
         return cls(
             explicit_roots=tuple(canonical_by_key[key] for key in root_keys),
             explicit_path_keys=frozenset(root_keys),

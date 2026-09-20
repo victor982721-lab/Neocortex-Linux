@@ -236,7 +236,7 @@ def _image_record(
             "size": len(payload),
             "mtime_ns": image_path.stat().st_mtime_ns,
             "birthtime_ns": image_path.stat().st_ctime_ns,
-            "raw_content_xxh3_128": fingerprint.xxh3_128,
+            "raw_content_xxh3_128": hashlib.sha256(payload).hexdigest(),
         },
     )
     ocr_section = (
@@ -864,7 +864,7 @@ def test_image_and_ocr_use_separate_embedding_generations(
             "size": len(payload),
             "mtime_ns": image_path.stat().st_mtime_ns,
             "birthtime_ns": image_path.stat().st_ctime_ns,
-            "raw_content_xxh3_128": fingerprint_bytes(payload).xxh3_128,
+            "raw_content_xxh3_128": hashlib.sha256(payload).hexdigest(),
         },
     )
     record = ImageSourceRecord(
@@ -1294,7 +1294,7 @@ def test_changed_ocr_revision_keeps_other_head_until_its_model_republishes(
             "size": len(payload),
             "mtime_ns": image_path.stat().st_mtime_ns,
             "birthtime_ns": image_path.stat().st_ctime_ns,
-            "raw_content_xxh3_128": fingerprint.xxh3_128,
+            "raw_content_xxh3_128": hashlib.sha256(payload).hexdigest(),
         },
     )
     current_record = [
@@ -1411,7 +1411,7 @@ def test_visual_fingerprint_change_preserves_same_revision_ocr_profiles(
                 "size": len(payload),
                 "mtime_ns": stat_result.st_mtime_ns,
                 "birthtime_ns": stat_result.st_ctime_ns,
-                "raw_content_xxh3_128": fingerprint.xxh3_128,
+                "raw_content_xxh3_128": hashlib.sha256(payload).hexdigest(),
             },
         )
 

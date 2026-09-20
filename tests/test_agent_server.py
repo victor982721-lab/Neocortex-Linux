@@ -266,7 +266,7 @@ def test_direct_curation_api_maps_state_errors_to_typed_unavailable_coverage(
 
 
 @pytest.mark.capability("agent")
-def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
+def test_agent_server_exposes_read_only_curation_tools() -> None:
     server = agent_server.create_server()
     tools = asyncio.run(server.list_tools())
     names = {tool.name for tool in tools}
@@ -285,33 +285,13 @@ def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
         "curation_plan",
         "curation_scan",
         "curation_verify",
-        "curation_review",
-        "curation_decide",
     }
     assert not names.intersection({"delete", "move", "rename", "apply", "index", "write"})
-    read_only_names = names - {"curation_review", "curation_decide"}
     for tool in tools:
         assert tool.annotations is not None
-        assert tool.annotations.readOnlyHint is (tool.name in read_only_names)
+        assert tool.annotations.readOnlyHint is True
         assert tool.annotations.destructiveHint is False
         assert tool.annotations.openWorldHint is False
-
-    review_tool = next(tool for tool in tools if tool.name == "curation_review")
-    decide_tool = next(tool for tool in tools if tool.name == "curation_decide")
-    assert review_tool.annotations.readOnlyHint is False
-    assert decide_tool.annotations.readOnlyHint is False
-    assert review_tool.annotations.destructiveHint is False
-    assert decide_tool.annotations.destructiveHint is False
-    assert set(review_tool.inputSchema["properties"]) == {"plan_id", "limit", "cursor"}
-    assert set(decide_tool.inputSchema["properties"]) == {
-        "plan_id",
-        "item_id",
-        "expected_event_id",
-        "decision",
-        "decision_scope",
-        "actor",
-        "note",
-    }
 
     curation = next(tool for tool in tools if tool.name == "curation_plan")
     assert set(curation.inputSchema["properties"]) == {"limit", "cursor"}
@@ -743,12 +723,10 @@ def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
             "curation_plan",
             "curation_scan",
             "curation_verify",
-            "curation_review",
-            "curation_decide",
         }
         assert all(
             tool["annotations"]["readOnlyHint"]
-            is (tool["name"] not in {"curation_review", "curation_decide"})
+            is True
             for tool in tools
         )
 

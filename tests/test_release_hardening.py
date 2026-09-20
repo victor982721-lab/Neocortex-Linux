@@ -46,7 +46,7 @@ def _wheelhouse(tmp_path: Path) -> Path:
             {
                 "schema_version": release_linux.WHEELHOUSE_SCHEMA_VERSION,
                 "kind": "neocortex_wheelhouse",
-                "python": "cp314",
+                "python": "cp313",
                 "platform": "linux_x86_64",
                 "artifacts": entries,
             },
@@ -81,7 +81,7 @@ def test_runtime_lock_accepts_hashes_and_binds_canonical_wheelhouse() -> None:
     entries = release_linux._runtime_dependency_lock(lock)
     hashes = release_linux._runtime_dependency_hashes(lock)
 
-    assert len(entries) >= 50
+    assert len(entries) == 14
     assert len(hashes) == len(entries)
     assert all(value is not None for value in hashes.values())
     assert hashes["pip"] == pip_bootstrap.PIP_BOOTSTRAP_SHA256
@@ -331,7 +331,7 @@ def test_full_offline_closure_evaluates_transitive_extras_and_markers(tmp_path: 
         rows.append({"filename": filename, "name": name, "version": version,
                      "sha256": release_linux._sha256_file(wheel)})
     (root / release_linux.WHEELHOUSE_MANIFEST_NAME).write_text(json.dumps({
-        "schema_version": 1, "kind": "neocortex_wheelhouse", "python": "cp314",
+        "schema_version": 1, "kind": "neocortex_wheelhouse", "python": "cp313",
         "platform": "linux_x86_64", "artifacts": rows,
     }), encoding="utf-8")
     artifacts = release_linux._validate_wheelhouse(root)
