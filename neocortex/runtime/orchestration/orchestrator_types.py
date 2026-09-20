@@ -75,6 +75,7 @@ class InitialWork:
     # Aggregate, run-scoped admission evidence.  It deliberately remains a
     # mapping rather than a new persistence table or per-file status.
     size_admission: Mapping[str, object] = field(default_factory=dict)
+    zip_intake: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

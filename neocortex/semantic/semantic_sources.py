@@ -72,7 +72,6 @@ TEXT_SOURCE_KINDS = (
     "pptx",
     "odt",
     "audio",
-    "archive",
     "text",
     "video",
 )
@@ -895,184 +894,6 @@ def _iter_audio(
             )
 
 
-def _archive_role_projections(
-    connection: sqlite3.Connection,
-) -> tuple[bool, bool, str, str]:
-    """Return role projections while keeping pre-role Archive fixtures readable."""
-
-    document_columns = {
-        str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")
-    }
-    role_column_present = "document_role" in document_columns
-    logical_chain_column_present = "logical_document_chain" in document_columns
-    role_projection = (
-        "d.document_role AS document_role"
-        if role_column_present
-        else "NULL AS document_role"
-    )
-    logical_chain_projection = (
-        "d.logical_document_chain AS logical_document_chain"
-        if logical_chain_column_present
-        else "NULL AS logical_document_chain"
-    )
-    return (
-        role_column_present,
-        logical_chain_column_present,
-        role_projection,
-        logical_chain_projection,
-    )
-
-
-def _archive_section_projection(
-    row: sqlite3.Row,
-    *,
-    role_column_present: bool,
-    logical_chain_column_present: bool,
-) -> tuple[str, str, bool, dict[str, object]]:
-    """Classify one Archive row without inventing a virtual or physical path."""
-
-    file_key = row["file_key"]
-    path = row["path"]
-    container_path = row["container_path"]
-    container_key = row["container_key"]
-    member_chain = row["member_chain"]
-    member_path = row["member_path"]
-    if not all(
-        isinstance(value, str) and value.strip()
-        for value in (file_key, path, container_path, container_key)
-    ):
-        raise SemanticSourceError("archive source row has a missing physical path or identity")
-    if not isinstance(member_chain, str) or not isinstance(member_path, str):
-        raise SemanticSourceError("archive source row has a malformed member identity")
-    raw_depth = row["archive_depth"]
-    if isinstance(raw_depth, bool) or not isinstance(raw_depth, (int, str)):
-        raise SemanticSourceError("archive source row has an invalid archive depth")
-    try:
-        archive_depth = int(raw_depth)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise SemanticSourceError("archive source row has an invalid archive depth") from exc
-    if archive_depth < 0:
-        raise SemanticSourceError("archive source row has a negative archive depth")
-
-    role_value = row["document_role"]
-    if role_column_present:
-        if not isinstance(role_value, str) or not role_value.strip():
-            raise SemanticSourceError("archive source row has a missing document role")
-        role = role_value
-    else:
-        role = None
-    logical_chain = row["logical_document_chain"]
-    if logical_chain_column_present and logical_chain is not None and not isinstance(
-        logical_chain, str
-    ):
-        raise SemanticSourceError("archive source row has a malformed logical document chain")
-
-    physical_root = (
-        member_chain == ""
-        and member_path == ""
-        and archive_depth == 0
-        and path == container_path
-        and (not role_column_present or role == "logical_document")
-        and (not logical_chain_column_present or logical_chain == "")
-    )
-    if physical_root:
-        section_kind = "archive_document"
-        section_id = "body"
-        inside_zip = False
-        evidence = "logical_document_role" if role_column_present else "legacy_physical_root_shape"
-    else:
-        if member_chain == "":
-            if role == "logical_document":
-                raise SemanticSourceError("archive logical document root identity is inconsistent")
-            raise SemanticSourceError("archive virtual member has an empty member_chain")
-        if archive_depth < 1:
-            raise SemanticSourceError("archive virtual member has an invalid archive depth")
-        if role_column_present and role not in {
-            "archive_member",
-            "document_component",
-            "logical_document",
-        }:
-            raise SemanticSourceError("archive virtual member has an unsupported document role")
-        if not member_path:
-            raise SemanticSourceError("archive virtual member has an empty member_path")
-        expected_path = f"{container_path}!/{member_chain}"
-        if path != expected_path:
-            raise SemanticSourceError("archive virtual member path does not match its member_chain")
-        section_kind = "archive_member"
-        section_id = member_chain
-        inside_zip = True
-        evidence = "archive_member_role" if role_column_present else "legacy_member_shape"
-
-    provenance: dict[str, object] = {
-        "inside_zip": inside_zip,
-        "container_path": container_path,
-        "container_key": container_key,
-        "member_chain": member_chain,
-        "member_path": member_path,
-        "archive_depth": archive_depth,
-        "content_kind": str(row["content_kind"]),
-        "media_type": str(row["media_type"]),
-        "container_status": str(row["container_status"]),
-    }
-    if not inside_zip:
-        provenance["physical_root"] = True
-        provenance["section_identity_evidence"] = evidence
-        if role is not None:
-            provenance["document_role"] = role
-        if logical_chain_column_present and logical_chain is not None:
-            provenance["logical_document_chain"] = logical_chain
-    return section_kind, section_id, inside_zip, provenance
-
-
-def _iter_archive(
-    path: Path,
-    connection: sqlite3.Connection | None = None,
-) -> Iterator[TextSourceRecord]:
-    """Stream text-bearing virtual members with explicit ZIP provenance."""
-
-    with _borrow_or_open_database(path, connection) as connection:
-        (
-            role_column_present,
-            logical_chain_column_present,
-            role_projection,
-            logical_chain_projection,
-        ) = _archive_role_projections(connection)
-        rows = connection.execute(
-            f"""SELECT d.file_key,d.path,d.processing_signature,d.status,
-            d.size,d.mtime_ns,d.birthtime_ns,d.last_seen_run_id,
-            d.text_xxh3_128,d.text_chars,d.text_zlib,
-            d.container_path,d.container_key,d.member_chain,d.member_path,
-            d.archive_depth,d.content_kind,d.media_type,c.status AS container_status,
-            {role_projection},{logical_chain_projection}
-            FROM documents d JOIN containers c ON c.container_key=d.container_key
-            WHERE d.status='indexed' AND d.text_zlib IS NOT NULL AND d.text_chars>0
-            AND c.status IN ('complete','partial')
-            ORDER BY d.file_key"""
-        )
-        for row in rows:
-            section_kind, section_id, _inside_zip, provenance = _archive_section_projection(
-                row,
-                role_column_present=role_column_present,
-                logical_chain_column_present=logical_chain_column_present,
-            )
-            provenance["adapter"] = SOURCE_ADAPTER_VERSION
-            item = _source_item(
-                row,
-                source_kind="archive",
-                text_fingerprint_column="text_xxh3_128",
-                text_count_column="text_chars",
-            )
-            yield TextSourceRecord(
-                item,
-                TextSection(
-                    section_kind=section_kind,
-                    section_id=section_id,
-                    text=_decode_text(row["text_zlib"], int(row["text_chars"])),
-                    provenance=provenance,
-                ),
-            )
-
-
 def _iter_text(
     path: Path,
     connection: sqlite3.Connection | None = None,
@@ -1201,7 +1022,6 @@ def _iter_text(
                             "metadata_json": str(row["metadata_json"]),
                             "text_truncated": bool(row["text_truncated"]),
                             "detail": str(row["detail"] or ""),
-                            "inside_zip": False,
                         },
                     ),
                 )
@@ -1249,24 +1069,6 @@ def _source_head_query(
             FROM documents d JOIN segments s ON s.file_key=d.file_key
             WHERE d.status='complete' AND trim(s.text)<>''
             ORDER BY d.file_key,s.segment_index""",
-            (),
-        )
-    if source_kind == "archive":
-        (
-            _role_column_present,
-            _logical_chain_column_present,
-            role_projection,
-            logical_chain_projection,
-        ) = _archive_role_projections(connection)
-        return (
-            f"""SELECT d.file_key,d.path,d.processing_signature,d.status,d.size,
-            d.mtime_ns,d.birthtime_ns,d.text_xxh3_128,d.text_chars,
-            d.container_path,d.container_key,d.member_chain,d.member_path,
-            d.archive_depth,d.content_kind,d.media_type,c.status,
-            {role_projection},{logical_chain_projection}
-            FROM documents d JOIN containers c ON c.container_key=d.container_key
-            WHERE d.status='indexed' AND d.text_zlib IS NOT NULL AND d.text_chars>0
-            AND c.status IN ('complete','partial') ORDER BY d.file_key""",
             (),
         )
     if source_kind == "text":
@@ -1478,8 +1280,6 @@ def iter_text_source_records(
         yield from _iter_docx(database, connection)
     elif source_kind == "audio":
         yield from _iter_audio(database, connection)
-    elif source_kind == "archive":
-        yield from _iter_archive(database, connection)
     elif source_kind == "text":
         yield from _iter_text(database, connection)
     else:

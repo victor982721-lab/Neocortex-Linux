@@ -25,9 +25,9 @@ def test_unavailable_route_cannot_look_complete(capsys) -> None:
 
 
 def test_catalog_loss_and_partial_zip_are_strict_incomplete(capsys) -> None:
-    for field in ("catalog_source_missing", "catalog_source_stale", "containers_partial", "protected"):
+    for field in ("catalog_source_missing", "catalog_source_stale", "protected"):
         summary = SimpleNamespace(**{field: 1})
-        assert has_strict_route_errors(SimpleNamespace(route_results={"archive": summary}))
+        assert has_strict_route_errors(SimpleNamespace(route_results={"pdf": summary}))
     result = SimpleNamespace(route_results={"video": SimpleNamespace(
         catalog_complete=False, catalog_candidates=1, catalog_errors=0,
         catalog_source_missing=1,
@@ -113,7 +113,7 @@ def test_raw_action_report_does_not_call_apply_attempts_planned_effects(capsys) 
     assert "action_candidates=3" in output
 
 
-def test_professional_summary_classifies_zip_audio_and_empty_selection(capsys) -> None:
+def test_professional_summary_classifies_audio_and_empty_selection(capsys) -> None:
     result = SimpleNamespace(
         run_id=42,
         scan=SimpleNamespace(files_seen=3, errors=0),
@@ -123,16 +123,6 @@ def test_professional_summary_classifies_zip_audio_and_empty_selection(capsys) -
         organization_plan=None,
         organization_apply=None,
         route_results={},
-        archive=SimpleNamespace(
-            candidates=1,
-            processed=1,
-            cache_hits=0,
-            cached_errors=0,
-            containers_partial=1,
-            safety_issues=2,
-            errors=0,
-            processing_provenance={"owner": "fixture"},
-        ),
         audio=SimpleNamespace(
             candidates=1,
             processed=1,
@@ -154,18 +144,14 @@ def test_professional_summary_classifies_zip_audio_and_empty_selection(capsys) -
 
     print_professional_summary(
         result,
-        SimpleNamespace(all=False, route="archive", show_groups=0),
+        SimpleNamespace(all=False, route="audio", show_groups=0),
     )
 
     output = capsys.readouterr().out
-    assert "parciales=1" in output
-    assert "seguridad=2" in output
     assert "no_speech=1" in output
     assert "SIN CANDIDATOS" in output
     assert "planeadas" in output
     assert "aplicadas" in output
-    # Archive has no catalog/FTS fields in its summary; report that gap rather
-    # than printing fabricated zeros.
     assert "catalogo=no_verificado" in output
     assert "fts=no_verificado" in output
 

@@ -229,6 +229,15 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 "max_file_bytes": max_file_bytes,
                 "unlimited": max_file_bytes is None,
             },
+            # ZIP Intake is a Framework stage, not a content route.  Keep its
+            # effective admission contract in the immutable run manifest so a
+            # dry-run/apply result can be interpreted without consulting
+            # process-local configuration.
+            "zip_intake": {
+                "enabled": self.config.route.casefold() == "all" and not self.config.route_only,
+                "apply": bool(self.config.apply_actions),
+                "max_file_bytes": max_file_bytes,
+            },
             "run_time_budget_seconds": getattr(
                 self.config,
                 "run_time_budget_seconds",
@@ -324,30 +333,6 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             "audio_memory_wait_timeout_seconds": self.config.audio_memory_wait_timeout_seconds,
             "audio_memory_budget_bytes": self.config.audio_memory_budget_bytes,
             "audio_worker_memory_bytes": self.config.audio_worker_memory_bytes,
-            "archive_max_file_bytes": self.config.archive_max_file_bytes,
-            "archive_max_documents": self.config.archive_max_documents,
-            "archive_retry_errors": self.config.archive_retry_errors,
-            "archive_max_depth": self.config.archive_max_depth,
-            "archive_max_members": self.config.archive_max_members,
-            "archive_max_central_directory_bytes": (
-                self.config.archive_max_central_directory_bytes
-            ),
-            "archive_max_member_bytes": self.config.archive_max_member_bytes,
-            "archive_max_total_uncompressed_bytes": (
-                self.config.archive_max_total_uncompressed_bytes
-            ),
-            "archive_max_text_chars": self.config.archive_max_text_chars,
-            "archive_max_total_text_chars": self.config.archive_max_total_text_chars,
-            "archive_max_compression_ratio": self.config.archive_max_compression_ratio,
-            "archive_pdf_max_pages": self.config.archive_pdf_max_pages,
-            "archive_pdf_timeout_seconds": self.config.archive_pdf_timeout_seconds,
-            "archive_pdf_worker_memory_bytes": self.config.archive_pdf_worker_memory_bytes,
-            "archive_ocr_mode": self.config.archive_ocr_mode,
-            "archive_ocr_lang": self.config.archive_ocr_lang,
-            "archive_ocr_dpi": self.config.archive_ocr_dpi,
-            "archive_ocr_max_pages": self.config.archive_ocr_max_pages,
-            "archive_ocr_max_render_pixels": self.config.archive_ocr_max_render_pixels,
-            "archive_ocr_timeout_seconds": self.config.archive_ocr_timeout_seconds,
             "text_max_file_bytes": self.config.text_max_file_bytes,
             "text_max_documents": self.config.text_max_documents,
             "text_max_text_chars": self.config.text_max_text_chars,
@@ -603,6 +588,196 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             metrics,
         )
 
+    def _run_zip_intake_stage(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        root: Path,
+        boundary: NormalInventoryBoundary,
+        inventory: PreparedInventory,
+        dedup_index: DedupIndex,
+    ) -> tuple[PreparedInventory, dict[str, object]]:
+        """Run physical ZIP Intake between Inventory and Identify.
+
+        Inventory is the source of truth for admission.  The intake adapter
+        receives only snapshots at or below the global ceiling; it therefore
+        cannot open, classify, hash, or stage an oversize source.  When an
+        apply transaction publishes files or trashes a source, one bounded
+        successor inventory is prepared before Identify so all later stages
+        see physical paths rather than the stale pre-intake generation.
+        """
+
+        empty_payload: dict[str, object] = {
+            "schema": "neocortex.zip-intake/v1",
+            "status": "skipped",
+            "mode": "disabled",
+            "apply": bool(self.config.apply_actions),
+            "max_file_bytes": validate_max_file_bytes(
+                getattr(self.config, "max_file_bytes", None)
+            ),
+            "total_files": int(inventory.scan.files_seen),
+            "eligible_files": int(inventory.scan.files_seen),
+            "size_skipped_files": 0,
+            "size_skipped_bytes": 0,
+            "filesystem_changed": False,
+            "reconciliation_required": False,
+        }
+        if self.config.route.casefold() != "all" or self.config.route_only:
+            return inventory, empty_payload
+
+        from neocortex.workflow.zip_intake_orchestrator import (
+            build_zip_intake_admission,
+            run_zip_intake_stage,
+        )
+
+        max_file_bytes = validate_max_file_bytes(
+            getattr(self.config, "max_file_bytes", None)
+        )
+        # ZIP Intake is a Framework stage, so its only public size ceiling is
+        # the global admission already established by Inventory.
+        effective_limit = max_file_bytes
+        admission = build_zip_intake_admission(
+            dedup_index.snapshots(inventory.scan.scan_id),
+            effective_limit,
+        )
+        admission_payload = admission.payload()
+        state.set_run_phase(run_id, "zip_intake")
+        state.record_event(
+            run_id,
+            "info",
+            "zip-intake",
+            "Admisión de ZIP Intake preparada después del inventario",
+            {
+                **admission_payload,
+                "global_max_file_bytes": max_file_bytes,
+                "effective_max_file_bytes": effective_limit,
+                "apply": bool(self.config.apply_actions),
+            },
+        )
+        publish_stage = getattr(state, "publish_run_stage", None)
+        if callable(publish_stage):
+            publish_stage(
+                run_id,
+                "zip-intake",
+                "running",
+                details={
+                    **admission_payload,
+                    "global_max_file_bytes": max_file_bytes,
+                    "effective_max_file_bytes": effective_limit,
+                    "apply": bool(self.config.apply_actions),
+                },
+                idempotency_key="zip-intake:running",
+            )
+        try:
+            outcome = run_zip_intake_stage(
+                root=root,
+                admission=admission,
+                config=self.config,
+                apply=bool(self.config.apply_actions),
+                state_directory=self.config.state_directory,
+                run_id=run_id,
+                state=state,
+                progress=self.progress,
+                cancellation=self._cancellation,
+            )
+        except BaseException as exc:
+            if callable(publish_stage):
+                try:
+                    publish_stage(
+                        run_id,
+                        "zip-intake",
+                        "failed",
+                        details={
+                            "error_type": type(exc).__name__,
+                            "detail": str(exc)[:8192],
+                        },
+                        idempotency_key="zip-intake:failed",
+                    )
+                except BaseException:
+                    # Preserve the intake exception; Framework termination
+                    # records the primary failure and recovery state.
+                    pass
+            raise
+        payload = dict(outcome.as_dict())
+        payload.update(
+            {
+                "global_max_file_bytes": max_file_bytes,
+                "effective_max_file_bytes": effective_limit,
+            }
+        )
+        # ZIP Intake may change children but must never replace the corpus
+        # root itself.  Revalidate the physical boundary before any successor
+        # inventory or downstream route can consume the result.
+        boundary.verify()
+        state.record_event(
+            run_id,
+            "warning" if outcome.status in {"partial", "failed", "blocked"} else "info",
+            "zip-intake",
+            "ZIP Intake aplicado" if self.config.apply_actions else "ZIP Intake planificado",
+            payload,
+        )
+        successor = inventory
+        if outcome.reconciliation_required:
+            # Reuse the normal bounded inventory owner rather than creating a
+            # ZIP-specific state table or attempting to patch rows manually.
+            # This is intentionally one successor scan for the whole intake
+            # batch, not one scan per source ZIP.
+            state.record_event(
+                run_id,
+                "info",
+                "zip-intake-reconciliation",
+                "Preparando inventario sucesor después de ZIP Intake",
+                {
+                    "source_scan_id": inventory.scan.scan_id,
+                    "reason": "physical_zip_intake_changes",
+                },
+            )
+            successor = self._prepare_normal_inventory(
+                state=state,
+                run_id=run_id,
+                boundary=boundary,
+                dedup_index=dedup_index,
+                journal_before=None,
+            )
+            successor = replace(
+                successor,
+                inventory_attempts=(
+                    int(inventory.inventory_attempts) + int(successor.inventory_attempts)
+                ),
+                reconciliation_records=(
+                    int(inventory.reconciliation_records)
+                    + int(successor.reconciliation_records)
+                ),
+            )
+            payload["successor_scan_id"] = successor.scan.scan_id
+            payload["source_scan_id"] = inventory.scan.scan_id
+            state.record_event(
+                run_id,
+                "info",
+                "zip-intake-reconciliation",
+                "Inventario sucesor listo para Identify",
+                {
+                    "source_scan_id": inventory.scan.scan_id,
+                    "successor_scan_id": successor.scan.scan_id,
+                    "files": successor.scan.files_seen,
+                },
+            )
+        if callable(publish_stage):
+            stage_status = (
+                "partial"
+                if outcome.status in {"partial", "failed", "blocked"}
+                else "completed"
+            )
+            publish_stage(
+                run_id,
+                "zip-intake",
+                stage_status,
+                details=payload,
+                idempotency_key="zip-intake:completed",
+            )
+        return successor, payload
+
     def _plan_initial_dedup(
         self,
         state: FrameworkState,
@@ -816,6 +991,14 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 dedup_index=dedup_index,
                 journal_before=journal_before,
             )
+            inventory, zip_intake_result = self._run_zip_intake_stage(
+                state=state,
+                run_id=run_id,
+                root=boundary.access_policy.root,
+                boundary=boundary,
+                inventory=inventory,
+                dedup_index=dedup_index,
+            )
             # Identify/normalize is the first content-aware phase after the
             # metadata-only inventory.  The same action owner then evaluates
             # the explicit redlist against the normalized successor paths,
@@ -892,6 +1075,11 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 plan=plan,
                 actions=actions,
             )
+            # ZIP Intake is a Framework stage rather than a content route.
+            # Keep the compact projection in route_results for status/replay
+            # consumers and pass the same mapping through InitialWork below;
+            # no second archive state is created.
+            route_results["zip_intake"] = dict(zip_intake_result)
         return _InitialWork(
             inventory,
             plan,
@@ -903,6 +1091,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             organization_apply,
             dict(getattr(self, "_unavailable_routes", {})),
             size_admission=dict(getattr(self, "_size_admission_metrics", {})),
+            zip_intake=dict(zip_intake_result),
         )
 
     @staticmethod

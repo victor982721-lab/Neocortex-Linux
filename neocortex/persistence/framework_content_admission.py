@@ -391,17 +391,6 @@ def _identity_from_payload(payload: object) -> Any:
             int(raw_physical.get("version", 1)),
         )
     )
-    raw_virtual = nested("virtual")
-    virtual = (
-        None
-        if raw_virtual is None
-        else semantic.VirtualIdentity(
-            str(raw_virtual.get("scheme", "")),
-            str(raw_virtual.get("container", "")),
-            str(raw_virtual.get("member", "")),
-            int(raw_virtual.get("version", 1)),
-        )
-    )
     raw_work = nested("work")
     work = None
     if raw_work is not None:
@@ -431,7 +420,6 @@ def _identity_from_payload(payload: object) -> Any:
         str(payload.get("item_id", "")),
         content,
         physical,
-        virtual,
         work,
     )
 
@@ -468,9 +456,6 @@ def _record_from_row(row: object) -> StoredContentAdmission:
             "item_id": str(row["subject_key"]),
             "physical": json.loads(str(row["physical_identity_json"]))
             if row["physical_identity_json"] is not None
-            else None,
-            "virtual": json.loads(str(row["virtual_identity_json"]))
-            if row["virtual_identity_json"] is not None
             else None,
             "content": json.loads(str(row["content_identity_json"])),
             "work": json.loads(str(row["work_identity_json"]))
@@ -678,7 +663,7 @@ class ContentAdmissionLedger:
                     selected_policy.version,
                     selected_policy.signature,
                     None if identity_payload["physical"] is None else canonical_json(identity_payload["physical"]),
-                    None if identity_payload["virtual"] is None else canonical_json(identity_payload["virtual"]),
+                    None,
                     canonical_json(identity_payload["content"]),
                     None if identity_payload["work"] is None else canonical_json(identity_payload["work"]),
                     int(selected_decision.eligible),

@@ -48,9 +48,10 @@ y el launcher se resuelven mediante XDG. El corpus nunca debe contener los
 
 El grafo productivo no admite ciclos de imports inmediatos. Los ciclos que
 incluyen imports diferidos o de tipado se fijan con contratos exactos de módulos,
-dirección y función en `tests/architecture/test_boundaries.py`. Archive comparte
-primitivas y registro durable; factory reset delega la enumeración y retirada
-acotada al owner de persistencia; HistoricalManager
+dirección y función en `tests/architecture/test_boundaries.py`. ZIP Intake
+reutiliza las primitivas de `neocortex.platform.zip_safety`, scratch y KIO, pero
+no mantiene un owner de miembros virtuales; factory reset delega la enumeración
+y retirada acotada al owner de persistencia; HistoricalManager
 delega adopción. Sus auxiliares reutilizan contratos del mismo owner sin volver a
 entrar en la operación que los llamó. Estas cuatro delegaciones tienen 30 aristas
 concretas revisadas; cualquier arista nueva exige revisar de nuevo el contrato.
@@ -276,15 +277,18 @@ una fuente al registry no amplía su ámbito ni habilita su `--apply`.
 
 ### Inventario y deduplicación
 
-La ruta integrada observa metadatos antes de decidir por archivo y ejecuta
-`inventory → identify → normalize → policy/redlist → dedupe → routes → organize
-→ semantic`. La extensión observada no es fuente de verdad: Identify usa firmas,
-contenedores y parsers estructurales bounded; Normalize corrige sólo evidencia
-demostrable antes de cualquier hash completo. La redlist explícita se evalúa
-sobre la ruta normalizada y no clasifica autoría, procedencia ni utilidad mediante
-heurísticas. Archive verifica CRC/tamaño antes
-de parsear, extraer texto/FTS o visitar ZIP anidados. Un miembro virtual nunca
-se convierte en objetivo físico.
+La ruta integrada observa metadatos antes de decidir por archivo. Para `--all`
+ejecuta `inventory → size admission → ZIP Intake → successor/reconciled inventory
+→ identify → normalize → policy/redlist → dedupe → routes → organize → semantic`.
+La extensión observada no es fuente de verdad: Identify usa firmas, contenedores
+y parsers estructurales bounded; Normalize corrige sólo evidencia demostrable
+antes de cualquier hash completo. La redlist explícita se evalúa sobre la ruta
+normalizada y no clasifica autoría, procedencia ni utilidad mediante heurísticas.
+ZIP Intake clasifica un contenedor antes de abrirlo como genérico o paquete
+atómico, y sólo extrae genéricos en staging privado; la verificación completa
+ocurre antes de publicar. Los archivos extraídos reciben identidad física propia
+y entran al pipeline normal; no existe una identidad o salida virtual
+`container.zip!/member` que el pipeline deba conservar.
 
 Los archivos sin extensión pasan por Identify. Sólo una evidencia fuerte permite
 restaurar una extensión canónica; la incertidumbre, un
@@ -302,9 +306,10 @@ volumen, identidad física, tamaño, mtime, birthtime y `DETECTOR_VERSION`, por
 lo que un cambio o stale nunca reutiliza evidencia. El progreso se agrupa
 por tiempo/cantidad y la publicación conserva el orden del inventario.
 
-La identidad física se valida con `FileIdentity` y el codec explícito del owner;
-un recurso virtual conserva su `ResourceRef` y ancla, sin reinterpretarlo como
-inode. Catálogo v8 añade bindings y ámbito mediante migración aditiva con copia
+La identidad física se valida con `FileIdentity` y el codec explícito del owner.
+Cada archivo publicado desde ZIP se vuelve un recurso físico ordinario y su
+`ResourceRef` apunta a ese path/identity; un nombre de miembro no crea un inode
+ni alimenta joins de inventario. Catálogo v8 añade bindings y ámbito mediante migración aditiva con copia
 consistente previa, preservando claves e identidades históricas. Las lecturas
 legacy ambiguas se abstienen de producir efectos y conservan el diagnóstico.
 
@@ -333,13 +338,48 @@ destructiva exige comparación byte a byte. `mark_abandoned_scans()` concilia
 scans `building` abandonados y el coordinador lo invoca antes de continuar; no
 debe documentarse esa conciliación como ausente.
 
-### Rutas de contenido
+### ZIP Intake físico y rutas de contenido
 
-El registro de rutas compone PDF, DOCX, Office, Archive, Text, Audio, Video e
-Image. Cada ruta declara inputs, límites, progreso, owner y resultado.
+ZIP Intake es una etapa de ingestión previa a Identify, no una ruta de
+conocimiento ni una segunda representación del corpus. El registro de rutas
+consume después archivos físicos normales: PDF, DOCX, Office, Text, Audio,
+Video e Image. Cada ruta declara inputs, límites, progreso, owner y resultado.
 Las implementaciones no tienen la misma riqueza: algunos formatos publican
 localizadores estructurales y otros sólo texto o archivo completo. Esa brecha se
 expone como cobertura, no se rellena con localizadores inventados.
+
+La decisión ZIP es única y basada en contenido: `GENERIC_ZIP` se trata como
+embalaje temporal; `ATOMIC_PACKAGE` conserva el archivo completo para sus rutas
+normales; evidencia inválida, insegura, cifrada o ambigua abstiene. DOCX/DOTX,
+XLSX/XLTX, PPTX/POTX, ODF, EPUB, APK, JAR y otros paquetes funcionales
+reconocidos permanecen atómicos aunque su firma sea `PK`. Un `project.zip` o
+cualquier ZIP de almacenamiento genérico se extrae, incluidos sus ZIP genéricos
+anidados, sin flatten ni heurísticas de una sola carpeta. Los paquetes atómicos
+anidados no se recursan como ZIP genérico.
+
+La extracción es transaccional: captura y revalida identidad del origen,
+preflight estructural, crea un workspace privado bajo `state/scratch`, valida
+traversal y entradas especiales, extrae y verifica todo el árbol, publica una
+sola vez en un destino determinista, revalida el origen y sólo entonces entrega
+el ZIP a KIO Trash. Colisiones, drift, límites agotados, CRC/EOF inconsistente,
+cifrado, cancelación o fallo de KIO conservan el original y dejan
+`blocked`/`recovery_required`; nunca se publica un árbol parcial ni se hace
+`unlink`. La reconciliación sustituye el snapshot del ZIP por los snapshots de
+los archivos físicos sucesores antes de continuar.
+
+El contenido extraído siempre es datos no confiables: el Intake no ejecuta,
+importa, abre con aplicaciones externas ni invoca intérpretes. No preserva
+bits ejecutables, setuid/setgid, ACL, capabilities u ownership del ZIP; publica
+archivos regulares con `0600` y directorios con `0700` (o una política
+restrictiva equivalente). Estas vallas no constituyen antivirus ni permiten
+afirmar que el contenido esté libre de malware desconocido.
+
+La admisión global `-S/--max-size-mb` ocurre antes de ZIP Intake. Un contenedor
+fuera del techo queda `skipped_by_size` sin abrir; un miembro extraído se vuelve
+a evaluar de forma independiente, por lo que el límite del contenedor no
+concede elegibilidad a sus sucesores. Sin `-S`, la admisión es ilimitada; los
+límites específicos de ZIP siguen siendo fail-closed y no amplían el techo
+global.
 
 Office comprueba cancelación antes y después de las lecturas XML y antes de
 devolver la extracción, incluidos los componentes XLSX. DOCX clasifica primero
@@ -349,12 +389,13 @@ vigentes, y mantiene la observación hasta la actualización de FTS.
 
 ### Lifecycle durable de `--all` (implementado; aceptación en curso)
 
-`--all` coordina las ocho rutas de contenido bajo un único run Framework:
-`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video` e `image`. Con
+`--all` coordina ZIP Intake y las rutas de contenido bajo un único run
+Framework: `pdf`, `docx`, `office`, `text`, `audio`, `video` e `image`. Con
 `--all --apply`, la ingestión integrada ejecuta
-`inventory → identify → normalize → policy/redlist → dedupe → routes → organize
-→ semantic → finalize`; cada efecto de Papelera ocurre sobre la ruta normalizada.
-La restauración de extensión usa evidencia bounded y rename seguro no-replace.
+`inventory → size admission → ZIP Intake → successor/reconciled inventory
+→ identify → normalize → policy/redlist → dedupe → routes → organize → semantic
+→ finalize`; cada efecto de Papelera ocurre sobre la ruta normalizada. La
+restauración de extensión usa evidencia bounded y rename seguro no-replace.
 
 Los artefactos 0.13 y post-0.13 anteriores conservan su evidencia histórica en
 receipts separados; no se usan aquí para declarar aceptado o instalado el
@@ -395,12 +436,12 @@ servicio al recibir un `scratch_directory`; si no lo recibe conserva su
 compatibilidad temporal aislada. El `--all` inicial registra la observación
 bounded de `owned-temp` en el lifecycle y no escanea `/tmp`.
 
-Archive materialization, PDF structural recovery y video frame sampling usan
-el mismo owner registrado desde sus rutas integradas: `state/scratch/archive-
-materialization`, `state/scratch/pdf-recovery` y `state/scratch/video-frames`.
-Cada productor vincula `run_id`, conserva `failed-retained` ante error y cierra
-sólo después de publicar el resultado; las llamadas directas sin root mantienen
-su compatibilidad aislada sin recibir autoridad sobre el estado productivo.
+ZIP Intake, PDF structural recovery y video frame sampling usan el mismo owner
+de scratch registrado desde sus rutas integradas: `state/scratch/zip-intake`,
+`state/scratch/pdf-recovery` y `state/scratch/video-frames`. Cada productor
+vincula `run_id`, conserva `failed-retained` ante error y cierra sólo después de
+publicar el resultado; una transacción de Intake fallida conserva el origen y
+retira su staging, o lo deja `recovery_required` si la limpieza es ambigua.
 
 ### Auditoría histórica y adopción explícita
 
@@ -637,8 +678,9 @@ sin descubrir, abrir ni construir cachés.
 
 La planificación organizativa selecciona una raíz de entrada con identidad y
 heads publicados antes de calcular destinos. Clasificación, elegibilidad,
-operación y ejecutabilidad son dimensiones distintas; los miembros/componentes
-virtuales no reciben movimientos físicos ni un flag SQLite concede autoridad.
+operación y ejecutabilidad son dimensiones distintas; sólo los archivos físicos
+sucesores pueden recibir una propuesta de organización y un flag SQLite no
+concede autoridad.
 Los planes legacy sin ámbito probado permanecen advisory y no ejecutables.
 
 Knowledge v2 proyecta fuentes únicas y citas con localizadores, manteniendo
@@ -678,11 +720,13 @@ cursores ligados a raíz, filtros y snapshots, y conserva estados de ausencia,
 parcialidad, schema futuro, corrupción y bloqueo sin confundirlos con cero
 incidencias. La versión v1 sigue intacta.
 
-Archive distingue ZIP físico, documento lógico y componentes, incluido OTT
-exterior/anidado; MIME declarado, estructura e integridad pendiente se conservan
-separados. PDF informa el resultado publicado sin sumar como omisiones actuales
-las páginas fallidas de intentos históricos. Una imagen candidata a documento
-es una observación, no una decisión humana ni un candidato automático a borrar.
+ZIP Intake distingue el ZIP físico genérico de un documento/paquete atómico por
+contenido, no por extensión. Tras una publicación correcta, Knowledge y
+Semantic sólo reciben los paths físicos sucesores; no se publican miembros
+virtuales, cadenas `!/` ni materializaciones paralelas. PDF informa el resultado
+publicado sin sumar como omisiones actuales las páginas fallidas de intentos
+históricos. Una imagen candidata a documento es una observación, no una decisión
+humana ni un candidato automático a borrar.
 
 La búsqueda visual mantiene un contrato adicional de calibración local: el piso
 de similitud se mide sobre consultas positivas y negativas, se liga al modelo,
@@ -716,7 +760,7 @@ restaurar o ampliar la ejecución.
 
 ```text
 inventory, framework, catalog, pdf, docx, office, audio,
-video, image, semantic, archive, text
+video, image, semantic, text
 ```
 
 Cada owner controla su schema y migraciones. Los lectores eligen una estrategia
@@ -753,11 +797,10 @@ Persistencia define el contrato; el procedimiento está en
 `Neocortex --factory-reset` es una frontera de mantenimiento separada de las
 rutas de contenido y de `databases purge`. Su propósito es retirar todo el
 estado operativo administrado de la raíz seleccionada: bases SQLite y sidecars,
-materializaciones de ZIP administradas bajo ella (incluido
-`state/archive-materialized`), cachés y metadatos de procesamiento. No toca
-destinos externos producidos por APIs standalone. Los originales del corpus, los
-ZIP que los contienen, la instalación, los modelos y los
-`installation-receipts` permanecen protegidos.
+workspaces de scratch de ZIP Intake que estén bajo esa raíz, cachés y metadatos
+de procesamiento. No toca destinos externos producidos por APIs standalone. Los
+originales y destinos físicos del corpus, los ZIP que aún los contienen, la
+instalación, los modelos y los `installation-receipts` permanecen protegidos.
 
 La invocación admite `--state-directory` como override para cercar fixtures y
 no acepta `--root`, rutas de contenido, scopes, preview/apply, backup, snapshot
@@ -843,8 +886,9 @@ el scan queda parcial, sin renombrar el corpus ni sustituir bytes de la ruta.
 Se revalidan cambios en directorios activos, sin prometer un snapshot atómico
 global del filesystem.
 
-No existe una superficie de exportación o ZIP para el lifecycle de curación;
-Archive/ZIP sigue siendo únicamente una ruta de contenido.
+No existe una superficie de exportación o ZIP para el lifecycle de curación.
+ZIP Intake pertenece a la ingestión de `--all`, antes de Identify, y no publica
+una superficie de búsqueda o materialización virtual.
 
 ## Efectos sobre archivos
 
@@ -904,7 +948,7 @@ El registro de un hijo verificado alimenta también al observador cuando Linux
 no expone los listados de hijos. Cada muestra vuelve a comprobar identidad y
 cgroup; el crédito exige memoria privada legible y una concesión todavía viva.
 Esto no convierte una observación incompleta del árbol o de CPU en completa.
-Los módulos de orquestación, acciones, persistencia, Archive, recursos, CLI
+Los módulos de orquestación, acciones, persistencia, ZIP Intake, recursos, CLI
 Semantic, Scratch y Artifact Registry son fachadas/coordinadores delgados sobre
 owners cohesivos; la separación no crea conexiones SQLite adicionales ni mueve
 las fronteras de seguridad.
@@ -942,9 +986,9 @@ la de su autogroup. La política deja intactos al caller y a procesos ajenos.
 
 Text, DOCX y Office separan preparación/publicación en el owner del análisis en
 procesos. Text aplica el timeout y límite de memoria dentro del
-parser aislado. Archive conserva identidad virtual y presupuesto por
-contenedor al paralelizar extracción; usa supervisores por contenedor y procesos
-para miembros mayores, evitando crear procesos para cada ZIP diminuto. PDF
+parser aislado. ZIP Intake conserva presupuesto por contenedor al hacer
+preflight y extracción en staging; no crea procesos ni representaciones virtuales
+por cada ZIP diminuto. PDF
 automático ejecuta MuPDF en procesos aislados; el modo local requiere un único
 worker explícito sin timeout de documento. Los procesos y modelos reutilizados
 mantienen su residencia contabilizada hasta cerrarse; cancelación espera su
@@ -1048,7 +1092,7 @@ de trabajo reutilizable. El factory reset sólo declara el alcance físico que
 pudo retirar y verificar.
 
 El inventario de estado relaciona SQLite, artefactos, referencias y pruebas de
-reconstrucción Archive. El factory reset retira únicamente los objetivos
+reconciliación de ZIP Intake. El factory reset retira únicamente los objetivos
 operativos dentro de la raíz cercada; no procesa el corpus ni adopta rutas
 externas. Las copias canónicas, los ZIP originales, la instalación, los modelos
 y los `installation-receipts` siguen protegidos.

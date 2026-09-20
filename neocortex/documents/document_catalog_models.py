@@ -16,7 +16,6 @@ SourceKind = Literal[
     "audio",
     "video",
     "image",
-    "archive",
 ]
 SourceCoverage = Literal["complete", "partial", "blocked"]
 
@@ -65,5 +64,4 @@ class SourceDocument:
     page_count: int | None = None
     coverage: SourceCoverage = "complete"
     text_truncated: bool = False
-    virtual: bool = False
     resource_binding_json: str | None = None

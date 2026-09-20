@@ -1,7 +1,7 @@
 """Identity-bound input selection for advisory organization plans.
 
 An output directory is not an input scope.  Scope membership is demonstrated by
-the physical resource (or the archive's physical anchor), never by a virtual
+the physical resource, never by a virtual
 locator or a detector's confidence.
 """
 

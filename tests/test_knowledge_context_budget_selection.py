@@ -41,7 +41,7 @@ def _hit(rank, owner, *, verified, full_terms, missing_negation, body):
 def _entries():
     # A long but irrelevant first source previously monopolized the MCP budget.
     hits = [
-        _hit(1, "archive", verified=False, full_terms=False, missing_negation=True,
+        _hit(1, "image", verified=False, full_terms=False, missing_negation=True,
              body=("Revisión del programa de trabajo. " * 20) + "Verificación de presión en radiadores."),
         _hit(2, "text", verified=True, full_terms=False, missing_negation=True,
              body=("Configuración del sistema y registro de operaciones. " * 20)),
@@ -49,7 +49,7 @@ def _entries():
              body=("Datos de recepción y embalaje. " * 20) + CONDITION),
         _hit(4, "docx", verified=True, full_terms=True, missing_negation=False,
              body=("Información general del documento. " * 20) + CONDITION),
-        _hit(5, "archive", verified=False, full_terms=False, missing_negation=True,
+        _hit(5, "image", verified=False, full_terms=False, missing_negation=True,
              body="Revisión de radiadores y presión en el programa."),
     ]
     snapshot = {"snapshot_id": "fixture-snapshot", "consistency": "stable", "owners": [{

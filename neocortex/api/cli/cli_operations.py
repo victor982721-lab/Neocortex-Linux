@@ -46,7 +46,6 @@ class DirectOperationFamily(Enum):
     OFFICE = auto()
     AUDIO = auto()
     VIDEO = auto()
-    ARCHIVE = auto()
     KNOWLEDGE = auto()
     CURATION = auto()
     CONTENT_DIAGNOSTICS = auto()
@@ -99,7 +98,6 @@ _DOCX = DirectOperationFamily.DOCX
 _OFFICE = DirectOperationFamily.OFFICE
 _AUDIO = DirectOperationFamily.AUDIO
 _VIDEO = DirectOperationFamily.VIDEO
-_ARCHIVE = DirectOperationFamily.ARCHIVE
 _KNOWLEDGE = DirectOperationFamily.KNOWLEDGE
 _CURATION = DirectOperationFamily.CURATION
 _CONTENT_DIAGNOSTICS = DirectOperationFamily.CONTENT_DIAGNOSTICS
@@ -111,10 +109,6 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
     ),
     DirectOperation(
         "text_errors", "run_text_errors", _CONTENT_DIAGNOSTICS,
-        SelectionMode.NOT_NONE, module_name=".cli_content_diagnostics",
-    ),
-    DirectOperation(
-        "archive_issues", "run_archive_issues", _CONTENT_DIAGNOSTICS,
         SelectionMode.NOT_NONE, module_name=".cli_content_diagnostics",
     ),
     DirectOperation(
@@ -260,26 +254,6 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
     DirectOperation("docx_layout_groups", "run_docx_layout_groups", _DOCX, _VALUE),
     DirectOperation("docx_missing_pdf", "run_docx_missing_pdf", _DOCX, _VALUE),
     DirectOperation("office_search", "run_office_search", _OFFICE, _VALUE),
-    DirectOperation(
-        "archive_status",
-        "run_archive_status",
-        _ARCHIVE,
-        module_name=".cli_archive",
-    ),
-    DirectOperation(
-        "archive_search",
-        "run_archive_search",
-        _ARCHIVE,
-        _VALUE,
-        module_name=".cli_archive",
-    ),
-    DirectOperation(
-        "archive_list",
-        "run_archive_list",
-        _ARCHIVE,
-        _VALUE,
-        module_name=".cli_archive",
-    ),
     DirectOperation(
         "audio_search",
         "run_audio_search",

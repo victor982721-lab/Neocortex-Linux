@@ -124,12 +124,11 @@ _MAX_MCP_LINE_BYTES = 1_048_576
 _MCP_STDIO_BRIDGE_VERSIONS = frozenset({"1.23.3", "1.29.0"})
 
 _Scope = Literal["personal", "framework", "all"]
-_ContentDiagnosticOwner = Literal["pdf", "text", "archive"]
+_ContentDiagnosticOwner = Literal["pdf", "text"]
 _ContentDiagnosticV2Owner = Literal[
     "pdf",
     "docx",
     "office",
-    "archive",
     "text",
     "audio",
     "video",
@@ -486,7 +485,7 @@ if BaseModel is not None:
 
         schema_: Literal["neocortex.content-diagnostics/v1"] = _pydantic_field(alias="schema")
         owner: _ContentDiagnosticOwner
-        operation: Literal["pdf-diagnostics", "text-errors", "archive-issues"]
+        operation: Literal["pdf-diagnostics", "text-errors"]
         status: Literal["ok", "unavailable", "blocked", "error"]
         read_only: Literal[True]
         requested_root: str | None
@@ -967,7 +966,7 @@ def _structured_content_diagnostics_payload(
 ) -> dict[str, Any]:
     """Bind diagnostics to configured paths and keep adapter failures structured."""
 
-    operations = {"pdf": "pdf-diagnostics", "text": "text-errors", "archive": "archive-issues"}
+    operations = {"pdf": "pdf-diagnostics", "text": "text-errors"}
     filters = {"file_key": file_key, "path_fragment": path_fragment, "reason": reason}
     source_root: Path | None = None
 
@@ -1046,7 +1045,6 @@ def _structured_content_diagnostics_v2_payload(
         "pdf",
         "docx",
         "office",
-        "archive",
         "text",
         "audio",
         "video",
@@ -1215,10 +1213,9 @@ def create_server() -> Any:
         name="content_diagnostics",
         title="Inspect persisted format diagnostics",
         description=(
-            "Read a bounded diagnostic page for PDF, Text or Archive from the configured "
+            "Read a bounded diagnostic page for PDF or Text from the configured "
             "state and corpus root, never the latest run. No files are scanned or changed. "
-            "reason is an exact PDF/Text error_type or Archive reason_code; file_key is "
-            "an Archive container_key for that owner. Root coverage and filtered matches "
+            "reason is an exact PDF/Text error_type. Root coverage and filtered matches "
             "remain separate; an absent owner does not prove zero issues."
         ),
         annotations=read_only,
@@ -1260,7 +1257,6 @@ def create_server() -> Any:
             "pdf",
             "docx",
             "office",
-            "archive",
             "text",
             "audio",
             "video",

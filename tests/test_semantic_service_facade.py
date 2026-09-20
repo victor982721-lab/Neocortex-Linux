@@ -60,7 +60,7 @@ EXPECTED_SIGNATURES = {
     "plan_semantic_index": (
         "(state_directory: 'Path', *, scope: 'str' = 'all', source_kinds: "
         "'Sequence[str]' = ('pdf', 'docx', 'xlsx', 'pptx', 'odt', 'audio', "
-        "'archive', 'text', 'video'), text_model: "
+        "'text', 'video'), text_model: "
         "'EmbeddingModelSpec | None' = None, "
         "embed_ocr_text: 'bool' = True, chunking: "
         "'TextChunkingConfig | None' = None, cost_calibrations: "
@@ -78,7 +78,7 @@ EXPECTED_SIGNATURES = {
     ),
     "index_text_embeddings": (
         "(state_directory: 'Path', *, source_kinds: 'Sequence[str]' = "
-        "('pdf', 'docx', 'xlsx', 'pptx', 'odt', 'audio', 'archive', 'text', "
+        "('pdf', 'docx', 'xlsx', 'pptx', 'odt', 'audio', 'text', "
         "'video'), model: "
         "'EmbeddingModelSpec | None' = None, model_cache: 'Path | None' = None, "
         "local_files_only: 'bool' = True, threads: 'int | None' = None, "

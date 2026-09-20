@@ -45,26 +45,21 @@ def _seed(
     observed = source.stat()
     identity = FileIdentity(observed.st_dev, observed.st_ino)
     birth = stat_birthtime_ns(observed)
-    file_key = identity.packed_key if member is None else f"archive:fixture:{source.name}:{member}"
-    locator = str(source) if member is None else f"{source}!/{member}"
+    # Generic ZIP members are no longer durable catalog resources.  Organization
+    # receives only physically published files, so every fixture is bound to its
+    # own observed path and identity.
+    file_key = identity.packed_key
+    locator = str(source)
     binding = build_resource_binding(
         source_kind=kind,
         file_key=file_key,
         path=locator,
         identity=identity,
         birthtime_ns=birth,
-        size=observed.st_size,
-        mtime_ns=observed.st_mtime_ns,
-        anchor_path=str(source),
-        representation_kind=representation_kind,
+            size=observed.st_size,
+            mtime_ns=observed.st_mtime_ns,
+            representation_kind=representation_kind,
         representation_metadata=representation_metadata,
-        archive_member=None
-        if member is None
-        else {
-            "container_key": identity.packed_key,
-            "container_path": str(source),
-            "member_chain": member,
-        },
     )
     row = {
         "source_kind": kind,
@@ -120,17 +115,15 @@ def test_scope_is_required_before_creating_catalog_or_destination(tmp_path: Path
     assert not (tmp_path / "destination").exists()
 
 
-def test_source_scope_excludes_other_roots_and_their_virtual_members(tmp_path: Path) -> None:
+def test_source_scope_excludes_other_roots(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
     selected = _file(tmp_path / "corpus", "standard.pdf")
     fixture = _file(tmp_path / "fixture", "sample.pdf")
-    container = _file(tmp_path / "fixture", "package.zip")
     _seed(catalog, selected)
     _seed(catalog, fixture)
-    _seed(catalog, container, kind="archive", member="standard.pdf")
     destination = tmp_path / "different-destination"
     summary = _plan(catalog, selected.parent, destination)
-    assert (summary.considered, summary.planned, summary.excluded_out_of_scope) == (1, 1, 2)
+    assert (summary.considered, summary.planned, summary.excluded_out_of_scope) == (1, 1, 1)
     assert summary.source_root == str(selected.parent)
     assert summary.executable == 0
     views = list_organization_plans(catalog, limit=20)
@@ -150,86 +143,6 @@ def test_scope_selection_not_the_destination_selects_a_fixture(tmp_path: Path) -
     summary = _plan(catalog, fixture.parent, corpus.parent / "organized")
     assert summary.considered == 1
     assert list_organization_plans(catalog, limit=2)[0].source_path == str(fixture)
-
-
-def test_virtual_member_is_anchored_but_has_no_physical_destination(tmp_path: Path) -> None:
-    catalog = _catalog(tmp_path)
-    container = _file(tmp_path / "corpus", "package.zip")
-    _seed(catalog, container, kind="archive", member="standard.pdf")
-    summary = _plan(catalog, container.parent, tmp_path / "destination")
-    assert (summary.considered, summary.planned, summary.review_required) == (1, 0, 1)
-    view = list_organization_plans(catalog, limit=1)[0]
-    assert view.destination_path is None
-    assert view.operation_kind == "logical_organization"
-    assert view.eligibility_status == "logical_only"
-    assert not view.executable
-    with document_catalog_database(catalog, readonly=True) as connection:
-        evidence = json.loads(
-            connection.execute("SELECT evidence_json FROM organization_plans").fetchone()[0]
-        )
-    assert evidence["suggested_logical_location"].endswith("standard.pdf")
-
-
-def test_logical_outer_document_not_its_components_is_organization_unit(tmp_path: Path) -> None:
-    catalog = _catalog(tmp_path)
-    container = _file(tmp_path / "corpus", "template.zip")
-    _seed(
-        catalog,
-        container,
-        kind="archive",
-        representation_kind="physical_file",
-        representation_metadata={
-            "document_role": "logical_document",
-            "logical_document_chain": "",
-            "independently_organizable": True,
-            "independently_disposable": False,
-        },
-    )
-    _seed(
-        catalog,
-        container,
-        kind="archive",
-        member="content.xml",
-        representation_metadata={
-            "document_role": "document_component",
-            "logical_document_chain": "",
-            "independently_organizable": False,
-            "independently_disposable": False,
-        },
-    )
-    summary = _plan(catalog, container.parent, tmp_path / "destination")
-    assert (summary.considered, summary.excluded_components) == (1, 1)
-    view = list_organization_plans(catalog, limit=5)[0]
-    assert view.source_path == str(container)
-    assert view.representation_kind == "physical_file"
-    assert view.operation_kind == "move_physical"
-    assert view.destination_path.endswith("template.zip")
-    assert not view.executable
-
-
-def test_conventional_archive_member_keeps_virtual_blocker_separate_from_component(
-    tmp_path: Path,
-) -> None:
-    catalog = _catalog(tmp_path)
-    container = _file(tmp_path / "corpus", "ordinary.zip")
-    _seed(
-        catalog,
-        container,
-        kind="archive",
-        member="report.pdf",
-        representation_metadata={
-            "document_role": "archive_member",
-            "logical_document_chain": None,
-            "independently_organizable": True,
-            "independently_disposable": False,
-        },
-    )
-    summary = _plan(catalog, container.parent, tmp_path / "destination")
-    assert (summary.considered, summary.excluded_components) == (1, 0)
-    view = list_organization_plans(catalog, limit=1)[0]
-    assert view.reason == "virtual_resource_requires_logical_organization"
-    assert view.representation_kind == "archive_member"
-    assert "document_component_not_independently_organizable" not in view.blockers
 
 
 def test_decompressed_ooxml_directory_keeps_all_members_together(tmp_path: Path) -> None:

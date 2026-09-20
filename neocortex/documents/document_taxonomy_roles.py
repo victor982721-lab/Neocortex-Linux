@@ -29,7 +29,7 @@ class RoleAssessment:
 
 
 def _textual_log_source(signals: DocumentSignals) -> bool:
-    """Use the Archive producer's MIME, not a member suffix or OCR text.
+    """Use structured MIME evidence, not a suffix or OCR text.
 
     Catalog metadata is flattened key/value evidence. Ambiguous duplicate MIME
     keys abstain rather than choosing a declaration embedded in a member name.
@@ -37,15 +37,7 @@ def _textual_log_source(signals: DocumentSignals) -> bool:
 
     if signals.source_kind == "text":
         return True
-    if signals.source_kind != "archive":
-        return False
-    media_types = re.findall(r"(?:^|\s)media_type=([^\s]+)", signals.metadata)
-    content_kinds = re.findall(r"(?:^|\s)content_kind=([^\s]+)", signals.metadata)
-    return (
-        len(media_types) == 1
-        and media_types[0] in {"text/plain", "application/json"}
-        and not any(kind in {"image", "pdf"} for kind in content_kinds)
-    )
+    return False
 
 
 def document_role_assessment(

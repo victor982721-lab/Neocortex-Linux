@@ -9,12 +9,10 @@ import pytest
 from neocortex.api.content_diagnostics_api import content_diagnostics_error_payload, content_diagnostics_payload
 from neocortex.api.cli.cli_content_diagnostics import (
     register_content_diagnostics_arguments,
-    run_archive_issues,
     run_pdf_diagnostics,
     run_text_errors,
     validate_content_diagnostics_arguments,
 )
-from neocortex.capabilities.formats.archive.state import archive_database, initialize_archive_state
 from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state, pdf_database
 from neocortex.capabilities.formats.text.text_state import initialize_text_state, text_database
 from tests.test_pdf_coverage_diagnostics import _pdf
@@ -41,27 +39,10 @@ def state(tmp_path: Path) -> Path:
                 (key, f"{root}/{key}.txt"),
             )
             connection.commit()
-    archive = tmp_path / "archive.sqlite3"
-    initialize_archive_state(archive)
-    with archive_database(archive) as connection:
-        for key, root in (("a", ROOT), ("c", ROOT + "-extra"), ("d", "/fixture/a")):
-            connection.execute(
-                """INSERT INTO containers(container_key,path,size,mtime_ns,birthtime_ns,
-                processing_signature,status,last_seen_run_id,updated_ns)
-                VALUES(?,?,1,1,-1,'fixture','partial',1,1)""",
-                (key, f"{root}/outer.zip"),
-            )
-            for depth in (1, 2):
-                connection.execute(
-                    """INSERT INTO archive_issues(container_key,member_chain,archive_depth,
-                    reason_code,detail,created_ns) VALUES(?,?,?,'archive_unsafe_member_name','bounded',1)""",
-                    (key, f"inner.zip!/member-{depth}", depth),
-                )
-        connection.commit()
     return tmp_path
 
 
-@pytest.mark.parametrize("owner", ["pdf", "text", "archive"])
+@pytest.mark.parametrize("owner", ["pdf", "text"])
 def test_exact_root_boundary_page_cursor_and_read_only_sources(state: Path, owner: str) -> None:
     before = {path.name: path.read_bytes() for path in state.iterdir()}
     first = content_diagnostics_payload(owner, state, ROOT, 1)
@@ -76,34 +57,29 @@ def test_exact_root_boundary_page_cursor_and_read_only_sources(state: Path, owne
     for result in (first, second):
         item = result["items"][0]
         assert item.get("path", item.get("container_path")).startswith(ROOT + "/")
-    if owner == "archive":
-        assert first["matched_count"] is None
-        assert first["coverage"]["root_summary"] is None
-        assert all(result["items"][0]["container_key"] == "a" for result in (first, second))
-    else:
-        assert first["matched_count"] == 2
-        assert first["coverage"]["root_summary"]["documents"] == 2
+    assert first["matched_count"] == 2
+    assert first["coverage"]["root_summary"]["documents"] == 2
     invalid = content_diagnostics_payload(owner, state, ROOT + "-extra", 1, cursor=first["next_cursor"])
     assert invalid["status"] == "error" and invalid["error"]["kind"] == "invalid_cursor"
     assert invalid["items"] == [] and invalid["matched_count"] is None
     assert {path.name: path.read_bytes() for path in state.iterdir()} == before
 
 
-@pytest.mark.parametrize("owner", ["pdf", "text", "archive"])
+@pytest.mark.parametrize("owner", ["pdf", "text"])
 def test_filters_intersect_root_and_never_relabel_root_summary_as_filtered(state: Path, owner: str) -> None:
-    reason = "archive_unsafe_member_name" if owner == "archive" else "DecodeError"
+    reason = "DecodeError"
     result = content_diagnostics_payload(owner, state, ROOT, 20, file_key="a", reason=reason)
     assert result["status"] == "ok"
-    assert result["count"] == (2 if owner == "archive" else 1)
-    assert result["reason_field"] == ("reason_code" if owner == "archive" else "error_type")
+    assert result["count"] == 1
+    assert result["reason_field"] == "error_type"
     assert result["coverage"]["root_summary_scope"] == "requested_root_without_query_filters"
     other = content_diagnostics_payload(owner, state, ROOT, file_key="c")
     assert other["status"] == "ok" and other["count"] == 0
-    fragment = content_diagnostics_payload(owner, state, ROOT, path_fragment="outer" if owner == "archive" else "a.")
-    assert fragment["status"] == "ok" and fragment["count"] == (2 if owner == "archive" else 1)
+    fragment = content_diagnostics_payload(owner, state, ROOT, path_fragment="a.")
+    assert fragment["status"] == "ok" and fragment["count"] == 1
 
 
-@pytest.mark.parametrize("owner", ["pdf", "text", "archive"])
+@pytest.mark.parametrize("owner", ["pdf", "text"])
 def test_missing_owner_is_unknown_not_zero_complete(tmp_path: Path, owner: str) -> None:
     missing = tmp_path / "missing"
     result = content_diagnostics_payload(owner, missing, ROOT)
@@ -204,7 +180,6 @@ def _parser(state: Path) -> argparse.ArgumentParser:
 
 @pytest.mark.parametrize("flag,runner", [
     ("--pdf-diagnostics", run_pdf_diagnostics), ("--text-errors", run_text_errors),
-    ("--archive-issues", run_archive_issues),
 ])
 def test_cli_default_root_and_json_are_shared_with_api(state: Path, capsys: pytest.CaptureFixture, flag, runner) -> None:
     args = _parser(state).parse_args([flag, "1", "--diagnostics-json"])
@@ -218,7 +193,7 @@ def test_cli_default_root_and_json_are_shared_with_api(state: Path, capsys: pyte
 def test_cli_selector_conflicts_orphan_filter_and_absent_json(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     parser = _parser(tmp_path)
     with pytest.raises(SystemExit):
-        parser.parse_args(["--text-errors", "1", "--archive-issues", "1"])
+        parser.parse_args(["--text-errors", "1", "--pdf-diagnostics", "1"])
     with pytest.raises(SystemExit, match="requires"):
         validate_content_diagnostics_arguments(parser.parse_args(["--diagnostics-path", "manual"]))
     capsys.readouterr()
@@ -255,7 +230,7 @@ def test_json_validation_errors_and_config_failure_share_error_envelope(tmp_path
 
 
 @pytest.mark.parametrize("owner,flag", [
-    ("pdf", "--pdf-diagnostics"), ("text", "--text-errors"), ("archive", "--archive-issues"),
+    ("pdf", "--pdf-diagnostics"), ("text", "--text-errors"),
 ])
 def test_registered_public_parser_dispatches_the_same_scoped_read(
     state: Path, capsys: pytest.CaptureFixture, owner: str, flag: str,

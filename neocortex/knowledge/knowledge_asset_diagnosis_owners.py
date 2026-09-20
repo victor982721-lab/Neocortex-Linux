@@ -1,4 +1,4 @@
-"""Exact, immutable adapters for existing Inventory and Archive diagnosis facts.
+"""Exact, immutable adapters for existing Inventory diagnosis facts.
 
 No database, cache, corpus read, or independent publication is introduced. The
 health caller observes these projections twice under its existing owner fence.
@@ -19,7 +19,6 @@ from .knowledge_asset_diagnosis_contracts import (
 )
 from .knowledge_asset_health_contracts import KnowledgeAssetHealthFact, KnowledgeAssetIdentity
 from .knowledge_snapshot import KnowledgeStatePaths
-from neocortex.foundation.file_identity import encode_file_identity
 from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable, immutable_sqlite_database
 from neocortex.persistence.sqlite_schema_contract import read_application_schema_version
 
@@ -120,54 +119,6 @@ def _duplicate_observations(
     return tuple(observations)
 
 
-def _archive_observations(
-    connection: sqlite3.Connection,
-    identity: KnowledgeAssetIdentity,
-    snapshot_id: str,
-    inventory: KnowledgeAssetHealthFact,
-) -> tuple[AssetDiagnosticObservation, ...]:
-    from neocortex.capabilities.formats.archive.logical import identify_logical_document
-
-    values = {item.name: item.value for item in inventory.values}
-    keys = tuple(sorted({encode_file_identity(identity.volume_id, identity.file_id),
-                         f"{identity.volume_id}:{identity.file_id}"}))
-    rows = connection.execute(
-        """SELECT l.*,c.processing_signature FROM archive_logical_documents l
-        JOIN containers c USING(container_key)
-        WHERE c.container_key IN (""" + ",".join("?" for _ in keys) + """ )
-        AND c.path=? AND c.size=? AND c.mtime_ns=? AND c.birthtime_ns=?
-        AND c.status IN ('complete','partial') AND l.member_chain='' LIMIT 2""",
-        (*keys, values["path"], int(values["size"]), int(values["mtime_ns"]), identity.birthtime_ns),
-    ).fetchall()
-    if len(rows) > 1:
-        raise ValueError("archive logical identity is ambiguous")
-    if not rows:
-        return ()
-    row = rows[0]
-    raw = str(row["evidence_json"])
-    if len(raw) > 65536:
-        raise ValueError("archive identification evidence exceeds bound")
-    markers = json.loads(raw)
-    if not isinstance(markers, list) or len(markers) > 32 or any(not isinstance(item, str) for item in markers):
-        raise ValueError("archive identification markers are invalid")
-    identified = identify_logical_document(tuple(markers), row["declared_mime"])
-    if identified is None or not identified.identified:
-        return ()
-    if identified.logical_kind != row["logical_kind"] or identified.proposed_extension != row["proposed_extension"]:
-        raise ValueError("archive logical identification contradicts its structural evidence")
-    if row["identification_status"] != "identified" or row["physical_media_type"] != "application/zip":
-        return ()
-    ref = AssetDiagnosticEvidenceRef(
-        "archive", f"archive-logical:{row['container_key']}:{row['processing_signature']}",
-        identity.resource_id, snapshot_id, _digest(dict(row)),
-        f"archive-processing:{row['processing_signature']}",
-    )
-    return (AssetDiagnosticObservation(
-        Kind.LOGICAL_FORMAT, identity.resource_id, f"logical_format_{identified.logical_kind}", (ref,),
-        missing_checks=("file_integrity_inspection", "opening_verification"),
-    ),)
-
-
 def capture_supplemental_diagnosis(
     paths: KnowledgeStatePaths,
     identity: KnowledgeAssetIdentity,
@@ -178,20 +129,13 @@ def capture_supplemental_diagnosis(
 
     if inventory is None:
         return (), ("diagnostic_published_inventory_missing",)
-    from neocortex.capabilities.formats.archive.state import ARCHIVE_SCHEMA_VERSION, archive_schema_contract
     from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
     from neocortex.deduplication.persistence.validation import validate_inventory_schema
-    from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
-
-    def validate_archive(connection: sqlite3.Connection) -> None:
-        validate_sqlite_schema_contract(connection, archive_schema_contract(), label="archive", exact=True)
 
     owners: tuple[tuple[str, Path | None, int, Callable[[sqlite3.Connection], None],
                         Callable[[sqlite3.Connection], tuple[AssetDiagnosticObservation, ...]]], ...] = (
         ("inventory", paths.inventory, INVENTORY_SCHEMA_VERSION, validate_inventory_schema,
          lambda connection: _duplicate_observations(connection, identity, snapshot_id)),
-        ("archive", paths.archive, ARCHIVE_SCHEMA_VERSION, validate_archive,
-         lambda connection: _archive_observations(connection, identity, snapshot_id, inventory)),
     )
     observations: list[AssetDiagnosticObservation] = []
     gaps: list[str] = []

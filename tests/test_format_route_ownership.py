@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from neocortex.capabilities.formats.archive.route import ArchiveRoute
 from neocortex.capabilities.formats.audio.route import AudioRoute
 from neocortex.capabilities.formats.docx.route import DocxRoute
 from neocortex.capabilities.formats.office.route import OfficeRoute
@@ -14,7 +13,7 @@ from neocortex.runtime.control.cancellation import CancellationRequested, Cancel
 from neocortex.runtime.control.locking import FrameworkRunLock
 
 
-@pytest.mark.parametrize("route_class", (AudioRoute, VideoRoute, OfficeRoute, DocxRoute, ArchiveRoute))
+@pytest.mark.parametrize("route_class", (AudioRoute, VideoRoute, OfficeRoute, DocxRoute))
 def test_route_owner_lock_is_scoped_released_and_retained(tmp_path: Path, route_class) -> None:
     expected = object()
 
@@ -42,7 +41,7 @@ def test_route_owner_lock_is_scoped_released_and_retained(tmp_path: Path, route_
         pass
 
 
-@pytest.mark.parametrize("route_class", (AudioRoute, VideoRoute, OfficeRoute, DocxRoute, ArchiveRoute))
+@pytest.mark.parametrize("route_class", (AudioRoute, VideoRoute, OfficeRoute, DocxRoute))
 def test_cancelled_route_does_not_create_owner_directory(tmp_path: Path, route_class) -> None:
     route = object.__new__(route_class)
     route.config = SimpleNamespace(state_path=tmp_path / "absent" / "state.sqlite3")

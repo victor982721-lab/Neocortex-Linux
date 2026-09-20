@@ -66,7 +66,6 @@ ALL_ROUTES = (
     "pdf",
     "docx",
     "office",
-    "archive",
     "text",
     "audio",
     "video",
@@ -271,7 +270,7 @@ def _run_route_only(
     ).run()
 
 
-def test_all_contract_closes_eight_routes_and_types_missing_dependencies() -> None:
+def test_all_contract_closes_seven_routes_and_types_missing_dependencies() -> None:
     registry = builtin_route_registry()
     assert tuple(registry) == ALL_ROUTES == BUILTIN_ROUTE_ORDER
     assert registry["pdf"].lifecycle_capability == "phase_resume"

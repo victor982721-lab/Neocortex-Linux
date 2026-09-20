@@ -889,9 +889,9 @@ def test_new_processing_signature_closes_empty_uncloned_candidate(
     stale = start_embedding_generation(
         database,
         model_signature=model.model_signature,
-        processing_signature="sources=pdf,archive",
-        provenance={"sources": ["pdf", "archive"]},
-        cursor={"selected_sources": ["pdf", "archive"]},
+        processing_signature="sources=pdf,text",
+        provenance={"sources": ["pdf", "text"]},
+        cursor={"selected_sources": ["pdf", "text"]},
         materialize_base=False,
         started_ns=120,
     )
@@ -921,7 +921,7 @@ def test_new_processing_signature_closes_empty_uncloned_candidate(
     assert json.loads(str(stale_row["cursor_json"])) == {
         "failure_reason": "processing_signature_superseded_before_work",
         "retryable": False,
-        "selected_sources": ["pdf", "archive"],
+        "selected_sources": ["pdf", "text"],
         "superseded_by_processing_signature": "sources=pdf",
     }
     assert successor_row is not None

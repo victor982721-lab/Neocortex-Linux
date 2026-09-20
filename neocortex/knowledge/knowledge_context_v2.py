@@ -33,19 +33,6 @@ _MAX_GRAPH_RELATIONS = 256
 _MAX_GRAPH_IDENTIFIERS_PER_EVIDENCE = 64
 _MAX_GRAPH_PROVENANCE = 16
 _MAX_GRAPH_PROVENANCE_CHARS = 4_096
-_ARCHIVE_IDENTIFIER_NAMES = frozenset(
-    {
-        "inside_zip",
-        "container_key",
-        "container_path",
-        "member_chain",
-        "member_path",
-        "archive_depth",
-        "content_kind",
-        "media_type",
-        "container_status",
-    }
-)
 _LOCATORS = (
     "page",
     "start_line",
@@ -608,16 +595,6 @@ def _graph_projection(
                     lowered = namespace.casefold()
                     if lowered == "planned_duplicate_of":
                         continue
-                    if lowered in _ARCHIVE_IDENTIFIER_NAMES and not (
-                        resource.get("owner") == "archive"
-                        or resource.get("source_kind") == "archive"
-                    ):
-                        # Some legacy fixtures carry archive-like diagnostic
-                        # labels on ordinary documents.  They are not graph
-                        # entities unless the owner actually published an
-                        # archive member; archive provenance remains in the
-                        # citation identifiers above.
-                        continue
                     if lowered in {"source_identity", "retrieval_entity_id"}:
                         # These two bindings are already first-class source /
                         # citation fields.  Re-emitting them as graph nodes
@@ -1059,14 +1036,6 @@ def _candidates(
                 for name in ("source_identity", "retrieval_entity_id"):
                     if name in identifiers:
                         citation[name] = identifiers[name]
-                if source.get("owner") == "archive" or source.get("source_kind") == "archive":
-                    archive_identifiers = [
-                        {"namespace": namespace, "value": value}
-                        for namespace, value in identifiers.items()
-                        if namespace.casefold() in _ARCHIVE_IDENTIFIER_NAMES
-                    ]
-                    if archive_identifiers:
-                        citation["identifiers"] = archive_identifiers
                 if signal:
                     support = signal.get("query_support") or {}
                     citation["retrieval_support"] = {

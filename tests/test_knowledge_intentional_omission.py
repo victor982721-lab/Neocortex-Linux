@@ -30,7 +30,7 @@ pytestmark = pytest.mark.capability("base", "inference")
 _AMBIGUOUS_REASON = "ambiguous_query_requires_text_evidence"
 _TEXTUAL_REASON = "textual_query_routed_away_from_clip"
 _OWNERS = ("inventory", "framework", "catalog", "pdf", "docx", "office", "audio",
-           "image", "semantic", "archive", "text", "video")
+           "image", "semantic", "text", "video")
 _OMISSION_JSON = """{
   "name": "semantic_image", "channel": "semantic", "available": true,
   "complete": true, "executed": false, "returned": 0, "rows_scanned": 0,
@@ -51,7 +51,7 @@ def _all_available_snapshot() -> KnowledgeSnapshot:
         captured_monotonic_ns=1,
         owners=tuple(OwnerSnapshot(owner, OwnerAvailability.AVAILABLE, 1, 1) for owner in _OWNERS),
     )
-    assert len(snapshot.owners) == 12
+    assert len(snapshot.owners) == 11
     assert all(owner.state is OwnerAvailability.AVAILABLE for owner in snapshot.owners)
     return snapshot
 
@@ -62,7 +62,7 @@ def _execute(
 ):
     _install_complete_catalog(monkeypatch)
     lexical = tuple(_ranking(f"fts_{owner}", "lexical", available=True, complete=True)
-                    for owner in ("pdf", "docx", "office", "audio", "video", "archive", "text"))
+                    for owner in ("pdf", "docx", "office", "audio", "video", "text"))
     monkeypatch.setattr(knowledge_search, "_lexical_rankings", _ranking_stub(lexical))
     text = _ranking("semantic_text", "semantic", available=not text_failed, complete=not text_failed)
     reports = (text,) if image_report is None else (text, image_report)

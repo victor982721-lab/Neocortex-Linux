@@ -31,7 +31,6 @@ from neocortex.safety.corpus_access import CorpusAccessPolicy
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
-    from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary
     from neocortex.capabilities.formats.office.route import OfficeRouteSummary
@@ -753,7 +752,6 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
             pdf=cast("PdfRouteSummary | None", routes.get("pdf")),
             docx=cast("DocxRouteSummary | None", routes.get("docx")),
             office=cast("OfficeRouteSummary | None", routes.get("office")),
-            archive=cast("ArchiveRouteSummary | None", routes.get("archive")),
             text=cast("TextRouteSummary | None", routes.get("text")),
             audio=cast("AudioRouteSummary | None", routes.get("audio")),
             video=cast("VideoRouteSummary | None", routes.get("video")),
@@ -765,6 +763,7 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
             route_failures=work.route_failures,
             maintenance=dict(work.maintenance),
             size_admission=dict(work.size_admission),
+            zip_intake=dict(work.zip_intake),
         )
 
     def _require_publication_ready(self) -> None:

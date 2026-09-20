@@ -15,10 +15,6 @@ from .cli_audio_surface import (
     validate_audio_arguments,
     validate_audio_direct_operation,
 )
-from .cli_archive_surface import (
-    validate_archive_arguments,
-    validate_archive_direct_operation,
-)
 from .cli_capabilities_surface import validate_capabilities_arguments
 from .cli_config_doctor_surface import validate_config_doctor_arguments
 from .cli_content_diagnostics import validate_content_diagnostics_arguments
@@ -751,7 +747,7 @@ def _validate_direct_operation_selection(args: argparse.Namespace) -> None:
     direct_operations = selected_direct_operations(args)
     if len(direct_operations) > 1:
         raise SystemExit(
-            "direct status/recovery/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/"
+            "direct status/recovery/semantic/curation/PDF/DOCX/Office/audio/video/"
             "Knowledge "
             "operations are mutually exclusive"
         )
@@ -1075,7 +1071,6 @@ def _validate_direct_operations(args: argparse.Namespace) -> None:
     validate_office_direct_operation(args, explicit)
     validate_docx_direct_operation(args)
     _validate_pdf_direct_operation(args)
-    validate_archive_direct_operation(args, explicit)
     _validate_organization_operations(args, explicit)
     _validate_curation_operation(args, explicit)
     validate_audio_direct_operation(args)
@@ -1187,7 +1182,6 @@ def validate_arguments(args: argparse.Namespace) -> None:
     _validate_pdf(args)
     validate_docx_arguments(args)
     validate_office_arguments(args)
-    validate_archive_arguments(args)
     validate_text_arguments(args)
     validate_audio_arguments(args)
     validate_video_arguments(args)

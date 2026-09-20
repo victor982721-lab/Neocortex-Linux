@@ -344,20 +344,6 @@ def _validate_source_schema(
             expected_version=video_state.VIDEO_SCHEMA_VERSION,
             validator=video_state.validate_video_schema,
         )
-    if source_kind == "archive":
-        from neocortex.capabilities.formats.archive import state as archive_state
-
-        return _require_current_schema(
-            connection,
-            label="archive",
-            expected_version=archive_state.ARCHIVE_SCHEMA_VERSION,
-            validator=lambda connection: validate_sqlite_schema_contract(
-                connection,
-                archive_state.archive_schema_contract(),
-                label="archive semantic source",
-                exact=True,
-            ),
-        )
     if source_kind == "text":
         from neocortex.capabilities.formats.text import text_state
 

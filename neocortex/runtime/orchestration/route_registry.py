@@ -21,8 +21,6 @@ from neocortex.runtime.orchestration.replay_metrics import (
 if TYPE_CHECKING:
     from neocortex.progress import ProgressCallback
 
-    from neocortex.capabilities.formats.archive.route import ArchiveRoute as ArchiveRoute
-    from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig as ArchiveRouteConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
     from neocortex.capabilities.formats.audio.route import AudioRoute as AudioRoute
     from neocortex.runtime.control.cancellation import CancellationToken
@@ -445,41 +443,6 @@ def _run_office(context: RouteExecutionContext) -> object:
     return summary
 
 
-def archive_route_config_from_framework(
-    config: "FrameworkConfig",
-) -> "ArchiveRouteConfig":
-    """Project application limits into the recursive ZIP route."""
-
-    from neocortex.runtime.config.application_config_projections import (
-        archive_route_config_from_application,
-    )
-
-    return archive_route_config_from_application(effective_route_config(config, "archive"))
-
-
-def _run_archive(context: RouteExecutionContext) -> object:
-    from neocortex.capabilities.formats.archive.route import ArchiveRoute
-
-    gate = None
-    if context.resource_coordinator is not None:
-        from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
-
-        gate = CoordinatedMemoryGate(context.resource_coordinator, "archive")
-    config = effective_route_config(context.config, "archive")
-    summary = ArchiveRoute(
-        archive_route_config_from_framework(config),
-        context.framework_state,
-        context.run_id,
-        progress=context.progress,
-        memory_gate=gate,
-        cancellation=context.cancellation,
-    ).run()
-    catalog = _update_document_catalog_after_route(context, "archive")
-    if catalog:
-        summary = _summary_with_catalog(summary, catalog)
-    return summary
-
-
 def text_route_config_from_framework(config: "FrameworkConfig") -> "TextRouteConfig":
     """Project application limits into generic text extraction."""
 
@@ -600,7 +563,6 @@ def _update_document_catalog_after_route(
         "office",
         "text",
         "audio",
-        "archive",
         "image",
         "video",
     ],
@@ -620,8 +582,6 @@ def _update_document_catalog_after_route(
         sources = ((context.config.audio_database, "audio"),)
     elif source_kind == "text":
         sources = ((context.config.text_database, "text"),)
-    elif source_kind == "archive":
-        sources = ((context.config.archive_database, "archive"),)
     elif source_kind == "image":
         sources = ((context.config.image_database, "image"),)
     elif source_kind == "video":
@@ -751,11 +711,6 @@ def builtin_route_registry() -> dict[str, RouteAdapter]:
             "office",
             _run_office,
             estimate_workload=_candidate_workload_estimator("office"),
-        ),
-        RouteAdapter(
-            "archive",
-            _run_archive,
-            estimate_workload=_candidate_workload_estimator("archive"),
         ),
         RouteAdapter(
             "text",

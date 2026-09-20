@@ -17,7 +17,6 @@ from neocortex import __version__
 
 from neocortex.runtime.config.app_paths import default_state_directory
 from .cli_audio_surface import register_audio_arguments
-from .cli_archive_surface import register_archive_arguments
 from .cli_capabilities_surface import register_capabilities_arguments
 from .cli_config_doctor_surface import register_config_doctor_arguments
 from .cli_content_diagnostics import register_content_diagnostics_arguments
@@ -231,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--all",
         action="store_true",
         help=(
-            "run every PDF, DOCX, Office, ZIP (including nested ZIP), audio, video and image "
+            "run every PDF, DOCX, Office, ZIP intake, audio, video and image "
             "route using the existing "
             "cache, update the technical catalog and prune stale cache state; with "
             "--apply, also organize every safely classified technical document "
@@ -317,7 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ROUTES",
         help=(
             "content routes after the common inventory: one name, a comma-separated "
-            "set such as pdf,docx,office,archive,audio,video,image, or all"
+            "set such as pdf,docx,office,audio,video,image, or all"
         ),
     )
     parser.add_argument(
@@ -1043,7 +1042,6 @@ def build_parser() -> argparse.ArgumentParser:
     register_docx_arguments(parser, megabyte_type=decimal_megabytes)
 
     register_office_arguments(parser, megabyte_type=decimal_megabytes)
-    register_archive_arguments(parser, megabyte_type=decimal_megabytes)
     register_text_arguments(parser, megabyte_type=decimal_megabytes)
 
     # Keep the long-standing final group ordering while grouping the

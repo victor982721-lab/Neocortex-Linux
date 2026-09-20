@@ -548,7 +548,6 @@ def test_operational_constants_are_exact() -> None:
             "pptx",
             "odt",
             "audio",
-            "archive",
             "text",
             "video",
         }

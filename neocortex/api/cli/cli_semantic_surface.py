@@ -152,7 +152,6 @@ def register_semantic_arguments(parser: argparse.ArgumentParser) -> None:
             "pptx",
             "odt",
             "audio",
-            "archive",
             "text",
             "video",
         ),

@@ -4,7 +4,7 @@
 
 `neocortex/capabilities` mantiene el registro y `formats` sus rutas. Cada ruta
 declara inputs, límites, progreso, owner y resultado; su riqueza de localizadores
-es cobertura explícita, no evidencia inventada. Consulta [Architecture](../ARCHITECTURE.md#rutas-de-contenido)
+es cobertura explícita, no evidencia inventada. Consulta [Architecture](../ARCHITECTURE.md#zip-intake-físico-y-rutas-de-contenido)
 y [Operations](../OPERATIONS.md#modelos-y-herramientas-externas).
 
 ## Fronteras

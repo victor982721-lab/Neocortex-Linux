@@ -50,12 +50,10 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.pdf import pdf_route_models as _pdf_contracts
     from neocortex.capabilities.formats.text import text_route as _text_contracts
     from neocortex.capabilities.formats.video import route as _video_contracts
-    from neocortex.capabilities.formats.archive import route as _archive_contracts
     from neocortex.capabilities.formats.docx import models as _docx_contracts
     from neocortex.capabilities.formats.image import contracts as _image_contracts
 else:
     _application_contracts = _DeferredTypeModule("neocortex.runtime.models")
-    _archive_contracts = _DeferredTypeModule("neocortex.capabilities.formats.archive.route")
     _audio_contracts = _DeferredTypeModule("neocortex.capabilities.formats.audio.models")
     _docx_contracts = _DeferredTypeModule("neocortex.capabilities.formats.docx.models")
     _image_contracts = _DeferredTypeModule("neocortex.capabilities.formats.image.contracts")
@@ -66,7 +64,6 @@ else:
     _resource_contracts = _DeferredTypeModule("neocortex.runtime.control.global_resources")
 
 __all__ = [
-    "archive_route_config_from_application",
     "audio_route_config_from_application",
     "docx_route_config_from_application",
     "global_resource_limits_from_application",
@@ -81,51 +78,6 @@ __all__ = [
 
 
 # region [02] Import-local owner projections
-
-
-def archive_route_config_from_application(
-    config: _application_contracts.FrameworkConfig,
-) -> _archive_contracts.ArchiveRouteConfig:
-    """Project current application values into recursive ZIP indexing."""
-
-    from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
-
-    return ArchiveRouteConfig(
-        state_path=config.archive_database,
-        max_file_bytes=config.archive_max_file_bytes,
-        max_documents=config.archive_max_documents,
-        retry_errors=config.archive_retry_errors,
-        retry_recoverable_errors=getattr(config, "retry_recoverable_errors", False),
-        selection=config.selection,
-        max_depth=config.archive_max_depth,
-        max_members=config.archive_max_members,
-        max_central_directory_bytes=config.archive_max_central_directory_bytes,
-        max_member_bytes=config.archive_max_member_bytes,
-        max_total_uncompressed_bytes=config.archive_max_total_uncompressed_bytes,
-        max_text_chars=config.archive_max_text_chars,
-        max_total_text_chars=config.archive_max_total_text_chars,
-        max_compression_ratio=config.archive_max_compression_ratio,
-        pdf_max_pages=config.archive_pdf_max_pages,
-        pdf_timeout_seconds=config.archive_pdf_timeout_seconds,
-        pdf_worker_memory_bytes=config.archive_pdf_worker_memory_bytes,
-        ocr_mode=config.archive_ocr_mode,
-        ocr_lang=config.archive_ocr_lang,
-        ocr_dpi=config.archive_ocr_dpi,
-        ocr_max_pages=config.archive_ocr_max_pages,
-        ocr_max_render_pixels=config.archive_ocr_max_render_pixels,
-        ocr_timeout_seconds=config.archive_ocr_timeout_seconds,
-        tesseract_cmd=config.archive_tesseract_cmd,
-        tessdata_dir=config.archive_tessdata_dir,
-        # Archive remains virtual by default.  Only an explicit Framework
-        # ``--apply`` request opts into the owner-local no-replace staging
-        # service; the destination is never the corpus root.
-        materialize_on_apply=bool(getattr(config, "apply_actions", False)),
-        materialization_directory=(
-            Path(config.state_directory).resolve() / "archive-materialized"
-            if bool(getattr(config, "apply_actions", False))
-            else None
-        ),
-    )
 
 
 def text_route_config_from_application(

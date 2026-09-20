@@ -347,8 +347,6 @@ class LazyPackageApiTests(unittest.TestCase):
             forbidden = {
                 "neocortex.enumeration",
                 "neocortex.deduplication",
-                "neocortex.capabilities.formats.archive.route",
-                "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.audio.models",
                 "neocortex.capabilities.formats.docx.models",
                 "neocortex.capabilities.formats.docx.models",
@@ -409,8 +407,6 @@ class LazyPackageApiTests(unittest.TestCase):
             forbidden = {
                 "neocortex.capabilities.formats.audio.models",
                 "neocortex.capabilities.formats.audio.route",
-                "neocortex.capabilities.formats.archive.route",
-                "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.docx.models",
                 "neocortex.capabilities.formats.docx.models",
                 "neocortex.capabilities.formats.pdf.pdf_route",

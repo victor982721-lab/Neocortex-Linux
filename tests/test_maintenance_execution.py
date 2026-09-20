@@ -73,9 +73,9 @@ def test_exact_selection_excludes_newly_completed_workspace(tmp_path: Path):
 def test_absent_owner_and_cancelled_budget_are_visible_without_creating_state(tmp_path: Path):
     state = tmp_path / "missing"
     coordinator = configured_scratch_maintenance(state)
-    request = MaintenanceRequest(scopes=("owned-temp", "archive-materialized"), cancelled=lambda: True)
+    request = MaintenanceRequest(scopes=("owned-temp", "historical-temp"), cancelled=lambda: True)
     plan = coordinator.plan(request)
-    assert plan.blocked == {"owned-temp": "cancelled", "archive-materialized": "owner_unavailable"}
+    assert plan.blocked == {"owned-temp": "cancelled", "historical-temp": "owner_unavailable"}
     outcome = coordinator.execute(plan)
     assert outcome["operation_status"] == "partial"
     assert outcome["maintenance_status"] == "partial"

@@ -157,8 +157,6 @@ def _print_search(result: KnowledgeSearchResult) -> None:
             f"reason={ranking.reason or '-'}"
         )
     for hit in result.hits:
-        identifiers = dict(hit.evidence.identifiers)
-        inside_zip = hit.resource.owner == "archive" or identifiers.get("inside_zip") == "1"
         locator = json.dumps(
             hit.evidence.to_dict(),
             ensure_ascii=False,
@@ -168,11 +166,7 @@ def _print_search(result: KnowledgeSearchResult) -> None:
         _print_console_line(
             f"KNOWLEDGE_HIT rank={hit.rank} score={hit.fused_score:.12f} "
             f"resource={hit.resource.resource_id} revision={hit.revision.revision_id} "
-            f"location={'archive_member' if inside_zip else 'physical'} "
-            f"inside_zip={int(inside_zip)} "
-            f"container={json.dumps(identifiers.get('container_path'), ensure_ascii=False)} "
-            f"member={json.dumps(identifiers.get('member_path'), ensure_ascii=False)} "
-            f"chain={json.dumps(identifiers.get('member_chain'), ensure_ascii=False)} "
+            f"location=physical "
             f"path={json.dumps(hit.resource.current_path, ensure_ascii=False)} "
             f"evidence={locator}"
         )

@@ -107,7 +107,7 @@ def test_cancellation_at_final_boundary_is_honored(tmp_path: Path):
 
 @pytest.mark.parametrize("route,option", [
     ("pdf", "pdf_ocr_mode"), ("image", "image_document_ocr_mode"),
-    ("archive", "archive_ocr_mode"), ("video", "video_ocr_mode"),
+    ("video", "video_ocr_mode"),
 ])
 @pytest.mark.parametrize("mode", ["never", "auto"])
 def test_framework_prepares_only_the_selected_ocr_options(tmp_path, monkeypatch, route, option, mode):

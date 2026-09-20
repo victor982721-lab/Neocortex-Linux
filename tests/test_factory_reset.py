@@ -51,8 +51,8 @@ def test_default_large_wal_zip_complete_without_sql_or_backup(lab, monkeypatch):
     (lab / "code.sqlite3-shm").write_bytes(bytes(32768))
     for relative in (
         "text.sqlite3",
-        "archive-materialized/fixture/report.txt",
-        "archive-manifests/evidence.json",
+        "zip-intake/fixture/report.txt",
+        "zip-intake-receipts/evidence.json",
         "artifacts/claim.json",
         "scratch/owned-temp/payload/file.txt",
         "curation/checkpoints/old.json",
@@ -180,14 +180,14 @@ def test_partial_unlink_failure_is_not_success(lab, monkeypatch):
 
 
 def test_absent_route_lock_is_reserved_and_inode_survives(lab, monkeypatch):
-    (lab / "archive.sqlite3").write_bytes(b"fixture")
-    lock = lab / "archive.sqlite3.route.lock"
+    (lab / "pdf.sqlite3").write_bytes(b"fixture")
+    lock = lab / "pdf.sqlite3.route.lock"
     assert not lock.exists()
     original = reset._delete_entry
     observed = []
 
     def attempt_concurrent_writer(root_fd, device, entry):
-        if entry.path.name == "archive.sqlite3":
+        if entry.path.name == "pdf.sqlite3":
             fd = os.open(lock, os.O_RDWR)
             try:
                 observed.append(os.fstat(fd).st_ino)

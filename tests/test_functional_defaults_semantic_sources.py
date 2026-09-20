@@ -104,7 +104,7 @@ def test_default_text_source_contract_is_manifest_backed_and_keeps_existing_chan
     assert video.semantic_source_kinds == ("video",)
     assert video.state_database == "video.sqlite3"
     assert TEXT_SOURCE_KINDS[-1] == "video"
-    assert {"archive", "video"}.issubset(TEXT_SOURCE_KINDS)
+    assert "video" in TEXT_SOURCE_KINDS
     assert "image_ocr" not in TEXT_SOURCE_KINDS
 
 

@@ -43,7 +43,7 @@ def test_cached_error_is_reused_work_not_new_work() -> None:
 
 def test_partial_cache_does_not_claim_full_replay() -> None:
     metrics = normalize_route_replay_metrics(
-        "archive",
+        "video",
         {"candidates": 10, "processed": 10, "cache_hits": 8, "cached_errors": 0},
         replayability="safe_replay",
     )
@@ -116,6 +116,6 @@ def test_status_serializes_replay_counters() -> None:
 
 def test_object_summary_adapter_accepts_slots_without_false_cache_hits() -> None:
     summary = SimpleNamespace(candidates=4, processed=4, cache_hits=4, cached_errors=0)
-    metrics = route_replay_metrics("archive", summary)
+    metrics = route_replay_metrics("video", summary)
     assert metrics["new_work"] == 0
     assert metrics["replay_status"] == "replayed"

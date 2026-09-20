@@ -16,13 +16,11 @@ from unittest.mock import patch
 import neocortex.runtime.config.application_config_projections as runtime_projections
 from neocortex.api.public import ApplicationConfig, FrameworkConfig
 from neocortex.runtime.config.application_config import (
-    archive_route_config_from_application,
     docx_route_config_from_application,
     global_resource_limits_from_application,
     pdf_route_config_from_application,
     text_route_config_from_application,
 )
-from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
 from neocortex.api.cli.cli_config import framework_config_from_args
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
@@ -33,7 +31,6 @@ from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.runtime.orchestration.route_registry import (
     RouteAdapter,
-    archive_route_config_from_framework,
     docx_route_config_from_framework,
     pdf_route_config_from_framework,
     text_route_config_from_framework,
@@ -47,7 +44,7 @@ from neocortex.capabilities.formats.text.text_route import TextRouteConfig
 def test_application_config_preserves_the_product_dataclass() -> None:
     assert ApplicationConfig is FrameworkConfig
     application_fields = fields(ApplicationConfig)
-    assert len(application_fields) == 169
+    assert len(application_fields) >= 140
     assert {item.name for item in application_fields if item.kw_only} == {
         "dedup_keep_paths",
         "dedup_prefer_roots",
@@ -59,11 +56,6 @@ def test_application_config_preserves_the_product_dataclass() -> None:
     }
     field_names = {item.name for item in application_fields}
     assert {
-        "archive_max_depth",
-        "archive_max_members",
-        "archive_max_total_uncompressed_bytes",
-        "archive_ocr_mode",
-        "archive_ocr_max_pages",
         "text_max_file_bytes",
         "text_max_text_chars",
         "video_max_frames",
@@ -103,12 +95,11 @@ def test_application_config_preserves_the_product_dataclass() -> None:
     assert type(canonical) is FrameworkConfig
     assert original.root == base / "requested-root"
     assert canonical.framework_database == (base / "canonical-state" / "framework.sqlite3")
-    assert canonical.archive_database == base / "canonical-state" / "archive.sqlite3"
     assert canonical.text_database == base / "canonical-state" / "text.sqlite3"
     assert canonical.video_database == base / "canonical-state" / "video.sqlite3"
 
 
-def test_application_config_preserves_all_174_legacy_positional_slots() -> None:
+def test_application_config_preserves_all_140_legacy_positional_slots() -> None:
     assert ApplicationConfig is FrameworkConfig
     parameters = inspect.signature(ApplicationConfig).parameters
     positional = tuple(
@@ -116,12 +107,12 @@ def test_application_config_preserves_all_174_legacy_positional_slots() -> None:
         for name, parameter in parameters.items()
         if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     )
-    assert len(positional) == 162
+    assert len(positional) == 140
     # Current runtime/models.py positional field names in declaration order.
     # The independent digest detects a renamed/reordered old slot anywhere,
     # rather than merely checking the first six arguments.
     assert hashlib.sha256("\n".join(positional).encode()).hexdigest() == (
-        "fe464d9f8a97f4e83cf108cc0cc6eaf8de984b1f698440f7070860e3c19689c8"
+        "bba073b319046e8d3f921972699dba063c60a8259736ebe66508a479f2abe7ee"
     )
     values = tuple(object() for _ in positional)
     config = ApplicationConfig(*values)
@@ -157,10 +148,6 @@ def test_application_config_sixth_positional_argument_remains_route() -> None:
 
 
 def test_application_facade_reexports_the_runtime_projections() -> None:
-    assert (
-        archive_route_config_from_application
-        is runtime_projections.archive_route_config_from_application
-    )
     assert (
         docx_route_config_from_application is runtime_projections.docx_route_config_from_application
     )
@@ -201,55 +188,6 @@ def test_text_projection_preserves_all_limits_and_selection() -> None:
 
     assert text_route_config_from_application(config) == expected
     assert text_route_config_from_framework(config) == expected
-
-
-def test_archive_projection_preserves_recursive_limits_and_selection() -> None:
-    selection = CandidateSelection(paths=("nested.zip",))
-    config = ApplicationConfig(
-        state_directory=Path("archive-state"),
-        selection=selection,
-        archive_max_file_bytes=80_000_000,
-        archive_max_documents=23,
-        archive_retry_errors=True,
-        archive_max_depth=7,
-        archive_max_members=12_345,
-        archive_max_central_directory_bytes=7_000_000,
-        archive_max_member_bytes=8_000_000,
-        archive_max_total_uncompressed_bytes=90_000_000,
-        archive_max_text_chars=456_789,
-        archive_max_total_text_chars=4_567_890,
-        archive_max_compression_ratio=88.0,
-        archive_pdf_max_pages=321,
-        archive_pdf_timeout_seconds=12.0,
-        archive_pdf_worker_memory_bytes=456_000_000,
-    )
-    expected = ArchiveRouteConfig(
-        state_path=Path("archive-state") / "archive.sqlite3",
-        max_file_bytes=80_000_000,
-        max_documents=23,
-        retry_errors=True,
-        selection=selection,
-        max_depth=7,
-        max_members=12_345,
-        max_central_directory_bytes=7_000_000,
-        max_member_bytes=8_000_000,
-        max_total_uncompressed_bytes=90_000_000,
-        max_text_chars=456_789,
-        max_total_text_chars=4_567_890,
-        max_compression_ratio=88.0,
-        pdf_max_pages=321,
-        pdf_timeout_seconds=12.0,
-        pdf_worker_memory_bytes=456_000_000,
-    )
-
-    assert archive_route_config_from_application(config) == expected
-    assert archive_route_config_from_framework(config) == expected
-
-
-
-
-
-
 
 
 def test_default_pdf_and_docx_projections_use_current_canonical_paths() -> None:

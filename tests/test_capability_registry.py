@@ -29,7 +29,7 @@ from neocortex.platform.capability_registry import (
 )
 
 _FORMATS_ROOT = "neocortex.capabilities.formats"
-_EXPECTED_IDS = ("archive", "audio", "docx", "image", "office", "video")
+_EXPECTED_IDS = ("audio", "docx", "image", "office", "video")
 
 
 def _ids(values: tuple[CapabilitySpec, ...]) -> tuple[str, ...]:
@@ -58,10 +58,10 @@ def test_registry_is_canonical_and_has_no_compatibility_fields() -> None:
 
 
 def test_registry_resolves_only_canonical_module_trees() -> None:
-    canonical = f"{_FORMATS_ROOT}.archive.route"
-    nested = f"{_FORMATS_ROOT}.archive.future.reader"
-    assert _ids(resolve_canonical_capabilities(canonical)) == ("archive",)
-    assert _ids(resolve_canonical_capabilities(nested)) == ("archive",)
+    canonical = f"{_FORMATS_ROOT}.docx.route"
+    nested = f"{_FORMATS_ROOT}.docx.future.reader"
+    assert _ids(resolve_canonical_capabilities(canonical)) == ("docx",)
+    assert _ids(resolve_canonical_capabilities(nested)) == ("docx",)
     assert canonical_target_architecture_families(canonical) == (_FORMATS_ROOT,)
     assert resolve_canonical_capabilities("neocortex.archive_route") == ()
     with pytest.raises(ValueError, match="only canonical"):
@@ -95,7 +95,7 @@ def test_routes_states_and_test_roots_are_complete() -> None:
 
 
 def test_contract_types_are_frozen_and_fail_closed() -> None:
-    archive = CAPABILITY_REGISTRY.by_id("archive")
+    capability = CAPABILITY_REGISTRY.by_id("docx")
     assert all(
         getattr(item, "__slots__", None)
         for item in (
@@ -109,23 +109,23 @@ def test_contract_types_are_frozen_and_fail_closed() -> None:
         )
     )
     with pytest.raises(FrozenInstanceError):
-        archive.capability_id = "changed"  # type: ignore[misc]
+        capability.capability_id = "changed"  # type: ignore[misc]
     with pytest.raises(ValueError, match="inside their module tree"):
         replace(
-            archive,
+            capability,
             modules=(
-                replace(archive.modules[0], canonical_module_id="other.module"),
-                *archive.modules[1:],
+                replace(capability.modules[0], canonical_module_id="other.module"),
+                *capability.modules[1:],
             ),
         )
     with pytest.raises(ValueError, match="unknown module role"):
-        archive.module("missing")
+        capability.module("missing")
     with pytest.raises(ValueError, match="unknown capability"):
         CAPABILITY_REGISTRY.by_id("missing")
     with pytest.raises(ValueError, match="unknown capability route"):
         CAPABILITY_REGISTRY.by_route("missing")
     with pytest.raises(ValueError, match="schema is invalid"):
-        CapabilityRegistry("future", (archive,))  # type: ignore[arg-type]
+        CapabilityRegistry("future", (capability,))  # type: ignore[arg-type]
 
 
 def test_payload_and_fingerprint_are_stable() -> None:

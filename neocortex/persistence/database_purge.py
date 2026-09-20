@@ -977,7 +977,6 @@ _RESTORE_SCHEMA_INITIALIZERS = {
     "video": ("neocortex.capabilities.formats.video.state", "initialize_video_state"),
     "image": ("neocortex.capabilities.formats.image.state", "initialize_image_state"),
     "semantic": ("neocortex.semantic.semantic_schema", "initialize_semantic_state"),
-    "archive": ("neocortex.capabilities.formats.archive.state", "initialize_archive_state"),
     "text": ("neocortex.capabilities.formats.text.text_state", "initialize_text_state"),
 }
 

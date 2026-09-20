@@ -31,11 +31,11 @@ def test_timestamped_log_mentions_do_not_make_it_an_incident_report() -> None:
 
 
 @pytest.mark.parametrize("media_type", ("text/plain", "application/json"))
-def test_same_structured_log_in_archive_uses_observed_text_mime(media_type: str) -> None:
+def test_same_structured_log_uses_observed_text_mime(media_type: str) -> None:
     result = classify_document(
         DocumentSignals(
-            "archive",
-            "/fixture/container.zip!/audit.dat",
+            "text",
+            "/fixture/audit.dat",
             "indexed",
             metadata=f"content_kind=txt media_type={media_type}",
             leading_text=(
@@ -52,21 +52,15 @@ def test_same_structured_log_in_archive_uses_observed_text_mime(media_type: str)
     "source_kind,metadata",
     (
         ("image", "media_type=text/plain"),
-        ("archive", "content_kind=image media_type=image/png"),
-        ("archive", "content_kind=image media_type=text/plain"),
-        ("archive", "content_kind=pdf media_type=application/pdf"),
-        ("archive", ""),
-        ("archive", "media_type=text/plain media_type=image/png"),
-        ("archive", "media_type=text/plain media_type=text/plain"),
     ),
 )
-def test_archive_log_rule_does_not_promote_ocr_or_ambiguous_mime(
+def test_log_rule_does_not_promote_ocr_or_ambiguous_mime(
     source_kind: str, metadata: str
 ) -> None:
     result = classify_document(
         DocumentSignals(
             source_kind,
-            "/fixture/container.zip!/audit.txt",
+            "/fixture/audit.txt",
             "indexed",
             metadata=metadata,
             leading_text=(
@@ -85,14 +79,14 @@ def test_archive_log_rule_does_not_promote_ocr_or_ambiguous_mime(
         ("Bitácora de actividades", "registro_bitacora"),
     ),
 )
-def test_archive_explicit_document_heading_is_not_overridden_by_quoted_logs(
+def test_explicit_document_heading_is_not_overridden_by_quoted_logs(
     heading: str,
     expected_role: str,
 ) -> None:
     result = classify_document(
         DocumentSignals(
-            "archive",
-            "/fixture/container.zip!/entry.txt",
+            "text",
+            "/fixture/entry.txt",
             "indexed",
             title=heading,
             metadata="content_kind=txt media_type=text/plain",
@@ -105,7 +99,7 @@ def test_archive_explicit_document_heading_is_not_overridden_by_quoted_logs(
     assert result.document_role == expected_role
 
 
-@pytest.mark.parametrize("source_kind", ("text", "archive"))
+@pytest.mark.parametrize("source_kind", ("text",))
 @pytest.mark.parametrize("filename_stem", ("Bitácora de actividades", "Reporte de anomalías"))
 @pytest.mark.parametrize("title_is_stem", (False, True))
 def test_filename_title_does_not_block_structured_log_role(
@@ -114,7 +108,7 @@ def test_filename_title_does_not_block_structured_log_role(
     title_is_stem: bool,
 ) -> None:
     basename = f"{filename_stem}.log"
-    prefix = "/fixture/archive.zip!/" if source_kind == "archive" else "/fixture/"
+    prefix = "/fixture/"
     result = classify_document(
         DocumentSignals(
             source_kind,

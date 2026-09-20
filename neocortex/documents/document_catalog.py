@@ -95,10 +95,7 @@ from .document_catalog_replay import (
     latest_receipt,
 )
 from neocortex.runtime.control.cancellation import CancellationRequested
-from neocortex.foundation.file_identity import (
-    FileIdentityEncoding,
-    decode_file_identity,
-)
+from neocortex.foundation.file_identity import decode_file_identity
 from neocortex.persistence.sqlite_schema_contract import (
     read_metadata_schema_version,
     validate_sqlite_schema_contract,
@@ -1145,8 +1142,6 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
             break
         updates: list[tuple[str, str, str, str]] = []
         for row in rows:
-            if row["source_kind"] == "archive":
-                continue  # owner keys are not filesystem keys; preserve legacy evidence
             try:
                 volume_id, file_id = _split_file_key(str(row["file_key"]))
             except ValueError:
@@ -1173,8 +1168,6 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
             break
         plan_updates: list[tuple[str, str, int]] = []
         for row in rows:
-            if row["source_kind"] == "archive":
-                continue
             try:
                 volume_id, file_id = _split_file_key(str(row["file_key"]))
             except ValueError:
@@ -1212,17 +1205,9 @@ def _source_coverage(
 
     if source_kind == "image":
         complete = source_status == "done" and not text_truncated
-    elif source_kind == "archive":
-        complete = source_status == "indexed" and container_status == "complete"
     else:
         complete = source_status in {"complete", "done"} and not text_truncated
     return "complete" if complete else "partial"
-
-
-def _catalog_source_is_virtual(document: SourceDocument) -> bool:
-    """Return whether ``document.path`` is a logical locator, not a file path."""
-
-    return document.virtual
 
 
 def _catalog_input_root(
@@ -1240,7 +1225,7 @@ def _catalog_input_root(
 
 
 def _catalog_path_in_scope(path: str, root: Path) -> bool:
-    # Persisted owner anchors, never a parsed archive locator or a resolved link.
+    # Persisted owner anchors, never a resolved link.
     return Path(path).is_absolute() and Path(os.path.abspath(path)).is_relative_to(root)
 
 
@@ -1249,7 +1234,7 @@ def _source_document_is_in_scope(document: SourceDocument, root: Path) -> bool:
         binding = parse_resource_binding(document.resource_binding_json)
         anchor = binding["physical_anchor_path"]
     else:
-        anchor = None if document.virtual else document.path
+        anchor = document.path
     if anchor is None:
         raise ResourceBindingError(
             "source scope requires a proven physical anchor",
@@ -1267,8 +1252,7 @@ def _preserve_catalog_outside_scope(
 ) -> None:
     """Carry other scopes in bounded batches without locking their inspection.
 
-    Untagged archive references remain advisory-only. Classification and scope
-    parsing do not turn them into physically movable resources.
+    Scope parsing never turns an unresolved source into a physically movable resource.
     """
 
     from neocortex.runtime.control.global_resources import resource_gate
@@ -1329,7 +1313,7 @@ def _preserve_catalog_outside_scope(
                 if raw is not None:
                     anchor = parse_resource_binding(raw)["physical_anchor_path"]
                 else:
-                    anchor = None if row["source_kind"] == "archive" else str(row["path"])
+                    anchor = str(row["path"])
                 if anchor is not None and _catalog_path_in_scope(anchor, root):
                     continue
                 pending.append(str(row["file_key"]))
@@ -1419,7 +1403,7 @@ def _prepare_catalog_replay(
                         cancellation.checkpoint()
                     if source_root is not None and not _source_document_is_in_scope(document, source_root):
                         continue
-                    if verify_source_paths and not _catalog_source_is_virtual(document) and not _source_snapshot_is_current(document):
+                    if verify_source_paths and not _source_snapshot_is_current(document):
                         return None
                     document = _attach_resource_binding(document)
                     inputs.add(document)
@@ -1542,7 +1526,7 @@ def _catalog_classification_results(
             raise RuntimeError("catalog classifier identity changed during classification")
         if source_root is not None and not _source_document_is_in_scope(document, source_root):
             return ImmediateResult(CatalogClassificationResult(document, outside_scope=True))
-        if verify_source_paths and not _catalog_source_is_virtual(document) and not _source_snapshot_is_current(document):
+        if verify_source_paths and not _source_snapshot_is_current(document):
             return ImmediateResult(CatalogClassificationResult(document, source_stale=True))
         document = _attach_resource_binding(document)
         if _catalog_cache_hit(
@@ -1873,15 +1857,6 @@ def _source_document_count(
         return int(
             connection.execute("SELECT COUNT(*) FROM images WHERE status='done'").fetchone()[0]
         )
-    elif source_kind == "archive":
-        return int(
-            connection.execute(
-                """SELECT COUNT(*) FROM documents AS d
-                JOIN containers AS c ON c.container_key=d.container_key
-                WHERE c.status IN ('complete','partial')
-                AND d.status IN ('indexed','metadata_only','archive')"""
-            ).fetchone()[0]
-        )
     else:
         predicate = "format=? AND status='complete'"
         parameters = (source_kind,)
@@ -1952,7 +1927,7 @@ def update_document_catalog(
     # that have not enabled those routes yet.  Their source-specific adapters
     # below keep their taxonomies separate while sharing this catalog's
     # publication boundary.
-    optional_source_kinds: tuple[SourceKind, ...] = ("archive", "image", "video")
+    optional_source_kinds: tuple[SourceKind, ...] = ("image", "video")
     optional_assets: tuple[tuple[Path, SourceKind], ...] = tuple(
         (
             state_directory / content_capability_for_source(source_kind).state_database,
@@ -2728,129 +2703,6 @@ def _iter_source_documents(
                 text_truncated=truncated,
             )
         return
-    elif source_kind == "archive":
-        archive_columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")
-        }
-        container_columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(containers)")
-        }
-        anchor_projection = ",".join(
-            f"c.{field} AS anchor_{field}"
-            if field in container_columns
-            else f"NULL AS anchor_{field}"
-            for field in ("size", "mtime_ns", "birthtime_ns")
-        )
-        role_projection = (
-            "d.document_role,d.logical_document_chain,d.independently_organizable,d.independently_disposable"
-            if "document_role" in archive_columns
-            else "'archive_member' AS document_role,NULL AS logical_document_chain,"
-            "0 AS independently_organizable,0 AS independently_disposable"
-        )
-        rows = connection.execute(
-            f"""SELECT d.file_key,d.path,d.container_path,d.member_chain,
-            d.member_path,d.size,d.mtime_ns,d.birthtime_ns,d.status,
-            d.processing_signature,d.text_xxh3_128,d.content_kind,d.media_type,
-            c.status AS container_status,c.container_key,c.path AS anchor_path,
-            {anchor_projection},
-            {role_projection}
-            FROM documents AS d JOIN containers AS c
-            ON c.container_key=d.container_key
-            WHERE c.status IN ('complete','partial')
-            AND d.status IN ('indexed','metadata_only','archive')
-            ORDER BY d.path"""
-        )
-        for row in rows:
-            status = str(row["status"])
-            container_status = str(row["container_status"])
-            member_path = str(row["member_path"])
-            title = member_path.rsplit("/", 1)[-1]
-            metadata = {
-                "container_path": row["container_path"],
-                "member_chain": row["member_chain"],
-                "content_kind": row["content_kind"],
-                "media_type": row["media_type"],
-                "member_status": status,
-                "container_status": container_status,
-                "document_role": row["document_role"],
-                "logical_document_chain": row["logical_document_chain"],
-                "independently_organizable": bool(row["independently_organizable"]),
-                "independently_disposable": bool(row["independently_disposable"]),
-            }
-            volume_id, file_id = _split_file_key(str(row["file_key"]))
-            anchor_identity = (
-                decode_file_identity(
-                    str(row["container_key"]), encoding=FileIdentityEncoding.PACKED_HEX_V1
-                )
-                if all(
-                    row[f"anchor_{field}"] is not None
-                    for field in ("size", "mtime_ns", "birthtime_ns")
-                )
-                else None
-            )
-            logical_root = row["document_role"] == "logical_document" and row["member_chain"] == ""
-            if logical_root:
-                if anchor_identity is None:
-                    raise ResourceBindingError(
-                        "logical outer document lacks its physical anchor",
-                        field="container_key",
-                        encoding="packed-hex-v1",
-                        value=row["container_key"],
-                    )
-                volume_id, file_id = anchor_identity.decimal_components
-            binding = build_resource_binding(
-                source_kind="archive",
-                file_key=str(row["file_key"]),
-                path=str(row["path"]),
-                identity=anchor_identity,
-                birthtime_ns=-1 if anchor_identity is None else int(row["anchor_birthtime_ns"]),
-                size=0 if anchor_identity is None else int(row["anchor_size"]),
-                mtime_ns=0 if anchor_identity is None else int(row["anchor_mtime_ns"]),
-                representation_kind="physical_file" if logical_root else "archive_member",
-                anchor_path=str(row["anchor_path"]),
-                archive_member=None
-                if logical_root
-                else {
-                    "container_key": str(row["container_key"]),
-                    "container_path": str(row["anchor_path"]),
-                    "member_chain": str(row["member_chain"]),
-                },
-                representation_metadata={
-                    key: metadata[key]
-                    for key in (
-                        "document_role",
-                        "logical_document_chain",
-                        "independently_organizable",
-                        "independently_disposable",
-                    )
-                },
-            )
-            yield SourceDocument(
-                source_kind="archive",
-                file_key=str(row["file_key"]),
-                path=str(row["path"]),
-                volume_id=volume_id,
-                file_id=file_id,
-                size=int(row["size"]),
-                mtime_ns=int(row["mtime_ns"]),
-                birthtime_ns=int(row["birthtime_ns"]),
-                source_status=status,
-                processing_signature=str(row["processing_signature"]),
-                text_fingerprint=(
-                    None if row["text_xxh3_128"] is None else str(row["text_xxh3_128"])
-                ),
-                title=title,
-                author="",
-                metadata=_metadata_text(metadata),
-                coverage=_source_coverage(
-                    "archive",
-                    status,
-                    container_status=container_status,
-                ),
-                virtual=not logical_root,
-                resource_binding_json=json.dumps(binding, sort_keys=True, separators=(",", ":")),
-            )
-        return
     else:
         rows = connection.execute(
             """SELECT file_key,path,size,mtime_ns,birthtime_ns,status,
@@ -2905,16 +2757,7 @@ def _metadata_text(metadata: dict[str, object]) -> str:
 
 
 def _split_file_key(file_key: str) -> tuple[str, str]:
-    try:
-        return decode_file_identity(file_key).decimal_components
-    except ValueError:
-        # Archive members use owner-scoped stable identities, not filesystem
-        # volume/inode keys. Keep those identities intact in the catalog
-        # instead of guessing numeric components.
-        prefix = "archive:"
-        if file_key.startswith(prefix) and len(file_key) > len(prefix):
-            return "archive", file_key[len(prefix) :]
-        raise
+    return decode_file_identity(file_key).decimal_components
 
 
 def _attach_resource_binding(document: SourceDocument) -> SourceDocument:
@@ -2974,8 +2817,6 @@ def _document_binding_anchor(record: SourceDocument | Mapping[str, object]) -> s
             return parse_resource_binding(raw)["physical_anchor_path"]
         except ResourceBindingError:
             return None
-    if isinstance(record, SourceDocument) and record.virtual:
-        return None
     value = _catalog_record_value(record, "path")
     return None if value is None else str(value)
 

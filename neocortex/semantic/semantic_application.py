@@ -601,7 +601,7 @@ def run_semantic_plan(args: argparse.Namespace) -> int:
         return _semantic_failure(
             "semantic-plan",
             FileNotFoundError(
-                "no durable PDF, DOCX, Office, audio, archive or text cache is available"
+                "no durable PDF, DOCX, Office, audio or text cache is available"
             ),
             offline=False,
         )
@@ -1023,7 +1023,7 @@ def _execute_semantic_text_index(
         return
     if not execution.selected_sources:
         raise FileNotFoundError(
-            "no durable PDF, DOCX, Office, audio, archive or text cache is available"
+            "no durable PDF, DOCX, Office, audio or text cache is available"
         )
     started = time.perf_counter_ns()
     try:

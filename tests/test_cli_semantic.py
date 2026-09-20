@@ -803,29 +803,6 @@ def test_all_semantic_uses_shared_progress_and_captures_structured_result(
 
 
 
-def test_all_accepts_explicit_archive_semantic_selection(tmp_path: Path) -> None:
-    from tests.test_semantic_sources import _create_archive_text_state
-
-    _create_archive_text_state(tmp_path)
-    args = build_parser().parse_args(
-        [
-            "--all",
-            "--state-directory",
-            str(tmp_path),
-            "--semantic-source",
-            "archive",
-        ]
-    )
-    validate_arguments(args)
-    with patch(
-        "neocortex.semantic.semantic_service.index_text_embeddings",
-        return_value=_index_result(tmp_path, ("archive",)),
-    ) as operation:
-        assert run_integrated_all_semantic_index(args) == 0
-
-    assert operation.call_args.kwargs["source_kinds"] == ("archive",)
-
-
 def test_semantic_index_without_available_text_cache_fails_explicitly(
     tmp_path,
     capsys,
@@ -839,7 +816,7 @@ def test_semantic_index_without_available_text_cache_fails_explicitly(
         assert dispatch_direct(args) == 2
 
     operation.assert_not_called()
-    assert "no durable PDF, DOCX, Office, audio, archive or text cache" in capsys.readouterr().out
+    assert "no durable PDF, DOCX, Office, audio or text cache" in capsys.readouterr().out
 
 
 def test_semantic_index_deadline_failure_returns_two(

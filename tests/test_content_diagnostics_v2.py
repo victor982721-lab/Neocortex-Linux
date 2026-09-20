@@ -67,7 +67,6 @@ def test_v1_schema_and_owner_set_are_preserved() -> None:
         "pdf",
         "docx",
         "office",
-        "archive",
         "text",
         "audio",
         "video",

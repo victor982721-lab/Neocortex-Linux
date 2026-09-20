@@ -67,9 +67,14 @@ def test_registry_routes_extracted_handlers_to_family_modules() -> None:
     assert {operation.module_name for operation in audio} == {".cli_audio"}
     diagnostics = tuple(
         operation for operation in DIRECT_OPERATIONS
-        if operation.destination in {"pdf_diagnostics", "text_errors", "archive_issues"}
+        if operation.destination in {
+            "pdf_diagnostics",
+            "text_errors",
+            "content_diagnostics",
+            "content_diagnostics_v2",
+        }
     )
-    assert len(diagnostics) == 3
+    assert len(diagnostics) == 4
     assert {operation.module_name for operation in diagnostics} == {".cli_content_diagnostics"}
 
 

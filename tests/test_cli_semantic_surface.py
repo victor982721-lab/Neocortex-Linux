@@ -215,7 +215,6 @@ EXPECTED_SEMANTIC_ACTIONS = (
             "pptx",
             "odt",
             "audio",
-            "archive",
             "text",
             "video",
         ),
@@ -338,7 +337,7 @@ EXPECTED_SEMANTIC_HELP = (
     "  --semantic-evidence-limit N\n"
     "                        maximum advisory evidence rows to display; truncation\n"
     "                        is reported\n"
-    "  --semantic-source {pdf,docx,xlsx,pptx,odt,audio,archive,text,video}\n"
+    "  --semantic-source {pdf,docx,xlsx,pptx,odt,audio,text,video}\n"
     "                        repeat to select durable text caches for text/all\n"
     "                        planning or indexing\n"
     "  --semantic-text-profile {quality,compact}\n"

@@ -101,40 +101,6 @@ class PhysicalIdentity:
 
 
 @dataclass(frozen=True, slots=True)
-class VirtualIdentity:
-    """Identity of a logical/virtual member below a physical container."""
-
-    scheme: str
-    container: str
-    member: str
-    version: int = 1
-
-    def __post_init__(self) -> None:
-        _required_text("virtual identity scheme", self.scheme)
-        _required_text("virtual container identity", self.container)
-        _required_text("virtual member identity", self.member)
-        if type(self.version) is not int or self.version < 1:
-            raise ValueError("virtual identity version must be positive")
-
-    @property
-    def key(self) -> str:
-        return (
-            f"virtual:{self.scheme}:v{self.version}:"
-            f"{self.container}!/{self.member}"
-        )
-
-    def as_payload(self) -> dict[str, object]:
-        return {
-            "schema": ADMISSION_IDENTITY_SCHEMA,
-            "kind": "virtual",
-            "scheme": self.scheme,
-            "container": self.container,
-            "member": self.member,
-            "version": self.version,
-        }
-
-
-@dataclass(frozen=True, slots=True)
 class ContentIdentity:
     """Content address used for deterministic cross-location reuse."""
 
@@ -185,7 +151,7 @@ class ContentIdentity:
 
 @dataclass(frozen=True, slots=True)
 class WorkIdentity:
-    """Backend-work key independent of physical and virtual locations."""
+    """Backend-work key independent of physical locations."""
 
     model_signature: str
     role: str
@@ -232,14 +198,13 @@ class WorkIdentity:
 
 @dataclass(frozen=True, slots=True)
 class SemanticIdentity:
-    """Explicitly separated physical, virtual, content and work identities."""
+    """Explicitly separated physical, content and work identities."""
 
     source_kind: str
     source_identity: str
     item_id: str
     content: ContentIdentity
     physical: PhysicalIdentity | None = None
-    virtual: VirtualIdentity | None = None
     work: WorkIdentity | None = None
 
     def __post_init__(self) -> None:
@@ -250,8 +215,6 @@ class SemanticIdentity:
             raise TypeError("semantic content identity is invalid")
         if self.physical is not None and not isinstance(self.physical, PhysicalIdentity):
             raise TypeError("semantic physical identity is invalid")
-        if self.virtual is not None and not isinstance(self.virtual, VirtualIdentity):
-            raise TypeError("semantic virtual identity is invalid")
         if self.work is not None and not isinstance(self.work, WorkIdentity):
             raise TypeError("semantic work identity is invalid")
 
@@ -268,13 +231,12 @@ class SemanticIdentity:
             "source_identity": self.source_identity,
             "item_id": self.item_id,
             "physical": None if self.physical is None else self.physical.as_payload(),
-            "virtual": None if self.virtual is None else self.virtual.as_payload(),
             "content": self.content.as_payload(),
             "work": None if self.work is None else self.work.as_payload(),
         }
 
 
-def _identity_from_explicit(value: object, *, kind: str) -> PhysicalIdentity | VirtualIdentity | None:
+def _identity_from_explicit(value: object, *, kind: str) -> PhysicalIdentity | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):
@@ -285,12 +247,7 @@ def _identity_from_explicit(value: object, *, kind: str) -> PhysicalIdentity | V
             str(value.get("value", "")),
             int(value.get("version", 1)),
         )
-    return VirtualIdentity(
-        str(value.get("scheme", "")),
-        str(value.get("container", "")),
-        str(value.get("member", "")),
-        int(value.get("version", 1)),
-    )
+    raise ValueError(f"unsupported semantic identity kind: {kind}")
 
 
 def _file_identity_from_item(item: SemanticItem) -> PhysicalIdentity | None:
@@ -325,17 +282,6 @@ def _file_identity_from_item(item: SemanticItem) -> PhysicalIdentity | None:
     return PhysicalIdentity("file", decoded.packed_key)
 
 
-def _virtual_identity_from_item(item: SemanticItem) -> VirtualIdentity | None:
-    for container in (item.source_revision, item.provenance):
-        if container.get("inside_zip") is not True and container.get("virtual") is not True:
-            continue
-        container_key = container.get("container_key") or container.get("container_identity")
-        member = container.get("member_chain") or container.get("member")
-        if isinstance(container_key, str) and container_key.strip() and isinstance(member, str) and member:
-            return VirtualIdentity("archive-member", container_key, member)
-    return None
-
-
 def semantic_identity_for_item(
     item: SemanticItem,
     *,
@@ -367,7 +313,6 @@ def semantic_identity_for_item(
         item_id=item.item_id,
         content=content,
         physical=_file_identity_from_item(item),
-        virtual=_virtual_identity_from_item(item),
         work=selected_work,
     )
 
@@ -408,7 +353,6 @@ class ContentAdmissionPolicy:
     excluded_item_ids: tuple[str, ...] = ()
     excluded_content_keys: tuple[str, ...] = ()
     excluded_physical_keys: tuple[str, ...] = ()
-    excluded_virtual_keys: tuple[str, ...] = ()
     min_content_bytes: int = 0
     max_content_bytes: int | None = None
 
@@ -422,7 +366,6 @@ class ContentAdmissionPolicy:
             "excluded_item_ids",
             "excluded_content_keys",
             "excluded_physical_keys",
-            "excluded_virtual_keys",
         ):
             object.__setattr__(self, name, _bounded_tuple(name, getattr(self, name)))
         if type(self.min_content_bytes) is not int or self.min_content_bytes < 0:
@@ -443,7 +386,6 @@ class ContentAdmissionPolicy:
             "excluded_item_ids": list(self.excluded_item_ids),
             "excluded_content_keys": list(self.excluded_content_keys),
             "excluded_physical_keys": list(self.excluded_physical_keys),
-            "excluded_virtual_keys": list(self.excluded_virtual_keys),
             "min_content_bytes": self.min_content_bytes,
             "max_content_bytes": self.max_content_bytes,
         }
@@ -472,8 +414,6 @@ class ContentAdmissionPolicy:
             visible, reason = False, "content_excluded"
         elif identity.physical is not None and identity.physical.key in self.excluded_physical_keys:
             visible, reason = False, "physical_excluded"
-        elif identity.virtual is not None and identity.virtual.key in self.excluded_virtual_keys:
-            visible, reason = False, "virtual_excluded"
         elif identity.content.byte_count < self.min_content_bytes:
             eligible = visible = False
             reason = "content_below_minimum"
@@ -756,7 +696,6 @@ def framework_content_admission(owner: object):
 # Friendly compatibility aliases for callers wiring the small boundary.
 ContentIdentityRef = ContentIdentity
 PhysicalIdentityRef = PhysicalIdentity
-VirtualIdentityRef = VirtualIdentity
 WorkIdentityRef = WorkIdentity
 SemanticContentAdmissionPolicy = ContentAdmissionPolicy
 SemanticContentAdmissionDecision = ContentAdmissionDecision
@@ -785,8 +724,6 @@ __all__ = (
     "SemanticSingleFlight",
     "SingleFlight",
     "SingleFlightResult",
-    "VirtualIdentity",
-    "VirtualIdentityRef",
     "WorkIdentity",
     "WorkIdentityRef",
     "admit_content",

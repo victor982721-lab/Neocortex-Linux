@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 
 from neocortex.api import agent_server
-from neocortex.capabilities.formats.archive.state import archive_database, initialize_archive_state
 from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state, pdf_database
 from neocortex.capabilities.formats.text.text_state import initialize_text_state, text_database
 
@@ -64,22 +63,6 @@ def format_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tu
                 (key, str(source) + ".txt", reason),
             )
         connection.commit()
-    initialize_archive_state(state / "archive.sqlite3")
-    with archive_database(state / "archive.sqlite3") as connection:
-        for key, source, reason in rows:
-            connection.execute(
-                """INSERT INTO containers(container_key,path,size,mtime_ns,birthtime_ns,
-                processing_signature,status,last_seen_run_id,updated_ns)
-                VALUES(?,?,1,1,-1,'fixture','partial',1,1)""",
-                (key, str(source) + ".zip"),
-            )
-            connection.execute(
-                """INSERT INTO archive_issues(container_key,member_chain,archive_depth,
-                reason_code,detail,created_ns) VALUES(?,'nested/member.txt',1,?,
-                'fixture archive issue',1)""",
-                (key, reason),
-            )
-        connection.commit()
     monkeypatch.setattr(agent_server, "default_state_directory", lambda: state)
     monkeypatch.setenv("NEOCORTEX_CORPUS_ROOT", str(root))
     before = _fingerprints(state)
@@ -105,7 +88,7 @@ def test_mcp_lists_one_readonly_diagnostic_tool_without_root_or_effect_arguments
     tool = matches[0]
     properties = tool.inputSchema["properties"]
     assert set(properties) == {"owner", "limit", "cursor", "file_key", "path_fragment", "reason"}
-    assert set(properties["owner"]["enum"]) == {"pdf", "text", "archive"}
+    assert set(properties["owner"]["enum"]) == {"pdf", "text"}
     assert properties["limit"]["default"] == 20
     assert properties["limit"]["minimum"] == 1
     assert properties["limit"]["maximum"] == 1_000
@@ -117,7 +100,7 @@ def test_mcp_lists_one_readonly_diagnostic_tool_without_root_or_effect_arguments
     assert tool.outputSchema["properties"]["schema"]["const"] == "neocortex.content-diagnostics/v1"
 
 
-@pytest.mark.parametrize("owner", ("pdf", "text", "archive"))
+@pytest.mark.parametrize("owner", ("pdf", "text"))
 def test_mcp_real_diagnostics_are_root_scoped_exact_filtered_paged_and_replayable(
     format_state: tuple[Path, Path],
     owner: str,
@@ -132,25 +115,21 @@ def test_mcp_real_diagnostics_are_root_scoped_exact_filtered_paged_and_replayabl
     assert first["count"] == 1
     assert first["truncated"] is True
     assert first["next_cursor"]
-    assert first["reason_field"] == ("reason_code" if owner == "archive" else "error_type")
+    assert first["reason_field"] == "error_type"
     assert first == _call(server, arguments)
     second = _call(server, {**arguments, "cursor": first["next_cursor"]})
     assert second["status"] == "ok", second["error"]
     assert second["count"] == 1
     assert second["truncated"] is False
     assert second["next_cursor"] is None
-    keys = "container_key" if owner == "archive" else "file_key"
+    keys = "file_key"
     assert {first["items"][0][keys], second["items"][0][keys]} == {"a", "b"}
     coverage = first["coverage"]
     assert coverage["persisted_only"] is True
     assert coverage["snapshot_consistent"] is True
     assert coverage["root_summary_scope"] == "requested_root_without_query_filters"
-    if owner == "archive":
-        assert first["matched_count"] is None
-        assert coverage["root_summary"] is None
-    else:
-        assert first["matched_count"] == 2
-        assert coverage["root_summary"]["documents"] == 3
+    assert first["matched_count"] == 2
+    assert coverage["root_summary"]["documents"] == 3
     partial_reason = _call(server, {"owner": owner, "reason": "Fixture"})
     assert partial_reason["status"] == "ok"
     assert partial_reason["count"] == 0
@@ -162,7 +141,7 @@ def test_mcp_real_diagnostics_are_root_scoped_exact_filtered_paged_and_replayabl
     assert wildcard["count"] == 0
 
 
-@pytest.mark.parametrize("owner", ("pdf", "text", "archive"))
+@pytest.mark.parametrize("owner", ("pdf", "text"))
 def test_mcp_missing_diagnostic_owner_is_unknown_not_zero_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

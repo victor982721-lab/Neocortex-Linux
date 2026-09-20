@@ -19,10 +19,6 @@ from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.knowledge import knowledge_search as knowledge_search_module
 from neocortex.semantic import semantic_preparation, semantic_schema, semantic_service
-from neocortex.capabilities.formats.archive.state import (
-    archive_database,
-    initialize_archive_state,
-)
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
@@ -821,42 +817,6 @@ def _create_lexical_states(state: Path) -> None:
         )
 
 
-def _create_archive_lexical_state(state: Path) -> None:
-    state.mkdir(exist_ok=True)
-    database = state / "archive.sqlite3"
-    initialize_archive_state(database)
-    with archive_database(database, create=False) as connection:
-        connection.execute(
-            """INSERT INTO containers(
-            container_key,path,size,mtime_ns,birthtime_ns,processing_signature,status,
-            member_count,indexed_count,nested_archive_count,last_seen_run_id,updated_ns)
-            VALUES('container:key','C:/docs/contenedor.zip',100,20,-1,
-            'archive-v1','complete',2,1,1,9,30)"""
-        )
-        connection.execute(
-            """INSERT INTO documents(
-            file_key,container_key,path,container_path,member_chain,member_path,
-            archive_depth,content_kind,media_type,size,compressed_size,crc32,
-            mtime_ns,birthtime_ns,processing_signature,status,text_zlib,text_chars,
-            text_xxh3_128,last_seen_run_id,updated_ns)
-            VALUES('archive:member','container:key',
-            'C:/docs/contenedor.zip!/interno.zip!/proteccion.txt',
-            'C:/docs/contenedor.zip','interno.zip!/proteccion.txt','proteccion.txt',
-            2,'text','text/plain',45,20,1,20,-1,'archive-v1','indexed',NULL,45,
-            '00000000000000000000000000000000',9,30)"""
-        )
-        connection.execute(
-            """INSERT INTO document_fts(
-            file_key,path,container_path,container_name,member_chain,content_kind,body)
-            VALUES('archive:member',
-            'C:/docs/contenedor.zip!/interno.zip!/proteccion.txt',
-            'C:/docs/contenedor.zip','contenedor.zip',
-            'interno.zip!/proteccion.txt','text',
-            'protección diferencial dentro de un ZIP anidado')"""
-        )
-        connection.commit()
-
-
 def _deterministic_semantic_backend(
     model: EmbeddingModelSpec,
     *,
@@ -1126,46 +1086,6 @@ def test_search_reuses_real_fts_owners_and_preserves_two_pdf_pages(
         "docx-v5:fixture",
     }
     assert result.to_json() == result.to_json()
-
-
-def test_search_returns_archive_member_with_explicit_nested_zip_evidence(
-    tmp_path: Path,
-) -> None:
-    state = tmp_path / "state"
-    _create_archive_lexical_state(state)
-    snapshot = _snapshot(
-        OwnerSnapshot("pdf", OwnerAvailability.ABSENT, 11),
-        OwnerSnapshot("docx", OwnerAvailability.ABSENT, 5),
-        OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
-        OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
-        OwnerSnapshot("archive", OwnerAvailability.AVAILABLE, 1, 1),
-        OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
-        OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
-    )
-
-    result = execute_knowledge_search(
-        KnowledgeStatePaths.from_directory(state),
-        plan_knowledge_query(KnowledgeQuery("protección diferencial", limit=5)),
-        snapshot,
-    )
-
-    assert len(result.hits) == 1
-    hit = result.hits[0]
-    identifiers = dict(hit.evidence.identifiers)
-    assert hit.resource.owner == "archive"
-    assert hit.resource.source_kind == "archive"
-    # An archive member is a virtual resource; its member key and locators do
-    # not prove the physical identity of the containing file.
-    assert hit.resource.physical_identity is None
-    assert "physical_identity_unresolved" in hit.warnings
-    assert hit.resource.current_path == ("C:/docs/contenedor.zip!/interno.zip!/proteccion.txt")
-    assert hit.evidence.section_kind == "archive_member"
-    assert identifiers["inside_zip"] == "1"
-    assert identifiers["container_path"] == "C:/docs/contenedor.zip"
-    assert identifiers["member_chain"] == "interno.zip!/proteccion.txt"
-    assert identifiers["archive_depth"] == "2"
-    assert any(ranking.name == "fts_archive" for ranking in result.rankings)
 
 
 def test_real_lexical_and_semantic_sqlite_share_physical_resource_identity(

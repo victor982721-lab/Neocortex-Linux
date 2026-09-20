@@ -91,20 +91,11 @@ def _owner_record(
 ) -> sqlite3.Row:
     statuses = {
         "text": {"complete"}, "pdf": {"done", "partial"},
-        "docx": {"complete", "partial"}, "office": {"complete"}, "archive": {"indexed"},
+        "docx": {"complete", "partial"}, "office": {"complete"},
         "audio": {"complete", "no_speech"}, "video": {"complete", "partial"},
         "image": {"done", "partial"},
     }
-    if owner == "archive":
-        rows = read_rows(connection.execute(
-            """SELECT d.*,c.status AS container_status,c.path AS current_container_path,
-                      c.mtime_ns AS container_mtime_ns,c.birthtime_ns AS container_birthtime_ns,
-                      c.processing_signature AS container_processing_signature,
-                      c.last_seen_run_id AS container_last_seen_run_id
-               FROM documents d JOIN containers c ON c.container_key=d.container_key
-               WHERE d.file_key=? LIMIT 2""", (file_key,),
-        ))
-    elif owner == "image":
+    if owner == "image":
         rows = read_rows(connection.execute(
             "SELECT * FROM images WHERE file_key=? LIMIT 2", (file_key,),
         ))
@@ -123,14 +114,6 @@ def _owner_record(
         raise EvidenceLookupError("owner_revision_changed")
     if owner == "image" and source_kind not in {"image", "image_ocr"}:
         raise EvidenceLookupError("owner_revision_changed")
-    if owner == "archive":
-        if row["container_status"] not in {"complete", "partial"}:
-            raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
-        if row["container_path"] != row["current_container_path"] or any(
-            row[name] != row[f"container_{name}"]
-            for name in ("mtime_ns", "birthtime_ns", "processing_signature", "last_seen_run_id")
-        ):
-            raise EvidenceLookupError("owner_revision_changed")
     return row
 
 
@@ -140,130 +123,6 @@ def _row_has(row: sqlite3.Row, name: str) -> bool:
 
 def _row_value(row: sqlite3.Row, name: str) -> object | None:
     return row[name] if _row_has(row, name) else None
-
-
-def _archive_locator_value(
-    resolved: ResolvedSearchHit,
-    name: str,
-) -> object | None:
-    provenance = resolved.section_provenance
-    value = provenance.get(name)
-    if value is not None:
-        return value
-    nested = provenance.get("locator")
-    return nested.get(name) if isinstance(nested, Mapping) else None
-
-
-def _archive_inside_zip_value(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int) and value in {0, 1}:
-        return bool(value)
-    if isinstance(value, str) and value in {"0", "1"}:
-        return value == "1"
-    raise EvidenceLookupError("evidence_locator_changed")
-
-
-def _archive_row_is_physical_root(row: sqlite3.Row) -> bool:
-    member_chain = _row_value(row, "member_chain")
-    member_path = _row_value(row, "member_path")
-    path = _row_value(row, "path")
-    container_path = _row_value(row, "container_path")
-    role = _row_value(row, "document_role")
-    logical_chain = _row_value(row, "logical_document_chain")
-    raw_depth = _row_value(row, "archive_depth")
-    if not all(
-        isinstance(value, str) and value.strip()
-        for value in (path, container_path)
-    ):
-        return False
-    if isinstance(raw_depth, bool) or not isinstance(raw_depth, (int, str)):
-        return False
-    try:
-        depth = int(raw_depth)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    return (
-        member_chain == ""
-        and member_path == ""
-        and depth == 0
-        and path == container_path
-        and (not _row_has(row, "document_role") or role == "logical_document")
-        and (
-            not _row_has(row, "logical_document_chain")
-            or logical_chain == ""
-        )
-    )
-
-
-def _validate_archive_owner_locator(
-    row: sqlite3.Row,
-    resolved: ResolvedSearchHit,
-) -> None:
-    """Validate Archive root/member role, exact chain, depth and path."""
-
-    physical_root = _archive_row_is_physical_root(row)
-    if physical_root:
-        if (resolved.section_kind, resolved.section_id) != ("archive_document", "body"):
-            raise EvidenceLookupError("evidence_locator_changed")
-        expected_path = _row_value(row, "path")
-        if (
-            not isinstance(expected_path, str)
-            or not expected_path.strip()
-            or resolved.path != expected_path
-        ):
-            raise EvidenceLookupError("evidence_locator_changed")
-        supplied_inside_zip = _archive_locator_value(resolved, "inside_zip")
-        if supplied_inside_zip is not None and _archive_inside_zip_value(supplied_inside_zip):
-            raise EvidenceLookupError("evidence_locator_changed")
-    else:
-        if (
-            resolved.section_kind != "archive_member"
-            or resolved.section_id != _row_value(row, "member_chain")
-        ):
-            raise EvidenceLookupError("evidence_locator_changed")
-        expected_path = _row_value(row, "path")
-        if (
-            not isinstance(expected_path, str)
-            or not expected_path.strip()
-            or resolved.path != expected_path
-        ):
-            raise EvidenceLookupError("evidence_locator_changed")
-        supplied_inside_zip = _archive_locator_value(resolved, "inside_zip")
-        if supplied_inside_zip is not None and not _archive_inside_zip_value(supplied_inside_zip):
-            raise EvidenceLookupError("evidence_locator_changed")
-
-    for name in (
-        "container_key",
-        "container_path",
-        "member_chain",
-        "member_path",
-        "archive_depth",
-        "content_kind",
-        "media_type",
-        "container_status",
-        "document_role",
-        "logical_document_chain",
-    ):
-        if not _row_has(row, name):
-            continue
-        expected = _row_value(row, name)
-        supplied = _archive_locator_value(resolved, name)
-        # Older member projections predate the role/chain columns and remain
-        # valid when their owner still proves the member path and chain.  A
-        # modern physical root must carry its explicit role and empty logical
-        # chain, so those fields stay strict for ``archive_document``.
-        if (
-            not physical_root
-            and name in {"document_role", "logical_document_chain"}
-            and supplied is None
-        ):
-            continue
-        if expected is None:
-            if supplied is not None:
-                raise EvidenceLookupError("evidence_locator_changed")
-        elif supplied != expected:
-            raise EvidenceLookupError("evidence_locator_changed")
 
 
 def _validate_owner_locator(
@@ -286,8 +145,6 @@ def _validate_owner_locator(
             ))
             if len(parts) != 1 or resolved.section_kind != f"docx_{parts[0]['part_kind']}":
                 raise EvidenceLookupError("evidence_locator_changed")
-    elif owner == "archive":
-        _validate_archive_owner_locator(row, resolved)
     elif owner == "audio":
         if resolved.section_kind != "audio_segment" or resolved.section_id is None:
             raise EvidenceLookupError("unsupported_evidence_lookup")
@@ -548,12 +405,6 @@ def _semantic_evidence(
                        or actual != value for name, value in live_revision.items())
                 or resolved.source_revision.get("revision_id") != live_revision.get("revision_id")):
             raise EvidenceLookupError("owner_revision_changed")
-        if owner == "archive" and any(
-            resolved.section_provenance.get(name) != owner_row[name]
-            for name in ("container_key", "container_path", "member_chain", "member_path",
-                         "archive_depth", "content_kind", "media_type", "container_status")
-        ):
-            raise EvidenceLookupError("evidence_locator_changed")
         resolved, extent = _semantic_fragment(resolved, locator, chunk_chars=int(member["text_chars"]))
     return resolved, observation, extent
 
@@ -568,7 +419,7 @@ def lookup_owner_evidence(
     owner = source.get("owner")
     source_kind = source.get("source_kind")
     if not isinstance(owner, str) or owner not in {
-        "text", "pdf", "docx", "office", "archive", "audio", "video", "image",
+        "text", "pdf", "docx", "office", "audio", "video", "image",
     }:
         raise EvidenceLookupError("unsupported_evidence_lookup")
     allowed_kinds = (

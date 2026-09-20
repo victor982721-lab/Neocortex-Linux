@@ -13,8 +13,6 @@ from pathlib import Path
 import pytest
 
 from neocortex.api import read_api
-from neocortex.capabilities.formats.archive.route import _member_key
-from neocortex.capabilities.formats.archive.state import initialize_archive_state
 from neocortex.capabilities.formats.docx.state import initialize_docx_state
 from neocortex.capabilities.formats.office.state import initialize_office_state
 from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
@@ -53,7 +51,7 @@ def _hashes(state: Path) -> dict[str, str]:
             for path in sorted(state.rglob("*")) if path.is_file()}
 
 
-@pytest.fixture(params=("pdf", "text", "docx", "docx-fallback", "xlsx", "pptx", "odt", "archive"))
+@pytest.fixture(params=("pdf", "text", "docx", "docx-fallback", "xlsx", "pptx", "odt"))
 def semantic_reference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
     source_kind = "docx" if request.param == "docx-fallback" else request.param
     owner = "office" if source_kind in {"xlsx", "pptx", "odt"} else source_kind
@@ -63,7 +61,7 @@ def semantic_reference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request)
     source_path = f"/fixture/report.{source_kind}"
     initializers = {"pdf": initialize_pdf_state, "text": initialize_text_state,
                     "docx": initialize_docx_state, "office": initialize_office_state,
-                    "archive": initialize_archive_state}
+                    }
     initializers[owner](path)
     with closing(sqlite3.connect(path)) as connection, connection:
         if owner == "pdf":
@@ -113,24 +111,6 @@ def semantic_reference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request)
                 processing_signature,status,text_zlib,text_chars,text_xxh3_128,last_seen_run_id,updated_ns)
                 VALUES(?,?,?,100,1,-1,'office:fixture','complete',?,?,?,1,1)""",
                 (_KEY, source_kind, source_path, zlib.compress(_BODY.encode()), len(_BODY), fingerprint_text(_BODY).xxh3_128),
-            )
-        elif owner == "archive":
-            container_path = "/fixture/report.zip"
-            member_chain = "docs/report.txt"
-            source_path = f"{container_path}!/{member_chain}"
-            connection.execute(
-                """INSERT INTO containers(container_key,path,size,mtime_ns,birthtime_ns,
-                processing_signature,status,member_count,indexed_count,last_seen_run_id,updated_ns)
-                VALUES(?,?,5000,1,-1,'archive:fixture','complete',1,1,1,1)""", (_KEY, container_path),
-            )
-            connection.execute(
-                """INSERT INTO documents(file_key,container_key,path,container_path,member_chain,member_path,
-                archive_depth,content_kind,media_type,size,compressed_size,crc32,mtime_ns,birthtime_ns,
-                processing_signature,status,text_zlib,text_chars,text_xxh3_128,last_seen_run_id,updated_ns)
-                VALUES(?,?,?,?,?,?,1,'text','text/plain',?,64,?,1,-1,'archive:fixture','indexed',?,?,?,1,1)""",
-                (_member_key(_KEY, member_chain), _KEY, source_path, container_path, member_chain, member_chain,
-                 len(_BODY.encode()), zlib.crc32(_BODY.encode()), zlib.compress(_BODY.encode()),
-                 len(_BODY), fingerprint_text(_BODY).xxh3_128),
             )
     monkeypatch.setattr(semantic_service, "_backend", _backend)
     model = multilingual_text_model()
@@ -374,14 +354,11 @@ def test_nontext_lexical_references_abstain_without_search(semantic_reference):
 
 def test_route_specific_locator_and_parent_bindings_are_revalidated(semantic_reference):
     state, owner, source, citation, _resolved = semantic_reference
-    if owner not in {"docx", "office", "archive"}:
+    if owner not in {"docx", "office"}:
         return
     with closing(sqlite3.connect(state / f"{owner}.sqlite3")) as connection, connection:
         if owner == "office":
             connection.execute("UPDATE documents SET format='other-format'")
-            code = "owner_revision_changed"
-        elif owner == "archive":
-            connection.execute("UPDATE containers SET mtime_ns=mtime_ns+1")
             code = "owner_revision_changed"
         elif citation["locator"]["section_kind"] == "docx_document":
             connection.execute(

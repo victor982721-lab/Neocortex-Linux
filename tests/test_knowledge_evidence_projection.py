@@ -42,8 +42,10 @@ def _hit(*, snippet: str | None, with_locator: bool, disposition: ResourceDispos
     resource = ResourceRef(
         resource_id="resource:fixture",
         source_kind="pdf",
-        owner="archive",
-        physical_identity=PhysicalIdentityRef("archive-member", "archive:fixture", 1),
+        owner="pdf",
+        physical_identity=PhysicalIdentityRef(
+            "posix_device_inode_birthtime", "1:2:-1", 1
+        ),
         disposition=disposition,
         canonical_resource_id="resource:canonical" if disposition is ResourceDisposition.DUPLICATE else None,
     )
@@ -87,11 +89,11 @@ def test_projection_has_stable_categories_and_advisory_similarity() -> None:
         "resource_id": "resource:fixture",
         "revision_id": "revision:fixture:7",
         "evidence_id": "evidence:fixture:1",
-        "owner": "archive",
+        "owner": "pdf",
         "source_kind": "pdf",
         "physical_identity": {
-            "scheme": "archive-member",
-            "value": "archive:fixture",
+            "scheme": "posix_device_inode_birthtime",
+            "value": "1:2:-1",
             "identity_version": 1,
         },
     }
@@ -129,7 +131,7 @@ def test_identifiers_are_provenance_not_replay_locators() -> None:
     original = _hit(snippet="texto identificado", with_locator=False)
     hit = replace(
         original,
-        evidence=replace(original.evidence, identifiers=(("archive-member", "entry-1"),)),
+        evidence=replace(original.evidence, identifiers=(("source-note", "entry-1"),)),
     )
 
     projected = project_knowledge_hit(hit)
@@ -139,7 +141,7 @@ def test_identifiers_are_provenance_not_replay_locators() -> None:
     assert projected["value"]["kind"] == "reference_only"
     assert projected["coverage"]["reasons"] == ["locator_unavailable"]
     assert projected["provenance"]["identifiers"] == [
-        {"namespace": "archive-member", "value": "entry-1"}
+        {"namespace": "source-note", "value": "entry-1"}
     ]
 
 
@@ -293,7 +295,7 @@ def test_projection_scope_accepts_only_fixed_read_scope_names(scope: str) -> Non
     ]["scope"] == scope
 
 
-@pytest.mark.parametrize("scope", ("", "archive", "Personal", 1, True))
+@pytest.mark.parametrize("scope", ("", "zip-intake", "Personal", 1, True))
 def test_projection_scope_rejects_unrecognized_values(scope: object) -> None:
     with pytest.raises(ValueError, match="scope must be personal, framework or all"):
         validate_knowledge_projection_scope(scope)  # type: ignore[arg-type]

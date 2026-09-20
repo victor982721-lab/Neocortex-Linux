@@ -12,47 +12,25 @@ import pytest
 from neocortex.documents import document_organization_planning as planning
 from neocortex.documents.document_catalog import document_catalog_database
 from neocortex.documents.document_organization_scope import capture_organization_input_scope
-from neocortex.documents.document_resource_binding import build_resource_binding
-from neocortex.foundation.file_identity import FileIdentity
-from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.progress import ProgressEvent
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from tests.test_document_organization_scope import _catalog, _file, _seed
 
 
 def _members(catalog: Path, root: Path, count: int, *, payload_size: int = 0) -> None:
-    anchor = _file(root, "package.zip")
-    _seed(catalog, anchor, kind="archive", member="member-00000.pdf")
-    observed = anchor.stat()
-    identity = FileIdentity(observed.st_dev, observed.st_ino)
-    with document_catalog_database(catalog) as connection:
-        template = dict(connection.execute("SELECT * FROM documents").fetchone())
-        columns = tuple(template)
-
-        def rows():
-            for index in range(count):
-                row = dict(template)
-                member = f"member-{index:05d}.pdf"
-                key = f"archive:fixture:{anchor.name}:{member}"
-                locator = f"{anchor}!/{member}"
-                row.update(file_key=key, path=locator, classification_json=json.dumps({"payload": "x" * payload_size}))
-                row["resource_binding_json"] = json.dumps(build_resource_binding(
-                    source_kind="archive", file_key=key, path=locator,
-                    identity=identity, birthtime_ns=stat_birthtime_ns(observed),
-                    size=observed.st_size, mtime_ns=observed.st_mtime_ns,
-                    anchor_path=str(anchor), archive_member={
-                        "container_key": identity.packed_key,
-                        "container_path": str(anchor), "member_chain": member,
-                    },
-                ), sort_keys=True)
-                yield tuple(row[column] for column in columns)
-
-        connection.execute("DELETE FROM documents")
-        connection.executemany(
-            f"INSERT INTO documents({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
-            rows(),
-        )
-        connection.commit()
+    # The organization memory contract now operates on physically published
+    # files.  Keep the large classification payloads, but do not synthesize
+    # virtual member rows.
+    for index in range(count):
+        path = _file(root, f"member-{index:05d}.pdf")
+        _seed(catalog, path, status="review")
+    if payload_size:
+        with document_catalog_database(catalog) as connection:
+            connection.execute(
+                "UPDATE documents SET classification_json=? WHERE path LIKE ?",
+                (json.dumps({"payload": "x" * payload_size}), str(root / "member-%")),
+            )
+            connection.commit()
 
 
 def _plans(catalog: Path) -> list[dict[str, object]]:
@@ -100,7 +78,6 @@ def test_organization_plan_bounds_live_classification_payloads(
     summary = planning.plan_document_organization(catalog, tmp_path / "destination", source_scope=scope)
     assert summary.considered == count and summary.review_required == count
     assert len(set(planned_keys)) == count
-    assert planned_keys == sorted(planned_keys)
     assert read == count
     assert peak <= 129, f"retained {peak} complete classification payloads for {count} documents"
     assert live == 0
@@ -117,9 +94,6 @@ def test_organization_pages_preserve_selection_order_destinations_and_progress(t
         expected_paths = [row[0] for row in connection.execute("SELECT path FROM documents WHERE active=1 ORDER BY path,source_kind,file_key")]
     _seed(catalog, _file(tmp_path / "outside", "excluded.pdf"))
     _seed(catalog, _file(root, "unresolved.pdf"), binding_present=False)
-    _seed(catalog, root / "package.zip", kind="archive", member="component.xml", representation_metadata={
-        "document_role": "document_component", "independently_organizable": False,
-    })
     destination = tmp_path / "destination"
     events: list[ProgressEvent] = []
     summary = planning.plan_document_organization(
@@ -127,17 +101,13 @@ def test_organization_pages_preserve_selection_order_destinations_and_progress(t
         progress=events.append,
     )
     assert (summary.considered, summary.planned, summary.review_required) == (131, 2, 129)
-    assert (summary.excluded_out_of_scope, summary.unresolved_scope, summary.excluded_components) == (1, 1, 1)
+    assert (summary.excluded_out_of_scope, summary.unresolved_scope, summary.excluded_components) == (1, 1, 0)
     plans = _plans(catalog)
     assert [plan["source_path"] for plan in plans] == expected_paths
     for plan in plans:
-        if plan["source_kind"] == "archive":
-            assert plan["destination_path"] is None
-            assert plan["reason"] == "virtual_resource_requires_logical_organization"
-        else:
-            target = Path(str(plan["destination_path"]))
-            assert target.is_relative_to(destination)
-            assert target.name == Path(str(plan["source_path"])).name
+        target = Path(str(plan["destination_path"]))
+        assert target.is_relative_to(destination)
+        assert target.name == Path(str(plan["source_path"])).name
     assert [(event.completed, event.total) for event in events] == [(0, 131), *((value, 131) for value in range(10, 131, 10)), (131, 131), (131, 131)]
     assert events[-1].finished
     assert not destination.exists()

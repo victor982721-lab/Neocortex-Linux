@@ -59,7 +59,7 @@ def _report(*, status: str = "complete", path: str = "/fixture/report.txt",
 def _observation(kind: Kind, code: str) -> AssetDiagnosticObservation:
     return AssetDiagnosticObservation(
         kind, RESOURCE, code,
-        (AssetDiagnosticEvidenceRef("inventory" if kind is Kind.DUPLICATE_CONTENT else "archive",
+        (AssetDiagnosticEvidenceRef("inventory" if kind is Kind.DUPLICATE_CONTENT else "text",
                                     "record:1", RESOURCE, "snapshot:1", "sha256:" + "a" * 64),),
         (RESOURCE, "resource:file:11:4:-1") if kind is Kind.DUPLICATE_CONTENT else (),
     )

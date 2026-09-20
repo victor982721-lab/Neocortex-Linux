@@ -50,8 +50,6 @@ class CliImportIsolationTests(unittest.TestCase):
             validate_arguments(args)
             forbidden = {
                 "neocortex.runtime.orchestration.route_registry",
-                "neocortex.capabilities.formats.archive.route",
-                "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.pdf.pdf_route",
                 "neocortex.capabilities.formats.docx.route",
                 "neocortex.capabilities.formats.docx.route",
@@ -77,8 +75,6 @@ class CliImportIsolationTests(unittest.TestCase):
 
             forbidden = {
                 "neocortex.runtime.orchestration.route_registry",
-                "neocortex.capabilities.formats.archive.route",
-                "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.pdf.pdf_route",
                 "neocortex.capabilities.formats.pdf.pdf_admin",
                 "neocortex.capabilities.formats.pdf.pdf_derived_queries",
@@ -176,8 +172,6 @@ class CliImportIsolationTests(unittest.TestCase):
                     raise SystemExit("unexpected PDF search status")
                 forbidden = {
                     "neocortex.runtime.orchestration.route_registry",
-                    "neocortex.capabilities.formats.archive.route",
-                    "neocortex.capabilities.formats.archive.route",
                     "neocortex.capabilities.formats.pdf.pdf_route",
                     "neocortex.capabilities.formats.pdf.pdf_admin",
                     "neocortex.capabilities.formats.docx.route",
@@ -221,8 +215,6 @@ class CliImportIsolationTests(unittest.TestCase):
                     raise SystemExit("unexpected DOCX search status")
                 forbidden = {
                     "neocortex.runtime.orchestration.route_registry",
-                    "neocortex.capabilities.formats.archive.route",
-                    "neocortex.capabilities.formats.archive.route",
                     "neocortex.capabilities.formats.pdf.pdf_route",
                     "neocortex.capabilities.formats.pdf.pdf_admin",
                     "neocortex.capabilities.formats.pdf.pdf_derived_queries",

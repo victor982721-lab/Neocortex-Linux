@@ -127,8 +127,6 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "neocortex.enumeration",
             "neocortex.deduplication",
             "neocortex.runtime.config.application_config",
-            "neocortex.capabilities.formats.archive.route",
-            "neocortex.capabilities.formats.archive.route",
             "neocortex.capabilities.formats.audio.models",
             "neocortex.capabilities.formats.docx.models",
             "neocortex.capabilities.formats.docx.models",
@@ -145,7 +143,6 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
         import neocortex.runtime.config.application_config_projections as projections
 
         if tuple(projections.__all__) != (
-            "archive_route_config_from_application",
             "audio_route_config_from_application",
             "docx_route_config_from_application",
             "global_resource_limits_from_application",

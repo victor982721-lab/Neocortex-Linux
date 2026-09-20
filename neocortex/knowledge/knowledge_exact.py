@@ -998,14 +998,7 @@ def _catalog_identity(row: sqlite3.Row) -> FileIdentity:
 def _catalog_resource(
     row: sqlite3.Row,
 ) -> tuple[ResourceRef, tuple[str, ...], Mapping[str, object] | None]:
-    """Materialize a catalog row through its owner binding when available.
-
-    Archive members are logical owner references. Their denormalized
-    ``volume_id``/``file_id`` columns are retained for legacy reporting but
-    are not identity evidence. A physical resource is accepted only when the
-    catalog stored and validated an explicit resource binding; this prevents a
-    name/radix/path coincidence from creating an inventory join.
-    """
+    """Materialize a catalog row through its owner binding when available."""
 
     source_kind = str(row["source_kind"])
     file_key = str(row["file_key"])
@@ -1020,46 +1013,6 @@ def _catalog_resource(
         if parsed.get("source_kind") != source_kind or parsed.get("file_key") != file_key:
             raise ValueError("catalog resource binding does not match its row")
         binding = parsed
-
-    if source_kind == "archive":
-        if binding is None:
-            return (
-                ResourceRef(
-                    f"resource:{source_kind}:{file_key}",
-                    source_kind,
-                    source_kind,
-                    current_path=path,
-                ),
-                ("physical_identity_unresolved",),
-                None,
-            )
-        ref = binding.get("resource_ref")
-        if not isinstance(ref, Mapping):
-            raise ValueError("catalog resource binding resource_ref is invalid")
-        physical_payload = ref.get("physical_identity")
-        physical = None
-        if isinstance(physical_payload, Mapping):
-            try:
-                physical = PhysicalIdentityRef(
-                    str(physical_payload["scheme"]),
-                    str(physical_payload["value"]),
-                    int(physical_payload["identity_version"]),
-                )
-            except (KeyError, TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("catalog resource binding physical identity is invalid") from exc
-        return (
-            ResourceRef(
-                str(ref["resource_id"]),
-                str(ref["source_kind"]),
-                str(ref["owner"]),
-                physical,
-                str(ref.get("current_path") or path),
-                None,
-                None if ref.get("canonical_resource_id") is None else str(ref["canonical_resource_id"]),
-            ),
-            () if physical is not None else ("physical_identity_unresolved",),
-            binding,
-        )
 
     identity = _catalog_identity(row)
     resource, warnings = _physical_resource(
@@ -1725,8 +1678,7 @@ def _catalog_row_match(
     term: ExactLookupTerm,
     rank: int,
 ) -> ExactEvidenceMatch:
-    source_kind = str(row["source_kind"])
-    resource, identity_warnings, binding = _catalog_resource(row)
+    resource, identity_warnings, _binding = _catalog_resource(row)
     revision = _catalog_revision(row, resource.resource_id)
     generation = int(row["generation_id"])
     if term.kind is ExactLookupKind.IDENTIFIER:
@@ -1767,14 +1719,6 @@ def _catalog_row_match(
         section_id = observed_path
         snippet = None
         reason = "published catalog path matched exactly"
-    if binding is not None and source_kind == "archive":
-        member = binding.get("archive_member")
-        if isinstance(member, Mapping):
-            identifiers.extend(
-                (name, str(member[name]))
-                for name in ("container_key", "container_path", "member_chain")
-                if member.get(name) is not None and str(member[name])
-            )
     evidence = EvidenceRef(
         _stable_exact_evidence_id(
             owner="catalog",

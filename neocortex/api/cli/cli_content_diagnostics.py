@@ -1,4 +1,4 @@
-"""Thin CLI adapters for root-scoped PDF, Text and Archive diagnostics."""
+"""Thin CLI adapters for root-scoped PDF and Text diagnostics."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from neocortex.runtime.orchestration.route_selection import (
     normalize_route_selection,
 )
 
-_SELECTORS = (("pdf_diagnostics", "pdf"), ("text_errors", "text"), ("archive_issues", "archive"))
+_SELECTORS = (("pdf_diagnostics", "pdf"), ("text_errors", "text"))
 _V2_SELECTORS = (("content_diagnostics", "all"), ("content_diagnostics_v2", "all"))
 
 
@@ -55,13 +55,13 @@ def register_content_diagnostics_arguments(parser: argparse.ArgumentParser) -> N
     )
     parser.add_argument("--diagnostics-cursor", help="Continue the same owner/root/filter snapshot")
     parser.add_argument(
-        "--diagnostics-file-key", help="Exact file key, or Archive physical container key"
+        "--diagnostics-file-key", help="Exact file key"
     )
     parser.add_argument(
         "--diagnostics-path", help="Literal path fragment within the requested root"
     )
     parser.add_argument(
-        "--diagnostics-reason", help="Exact PDF/Text error_type or Archive reason_code"
+        "--diagnostics-reason", help="Exact PDF/Text error_type"
     )
     parser.add_argument(
         "--diagnostics-json", action="store_true", help="Print the structured diagnostic envelope"
@@ -300,10 +300,6 @@ def run_text_errors(args: argparse.Namespace) -> int:
     return _run(args, "text", "text_errors")
 
 
-def run_archive_issues(args: argparse.Namespace) -> int:
-    return _run(args, "archive", "archive_issues")
-
-
 def _read_budget(args: argparse.Namespace):
     max_rows = getattr(args, "diagnostics_budget_rows", None)
     max_vectors = getattr(args, "diagnostics_budget_vectors", None)
@@ -379,7 +375,6 @@ def run_content_diagnostics(args: argparse.Namespace) -> int:
 
 __all__ = [
     "register_content_diagnostics_arguments",
-    "run_archive_issues",
     "run_content_diagnostics",
     "run_pdf_diagnostics",
     "run_text_errors",

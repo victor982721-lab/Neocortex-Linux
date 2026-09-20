@@ -23,7 +23,6 @@ from neocortex.platform.content_capability_manifest import (
 
 def test_manifest_covers_every_content_route_and_is_joined() -> None:
     assert tuple(item.capability_id for item in CONTENT_CAPABILITIES) == (
-        "archive",
         "audio",
         "docx",
         "image",

@@ -60,7 +60,6 @@ STATE_OWNER_DATABASES: tuple[tuple[str, str], ...] = (
     ("video", "video.sqlite3"),
     ("image", "image.sqlite3"),
     ("semantic", "semantic.sqlite3"),
-    ("archive", "archive.sqlite3"),
     ("text", "text.sqlite3"),
 )
 
@@ -300,9 +299,6 @@ _VALIDATOR_SPECS: dict[str, _ValidatorSpec] = {
     ),
     "semantic": _ValidatorSpec(
         "neocortex.semantic.semantic_schema", "_validate_version_contract", "semantic"
-    ),
-    "archive": _ValidatorSpec(
-        "neocortex.capabilities.formats.archive.state", "archive_schema_contract", "contract"
     ),
     "text": _ValidatorSpec(
         "neocortex.capabilities.formats.text.text_state", "text_schema_contract", "contract"

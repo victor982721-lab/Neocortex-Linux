@@ -360,10 +360,12 @@ Neocortex --root "$Root" --content-diagnostics 20 \
   --diagnostics-deadline-seconds 5 --diagnostics-json
 ```
 
-`--pdf-diagnostics`, `--text-errors` y `--archive-issues` conservan el
-contrato v1. La API/SDK exponen `content_diagnostics_v2_payload`; MCP conserva
-`content_diagnostics` v1 y añade `content_diagnostics_v2`. Todas las variantes
-son read-only y no conceden autoridad.
+`--pdf-diagnostics` y `--text-errors` conservan el contrato v1. Las incidencias
+de ZIP Intake se consultan mediante `--content-diagnostics` y el estado de la
+corrida; no existe una búsqueda/listado de miembros virtuales. La API/SDK
+exponen `content_diagnostics_v2_payload`; MCP conserva `content_diagnostics` v1
+y añade `content_diagnostics_v2`. Todas las variantes son read-only y no
+conceden autoridad.
 
 Las consultas Knowledge admiten límites opcionales de lectura (`--knowledge-budget-rows`,
 `--knowledge-budget-vectors`, `--knowledge-budget-temporary-bytes` y
@@ -431,8 +433,8 @@ registrados en ambos owners. Un consumidor activo, fallido o recuperable que
 declare una dependencia mantiene protegido el insumo hasta liberar la claim;
 el replay de `--apply` no repite el efecto.
 
-Las rutas integradas de Archive, PDF y video crean sus workspaces bajo
-`state/scratch/archive-materialization`, `state/scratch/pdf-recovery` y
+ZIP Intake, PDF y video crean sus workspaces bajo
+`state/scratch/zip-intake`, `state/scratch/pdf-recovery` y
 `state/scratch/video-frames`; una excepción conserva `failed-retained` y el
 cierre exitoso retira sólo el workspace registrado. Las APIs directas que no
 reciben una raíz de scratch mantienen su aislamiento de compatibilidad y no
@@ -536,8 +538,9 @@ conserva el snapshot, el cursor y la distinción entre archivo, procesamiento,
 
 ## Procesamiento de contenido
 
-Las rutas registradas son `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
-`video` e `image`.
+Las rutas registradas son `pdf`, `docx`, `office`, `text`, `audio`, `video` e
+`image`. ZIP Intake no es una ruta de usuario independiente: es una etapa
+previa de `--all` que convierte ZIP genéricos en archivos físicos sucesores.
 
 ### Dedupe físico Linux
 
@@ -570,13 +573,16 @@ inputs durables y omite inventario, deduplicación, detección y acciones;
 `--candidate-run RUN_ID` elige el inventario y `--resume-run RUN_ID` reanuda
 fases incompletas.
 
-`--all` ejecuta las ocho rutas registradas. Con `--all --apply` aplica primero la
-redlist determinista del Corpus, con comparación case-insensitive, root efectivo
-y auditoría por entrada, antes de dedupe, hashing, validación de tipos o rutas.
-Las coincidencias se envían a Papelera con el backend KIO receipt-bound; sin
-`--apply` sólo se publica el plan. Los archivos sin extensión pueden recuperar
-una extensión canónica cuando el detector bounded tiene evidencia fuerte; un
-destino existente, drift o una identidad fuera del root producen abstención.
+`--all` ejecuta ZIP Intake y las siete rutas de contenido registradas. Con
+`--all --apply`, aplica el tamaño global, clasifica y extrae ZIP genéricos en
+staging privado, reconcilia el inventario y después aplica la redlist
+determinista del Corpus, con comparación case-insensitive, root efectivo y
+auditoría por entrada, antes de dedupe, hashing, validación de tipos o rutas.
+Sólo tras verificación completa el ZIP original cruza a Papelera mediante KIO
+receipt-bound; sin `--apply` sólo se publica el plan. Los archivos sin extensión
+pueden recuperar una extensión canónica cuando el detector bounded tiene
+evidencia fuerte; un destino existente, drift o una identidad fuera del root
+producen abstención.
 
 ### Límite global de tamaño
 
@@ -598,6 +604,27 @@ Ejemplo de una copia controlada:
 ```bash
 Neocortex --root "$Root" --state-directory "$State" --all --apply
 ```
+
+### ZIP Intake físico
+
+ZIP genérico es embalaje temporal. `--all` lo clasifica por contenido antes de
+Identify: un ZIP de almacenamiento se extrae físicamente en un staging privado,
+expande ZIP genéricos anidados, verifica el árbol completo, publica en un destino
+determinista y sólo entonces envía el original a KIO Trash. `--all` sin
+`--apply` no extrae, no crea destinos y no usa KIO.
+
+Los formatos cuyo contenedor es la unidad funcional (`DOCX`, `XLSX`, `PPTX`, ODF,
+EPUB, APK, JAR y equivalentes reconocidos) permanecen atómicos aunque usen
+firma `PK`; un `project.zip` genérico sí se expande. Traversal, paths absolutos,
+special files, symlinks, cifrado, corrupción, bombs, colisiones, drift o límites
+agotados conservan el origen y dejan una razón/estado de bloqueo o recuperación.
+El contenido extraído nunca se ejecuta ni se trata como confiable; se publica
+con archivos `0600` y directorios `0700` sin bits ejecutables heredados.
+
+El techo `-S` se evalúa antes de abrir el ZIP. Un contenedor oversize queda
+`skipped_by_size`; sus sucesores, si el contenedor era elegible, vuelven a
+evaluarse individualmente. No hay búsqueda, listado ni estado durable de
+miembros virtuales: Knowledge y Semantic sólo reciben paths físicos publicados.
 
 ### Lifecycle durable de `--all` (0.14 instalado)
 
@@ -644,8 +671,9 @@ fail-closed y no una corrida nueva por inferencia. El replay terminal expone
 `replayed`/`new_work` sin ocultar trabajo reejecutado.
 
 Semantic pertenece al mismo lifecycle cuando se solicita `--all` o se reanuda
-un stage Semantic, pero el Semantic pesado continúa siendo opt-in. Archive y
-Video son fuentes Semantic explícitas. `--all` coordina sus rutas de contenido
+un stage Semantic, pero el Semantic pesado continúa siendo opt-in. Video y los
+archivos físicos publicados por ZIP Intake son fuentes Semantic explícitas.
+`--all` coordina sus rutas de contenido
 sin indexarlas automáticamente como fuentes Semantic pesadas. Si falta Audio/Whisper, FFmpeg, un modelo u
 otra herramienta, la ruta o el stage conserva `unavailable`/`blocked` y el run
 queda `incomplete`, nunca éxito vacío ni skip silencioso.
@@ -746,12 +774,10 @@ su backup verificable. Consulta [RECOVERY.md](RECOVERY.md).
 
 `Neocortex --factory-reset` es la operación directa para eliminar todo el estado
 operativo administrado de la raíz de estado seleccionada. Retira las bases
-SQLite y sus sidecars, las materializaciones de ZIP administradas bajo esa raíz
-(incluido
-`state/archive-materialized`), las cachés y los metadatos de procesamiento. No
-toca destinos externos producidos por APIs standalone. No lee ni procesa el
-corpus, no usa `--root`, no reconstruye materializaciones y no toca la
-instalación, los modelos ni los
+SQLite y sus sidecars, los workspaces de staging de ZIP Intake bajo esa raíz,
+las cachés y los metadatos de procesamiento. No toca destinos externos
+producidos por APIs standalone. No lee ni procesa el corpus, no usa `--root`,
+no reconstruye contenido y no toca la instalación, los modelos ni los
 `installation-receipts`.
 
 No es `databases purge`: no hay scopes, preview, plan, digest, snapshot SQL,

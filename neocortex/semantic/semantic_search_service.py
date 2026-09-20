@@ -912,7 +912,6 @@ def default_lexical_paths(state_directory: Path) -> LexicalStatePaths:
         office=state_directory / "office.sqlite3",
         audio=state_directory / "audio.sqlite3",
         video=semantic_source_database(state_directory, "video"),
-        archive=state_directory / "archive.sqlite3",
         text=state_directory / "text.sqlite3",
     )
 

@@ -47,7 +47,6 @@ def test_preview_is_read_only_and_covers_all_registered_owners(tmp_path: Path) -
     state = tmp_path / "state"
     state.mkdir()
     _create_database(state / "image.sqlite3")
-    _create_database(state / "archive.sqlite3")
     for sidecar in _sidecars(state / "image.sqlite3"):
         sidecar.write_bytes(b"stale-sidecar")
     unknown = state / "legacy.sqlite3"
@@ -60,7 +59,7 @@ def test_preview_is_read_only_and_covers_all_registered_owners(tmp_path: Path) -
     plan = plan_database_purge(state)
 
     assert plan.stores == tuple(store.state_owner_id for store in STATE_STORE_REGISTRY.stores)
-    assert {target.owner for target in plan.targets} == {"image", "archive"}
+    assert {target.owner for target in plan.targets} == {"image"}
     assert unknown in plan.unknown_sqlite_files
     assert plan.lock_conflicts == ()
     assert {

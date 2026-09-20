@@ -286,24 +286,6 @@ def _resource_from_resolved(
     resource_ref_type: type[ResourceRef],
     physical_identity_ref_type: type[PhysicalIdentityRef],
 ) -> tuple[ResourceRef, tuple[str, ...]]:
-    # Archive rows remain owner-scoped resources, including the physical-file
-    # backed logical compound-document root (OOXML/ODF/OTT).  Its
-    # ``source_identity`` is still an archive owner key, not a filesystem
-    # identity, even when the key happens to look
-    # decodable by a provider's legacy codec.  Keep the supplied owner path and
-    # section locators as evidence, but never expose that key as a physical
-    # identity (or synthesize a ``!/body`` path).
-    if resolved.source_kind == "archive" or resolved.section_kind == "archive_member":
-        resource = resource_ref_type(
-            resource_id=f"resource:{resolved.source_kind}:{resolved.source_identity}",
-            source_kind=resolved.source_kind,
-            owner=_candidate_owner(resolved.source_kind, lexical_owner_formats),
-            physical_identity=None,
-            current_path=resolved.path,
-            disposition=None,
-        )
-        return resource, ("physical_identity_unresolved",)
-
     canonical_physical = resolved_physical_identity_fn(resolved)
     birthtime_ns = int_provenance_fn(resolved.source_revision, "birthtime_ns")
     if canonical_physical is not None:
@@ -447,58 +429,7 @@ def _evidence_from_resolved(
         ("source_identity", resolved.source_identity),
         ("retrieval_entity_id", resolved.hit.entity_id),
     ]
-    if resolved.source_kind == "archive":
-        # Archive's logical compound-document root (OOXML/ODF/OTT) is a
-        # physical-file-backed section, not a ZIP member.  The source identity
-        # remains the archive owner's opaque key, so never derive a physical
-        # identity from it; only the owner section contract decides the
-        # inside-ZIP marker.
-        if resolved.section_kind == "archive_document":
-            if resolved.section_id != "body":
-                raise ValueError("archive document evidence is missing its body section")
-            inside_zip = False
-        elif resolved.section_kind == "archive_member":
-            if not resolved.section_id:
-                raise ValueError("archive member evidence is missing its member chain")
-            inside_zip = True
-        else:
-            raise ValueError("archive evidence has an unsupported section kind")
-        supplied_inside_zip = locator_value("inside_zip")
-        if supplied_inside_zip is not None:
-            if isinstance(supplied_inside_zip, bool):
-                supplied_inside_zip_value = supplied_inside_zip
-            elif isinstance(supplied_inside_zip, int) and supplied_inside_zip in {0, 1}:
-                supplied_inside_zip_value = bool(supplied_inside_zip)
-            elif isinstance(supplied_inside_zip, str) and supplied_inside_zip in {"0", "1"}:
-                supplied_inside_zip_value = supplied_inside_zip == "1"
-            else:
-                raise ValueError("archive evidence inside_zip marker is invalid")
-            if supplied_inside_zip_value is not inside_zip:
-                raise ValueError("archive evidence inside_zip marker changed")
-        identifiers.append(("inside_zip", "1" if inside_zip else "0"))
-        for key in (
-            "container_key",
-            "container_path",
-            "member_chain",
-            "member_path",
-            "archive_depth",
-            "content_kind",
-            "media_type",
-            "container_status",
-        ):
-            value = locator_value(key)
-            # Root logical-document rows intentionally have empty member
-            # fields; empty identifiers are not valid EvidenceRef components,
-            # so retain them only in owner provenance, not this identifier list.
-            if value in (None, ""):
-                continue
-            identifiers.append(
-                (
-                    key,
-                    str(value)[:MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS],
-                )
-            )
-    elif resolved.source_kind == "video":
+    if resolved.source_kind == "video":
         if (
             resolved.section_kind in {"video_metadata_title", SEMANTIC_TITLE_SECTION_KIND}
             or locator_text("kind") == "video_title"
@@ -755,7 +686,6 @@ def _lexical_state_paths(
         office=paths.office if owner_available(snapshot, "office") else None,
         audio=paths.audio if owner_available(snapshot, "audio") else None,
         video=paths.video if owner_available(snapshot, "video") else None,
-        archive=(paths.archive if owner_available(snapshot, "archive") else None),
         text=(paths.text if owner_available(snapshot, "text") else None),
     )
 

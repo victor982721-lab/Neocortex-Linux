@@ -147,7 +147,7 @@ def prepare_run(
 
 
 _ROUTE_PACKAGES: Mapping[str, tuple[str, ...]] = {
-    "text": (), "archive": (), "docx": (), "office": (),
+    "text": (), "docx": (), "office": (),
     "pdf": ("pymupdf", "pdfminer"), "image": ("PIL", "pytesseract"),
     "audio": ("faster_whisper", "ctranslate2", "av"),
     "video": ("av", "PIL"),
@@ -163,7 +163,7 @@ def prepare_framework_run(
                                  tuple(selected_routes), bool(config.apply_actions), cancelled=cancelled,
                                  effective_options={name: getattr(config, name, None) for name in (
                                      "audio_model_name", "audio_local_models_only", "pdf_ocr_mode",
-                                     "image_document_ocr_mode", "archive_ocr_mode", "video_ocr_mode",
+                                     "image_document_ocr_mode", "video_ocr_mode",
                                      "video_ffmpeg_path",
                                  )},
                                  run_budget={name: getattr(config, name, None) for name in (
@@ -194,7 +194,7 @@ def prepare_framework_run(
         return "ready", "free_space_observed_not_reserved", f"statvfs:available_bytes={available}"
 
     probes.append(("state_capacity", "state_storage", "route_execution", capacity_probe))
-    if set(request.selected_routes) & {"archive", "pdf", "image", "audio", "video"}:
+    if set(request.selected_routes) & {"pdf", "image", "audio", "video"}:
         def temporary_probe() -> tuple[PreparationStatus, str, str | None]:
             root = Path(tempfile.gettempdir()).resolve(strict=True)
             if root == request.root or root.is_relative_to(request.root):
@@ -218,7 +218,7 @@ def prepare_framework_run(
 
         probes.append((route + "_packages", route, "route_execution", package_probe))
         ocr_option = "image_document_ocr_mode" if route == "image" else route + "_ocr_mode"
-        if (route in {"pdf", "image", "archive", "video"}
+        if (route in {"pdf", "image", "video"}
                 and getattr(config, ocr_option, "auto") not in {"never", "off"}):
             def ocr_probe(route=route) -> tuple[PreparationStatus, str, str | None]:
                 selected = getattr(config, route + "_tesseract_cmd", None) or "tesseract"

@@ -71,12 +71,6 @@ _DECLARATIONS: dict[str, dict[TableLifecycleRole, tuple[str, ...]]] = {
         'schema_metadata': ('metadata',),
         'derived': ('images', 'images_without_nudenet'),
     },
-    'archive': {
-        'authoritative': (),
-        'operational': (),
-        'schema_metadata': ('metadata',),
-        'derived': ('archive_issues', 'archive_logical_documents', 'containers', 'document_fts', 'document_fts_config', 'document_fts_content', 'document_fts_data', 'document_fts_docsize', 'document_fts_idx', 'documents'),
-    },
     'text': {
         'authoritative': ('text_derivation_outbox', 'text_work_receipts'),
         'operational': (),

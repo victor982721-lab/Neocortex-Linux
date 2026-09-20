@@ -1717,7 +1717,6 @@ def test_text_retrieval_calibration_abstains_below_exact_owner_floors() -> None:
     assert metadata["query_abstained"] is True
     assert metadata["rejected_by_source_kind"] == {"pdf": 1}
     assert metadata["score_floor_by_source_kind"] == {
-        "archive": 0.42,
         "audio": 0.42,
         "docx": 0.42,
         "image": 0.42,

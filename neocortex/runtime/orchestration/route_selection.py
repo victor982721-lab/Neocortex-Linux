@@ -14,7 +14,6 @@ BUILTIN_ROUTE_ORDER = (
     "pdf",
     "docx",
     "office",
-    "archive",
     "text",
     "audio",
     "video",

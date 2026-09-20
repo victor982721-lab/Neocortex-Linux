@@ -144,24 +144,6 @@ def _print_office_report(result) -> None:
     )
 
 
-def _print_archive_report(result) -> None:
-    if result.archive is None:
-        return
-    archive = result.archive
-    print(
-        f"route=archive candidate_pool={archive.candidate_pool} "
-        f"candidates={archive.candidates} processed={archive.processed} "
-        f"cache_hits={archive.cache_hits} cached_errors={archive.cached_errors} "
-        f"complete={archive.containers_complete} partial={archive.containers_partial} "
-        f"errors={archive.errors} members={archive.members_seen} "
-        f"indexed={archive.members_indexed} metadata_only={archive.metadata_only} "
-        f"nested_archives={archive.nested_archives} text_chars={archive.text_chars} "
-        f"safety_issues={archive.safety_issues} "
-        f"cache_containers_pruned={archive.cache_containers_pruned} "
-        f"cache_members_pruned={archive.cache_members_pruned}"
-    )
-
-
 def _print_text_report(result) -> None:
     if result.text is None:
         return
@@ -435,7 +417,6 @@ def print_reports(result, args: argparse.Namespace) -> None:
         _print_pdf_report(result)
         _print_docx_report(result)
         _print_office_report(result)
-        _print_archive_report(result)
         _print_text_report(result)
         _print_audio_report(result)
         _print_video_report(result)
@@ -447,7 +428,6 @@ def print_reports(result, args: argparse.Namespace) -> None:
     _print_pdf_report(result)
     _print_docx_report(result)
     _print_office_report(result)
-    _print_archive_report(result)
     _print_text_report(result)
     _print_audio_report(result)
     _print_video_report(result)
@@ -541,36 +521,8 @@ def _optional_counter(summary: object, field: str) -> int | None:
     return _counter_value(value) if present else None
 
 
-def _archive_all_complete(summary: object) -> bool:
-    """Recognize the Archive coverage contract before ignoring raw issue totals."""
-
-    required = (
-        "processed",
-        "containers_complete",
-        "containers_partial",
-        "errors",
-        "cached_errors",
-    )
-    values: dict[str, int] = {}
-    for field in required:
-        present, value = _field_value(summary, field)
-        if not present or type(value) is not int or value < 0:
-            return False
-        values[field] = value
-    return (
-        values["processed"] > 0
-        and values["containers_complete"] == values["processed"]
-        and values["containers_partial"] == 0
-        and values["errors"] == 0
-        and values["cached_errors"] == 0
-    )
-
-
 def _strict_route_error_fields(route_name: str, summary: object) -> tuple[str, ...]:
-    """Use owner-authoritative Archive coverage while retaining raw visibility."""
-
-    if route_name == "archive" and _archive_all_complete(summary):
-        return tuple(field for field in STRICT_ROUTE_ERROR_FIELDS if field != "safety_issues")
+    """Return the route's strict error fields."""
     return STRICT_ROUTE_ERROR_FIELDS
 
 
@@ -715,7 +667,6 @@ _ROUTE_NAMES = {
     "PDF": "pdf",
     "DOCX": "docx",
     "Office": "office",
-    "ZIP": "archive",
     "Texto": "text",
     "Audio": "audio",
     "Video": "video",
@@ -837,7 +788,6 @@ def _professional_route_rows(result) -> tuple[tuple[str, object], ...]:
         ("PDF", "pdf"),
         ("DOCX", "docx"),
         ("Office", "office"),
-        ("ZIP", "archive"),
         ("Texto", "text"),
         ("Audio", "audio"),
         ("Video", "video"),

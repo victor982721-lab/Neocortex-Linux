@@ -9,7 +9,6 @@ import pytest
 from neocortex.api.cli.cli_app import dispatch_direct
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
-from neocortex.capabilities.formats.archive.state import initialize_archive_state
 from neocortex.capabilities.formats.audio.state import initialize_audio_state
 from neocortex.capabilities.formats.docx.state import initialize_docx_state
 from neocortex.capabilities.formats.office.state import initialize_office_state
@@ -50,7 +49,6 @@ def _initialize_owners(root: Path, *, include_video: bool = True) -> None:
         ("docx.sqlite3", initialize_docx_state),
         ("office.sqlite3", initialize_office_state),
         ("audio.sqlite3", initialize_audio_state),
-        ("archive.sqlite3", initialize_archive_state),
         ("text.sqlite3", initialize_text_state),
     ):
         initialize(root / name)

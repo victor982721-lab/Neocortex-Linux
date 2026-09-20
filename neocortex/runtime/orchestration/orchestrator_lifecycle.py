@@ -34,7 +34,6 @@ from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.safety.corpus_access import CorpusAccessPolicy
 
 if TYPE_CHECKING:
-    from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary
     from neocortex.capabilities.formats.image.route import ImageRouteSummary
@@ -748,7 +747,6 @@ class RouteLifecycleMixin(_FrameworkOrchestratorOwner):
             pdf=cast("PdfRouteSummary | None", routes.get("pdf")),
             docx=cast("DocxRouteSummary | None", routes.get("docx")),
             office=cast("OfficeRouteSummary | None", routes.get("office")),
-            archive=cast("ArchiveRouteSummary | None", routes.get("archive")),
             text=cast("TextRouteSummary | None", routes.get("text")),
             audio=cast("AudioRouteSummary | None", routes.get("audio")),
             video=cast("VideoRouteSummary | None", routes.get("video")),

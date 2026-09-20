@@ -228,20 +228,6 @@ def _capability(
 
 CONTENT_CAPABILITIES: Final[tuple[ContentCapability, ...]] = (
     _capability(
-        "archive",
-        "archive",
-        input_source="route_candidates",
-        mime_types=("application/zip",),
-        state_owner_id="archive",
-        state_database="archive.sqlite3",
-        state_schema_version=1,
-        catalog_source_kinds=("archive",),
-        fts_tables=("document_fts",),
-        semantic_source_kinds=("archive",),
-        semantic_channel="text",
-        locators=("archive_member", "character"),
-    ),
-    _capability(
         "audio",
         "audio",
         input_source="route_candidates",

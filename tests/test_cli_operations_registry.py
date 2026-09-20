@@ -31,7 +31,6 @@ from neocortex.api.cli.cli_validation import validate_arguments
 DIRECT_ARGUMENT_CASES = (
     ("pdf_diagnostics", "run_pdf_diagnostics", ("--pdf-diagnostics", "20")),
     ("text_errors", "run_text_errors", ("--text-errors", "20")),
-    ("archive_issues", "run_archive_issues", ("--archive-issues", "20")),
     ("content_diagnostics", "run_content_diagnostics", ("--content-diagnostics", "20")),
     (
         "content_diagnostics_v2",
@@ -126,9 +125,6 @@ DIRECT_ARGUMENT_CASES = (
     ),
     ("docx_missing_pdf", "run_docx_missing_pdf", ("--docx-missing-pdf", "1")),
     ("office_search", "run_office_search", ("--office-search", "query")),
-    ("archive_status", "run_archive_status", ("--archive-status",)),
-    ("archive_search", "run_archive_search", ("--archive-search", "query")),
-    ("archive_list", "run_archive_list", ("--archive-list", "1")),
     ("audio_search", "run_audio_search", ("--audio-search", "query")),
     ("audio_doctor", "run_audio_doctor", ("--audio-doctor",)),
     ("video_status", "run_video_status", ("--video-status",)),
@@ -251,7 +247,7 @@ def test_direct_operations_remain_mutually_exclusive_across_domains() -> None:
         validate_arguments(args)
 
     assert str(raised.value) == (
-            "direct status/recovery/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/"
+        "direct status/recovery/semantic/curation/PDF/DOCX/Office/audio/video/"
         "Knowledge "
         "operations are mutually exclusive"
     )

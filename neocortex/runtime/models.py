@@ -28,7 +28,6 @@ from neocortex.capabilities.formats.video.limits import DEFAULT_VIDEO_WORKER_MEM
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
     from neocortex.documents.document_organization import (
         OrganizationApplySummary,
@@ -106,28 +105,6 @@ class FrameworkConfig:
     office_min_free_memory_bytes: int = 1024 * 1024 * 1024
     office_min_free_commit_bytes: int = 1024 * 1024 * 1024
     office_memory_wait_timeout_seconds: float = 60.0
-    archive_max_file_bytes: int | None = None
-    archive_max_documents: int | None = None
-    archive_retry_errors: bool = False
-    archive_max_depth: int = 5
-    archive_max_members: int = 20_000
-    archive_max_central_directory_bytes: int = 32 * 1024 * 1024
-    archive_max_member_bytes: int = 64 * 1024 * 1024
-    archive_max_total_uncompressed_bytes: int = 512 * 1024 * 1024
-    archive_max_text_chars: int = 2_000_000
-    archive_max_total_text_chars: int = 20_000_000
-    archive_max_compression_ratio: float = 200.0
-    archive_pdf_max_pages: int = 500
-    archive_pdf_timeout_seconds: float = 60.0
-    archive_pdf_worker_memory_bytes: int = 768 * 1024 * 1024
-    archive_ocr_mode: Literal["auto", "never", "always"] = "auto"
-    archive_ocr_lang: str = "spa+eng"
-    archive_ocr_dpi: int = 200
-    archive_ocr_max_pages: int = 50
-    archive_ocr_max_render_pixels: int = 40_000_000
-    archive_ocr_timeout_seconds: float = 30.0
-    archive_tesseract_cmd: str | None = None
-    archive_tessdata_dir: str | None = None
     text_max_file_bytes: int | None = 64 * 1024 * 1024
     text_max_documents: int | None = None
     text_max_text_chars: int = 4_000_000
@@ -242,10 +219,6 @@ class FrameworkConfig:
         return self.state_directory / "office.sqlite3"
 
     @property
-    def archive_database(self) -> Path:
-        return self.state_directory / "archive.sqlite3"
-
-    @property
     def text_database(self) -> Path:
         return self.state_directory / "text.sqlite3"
 
@@ -275,7 +248,6 @@ class InitialRunResult:
     pdf: PdfRouteSummary | None = None
     docx: DocxRouteSummary | None = None
     office: OfficeRouteSummary | None = None
-    archive: ArchiveRouteSummary | None = None
     text: TextRouteSummary | None = None
     audio: AudioRouteSummary | None = None
     video: VideoRouteSummary | None = None
@@ -284,6 +256,7 @@ class InitialRunResult:
     global_resources: GlobalResourceSummary | None = None
     organization_plan: OrganizationPlanSummary | None = None
     organization_apply: OrganizationApplySummary | None = None
+    zip_intake: dict[str, object] = field(default_factory=dict, kw_only=True)
     route_failures: dict[str, str] = field(default_factory=dict, kw_only=True)
     maintenance: dict[str, object] = field(default_factory=dict, kw_only=True)
     size_admission: dict[str, object] = field(default_factory=dict, kw_only=True)
@@ -300,7 +273,6 @@ class RouteOnlyRunResult:
     pdf: PdfRouteSummary | None = None
     docx: DocxRouteSummary | None = None
     office: OfficeRouteSummary | None = None
-    archive: ArchiveRouteSummary | None = None
     text: TextRouteSummary | None = None
     audio: AudioRouteSummary | None = None
     video: VideoRouteSummary | None = None

@@ -7,7 +7,7 @@ en [RECOVERY.md](RECOVERY.md).
 ## Cierre operativo vigente
 
 La release `0.14.1` integra dedupe/KIO receipt-bound, el lifecycle `--all`
-(admisión, reutilización, reparación y ZIPs), factory reset/retención explícitos y el
+(admisión, ZIP Intake físico, reutilización y reparación), factory reset/retención explícitos y el
 coordinador global adaptativo. La publicación y la instalación se verifican por
 separado con `tools/release_linux.py verify`; su receipt es la fuente viva del
 SHA, launcher, `current` y rollback. Ningún procedimiento de esta guía aplica
@@ -31,7 +31,7 @@ Antes de procesar contenido:
 3. consulta estado y health sin crear cobertura nueva;
 4. comprueba espacio, memoria, herramientas externas y modelos necesarios;
 5. fija la selección de rutas y, para una corrida amplia, los límites globales
-   de items, bytes y deadline;
+   de items, bytes, deadline y, si aplica, `-S/--max-size-mb`;
 6. confirma que no existe otro writer sobre los mismos owners desde el namespace
    del host; un `ps` dentro de un sandbox puede mostrar sólo sus procesos.
 
@@ -312,21 +312,22 @@ Neocortex --root "$Pilot" --state-directory "$Pilot-state" --all \
 ```
 
 La corrida debe publicar el manifest antes de workers y mostrar los stages
-`preflight`, `inventory`, `catalog/dedup`, `routes`, `semantic`, `publication` y
+`preflight`, `inventory`, `zip-intake`, `catalog/dedup`, `routes`, `semantic`, `publication` y
 `finalize`. La ausencia de Audio/Whisper, FFmpeg, un modelo u otra herramienta
 se registra como `unavailable`/`blocked` y deja `incomplete`; no se corrige
 relajando fences ni se presenta como cobertura completa. El stage Semantic se
-coordina dentro del run y considera Archive y Video cuando sus owners, heads y
-dependencias están disponibles; `--semantic-source` sigue permitiendo
+coordina dentro del run y considera los archivos físicos publicados por ZIP
+Intake y Video cuando sus heads y dependencias están disponibles; `--semantic-source` sigue permitiendo
 acotar explícitamente el conjunto. Una ausencia afecta la ruta dependiente sin
 ocultar las rutas independientes.
 
 ## Ampliación controlada
 
 Después de validar un foco, amplía sólo sobre la raíz temporal. `--all` es una
-operación amplia, no el primer smoke: selecciona las ocho rutas de contenido
-registradas.
-El flujo `--all --apply` sigue `inventory → identify → normalize → policy/redlist
+operación amplia, no el primer smoke: ejecuta ZIP Intake y selecciona las siete
+rutas de contenido registradas.
+El flujo `--all --apply` sigue `inventory → size admission → ZIP Intake
+→ successor/reconciled inventory → identify → normalize → policy/redlist
 → dedupe → routes → organize → semantic`. La redlist explícita se evalúa después
 de normalizar, sólo por metadata/ruta y de forma case-insensitive, antes de
 dedupe, hashing o extracción. Las coincidencias se envían a Papelera con
@@ -346,8 +347,8 @@ excluye de rutas posteriores. Sólo `recovery_required` (efecto físico ambiguo)
 aborta antes de dedupe y no reintenta la acción.
 
 Para reproducir o regresionar el lifecycle 0.14, ejecuta la ampliación sólo
-sobre el piloto temporal y prueba las rutas de contenido (`pdf`, `docx`, `office`,
-`archive`, `text`, `audio`, `video`, `image`) bajo el mismo presupuesto. El
+sobre el piloto temporal y prueba ZIP Intake y las rutas de contenido (`pdf`,
+`docx`, `office`, `text`, `audio`, `video`, `image`) bajo el mismo presupuesto. El
 stage Semantic integrado se ejecuta con `--all`; sus fuentes pueden acotarse con
 `--semantic-source` y la preparación de modelos continúa siendo explícita.
 `--all` no añade techos globales implícitos;
@@ -358,6 +359,54 @@ de esta oleada antes de declararse cerradas.
 Una corrida sin `--apply` no modifica originales, pero sí escribe inventario,
 cachés, planes y publicaciones. Distingue siempre consulta read-only, producción
 de estado y efecto sobre corpus.
+
+### ZIP Intake físico
+
+En un piloto temporal, prepara primero un conjunto que incluya ZIP genérico,
+ZIP anidado, `project.zip`, un DOCX/EPUB/APK/JAR con firma `PK`, y casos
+encrypted/corrupt/traversal/symlink. La clasificación previa usa contenido; no
+confía en la extensión. Los paquetes atómicos permanecen como un archivo y el
+ZIP genérico se trata como embalaje temporal.
+
+La corrida sin `--apply` sólo planea y publica razones/contadores; no crea
+destinos, no extrae y no envía nada a KIO:
+
+```bash
+Neocortex --root "$Pilot" --state-directory "$Pilot-state" --all \
+  --strict-exit-codes
+```
+
+Para aplicar en el piloto aislado:
+
+```bash
+Neocortex --root "$Pilot" --state-directory "$Pilot-state" --all --apply \
+  --strict-exit-codes
+```
+
+ZIP Intake captura y revalida la identidad, ejecuta preflight bounded, extrae
+todo en `state/scratch/zip-intake`, verifica CRC/tamaños/EOF y publica una sola
+vez en `Root/<stem>/`. Los ZIP genéricos anidados se expanden en staging antes
+de publicar; no se conserva una ruta `container.zip!/member`. La publicación
+usa archivos `0600` y directorios `0700`, sin permisos ejecutables heredados.
+
+El original sólo cruza a KIO Trash después de verificar el árbol publicado. Una
+colisión, drift, cifrado, entrada especial, traversal, bomb, corrupción,
+cancelación, falta de recursos o fallo/ambigüedad de KIO conserva el ZIP y el
+staging no publicado; el estado es `blocked` o `recovery_required` según la
+frontera. Nunca se usa `rm`/`unlink` como fallback.
+
+Para probar interacción con el techo global, usa un ZIP fuente menor a 10 MB que
+contenga un miembro mayor y un ZIP fuente mayor a 10 MB:
+
+```bash
+Neocortex --root "$Pilot" --state-directory "$Pilot-state" --all --apply -S10
+```
+
+El ZIP fuente oversize queda `skipped_by_size` antes de abrirse. El ZIP pequeño
+puede publicarse; su miembro grande se inventaría como archivo físico y vuelve
+a evaluarse con `-S10`, sin heredar elegibilidad del contenedor. Repite con
+`-S100` o sin `-S` para comprobar readmisión; no se borra historial por el
+cambio de política.
 
 ### Redlist y restauración de extensión
 
@@ -373,8 +422,8 @@ no depende del sufijo observado.
 Sólo una firma fuerte permite proponer un sufijo canónico; no se adivina `.bin`,
 no se interpreta texto débil como formato y un destino existente no se reemplaza.
 El rename seguro usa el backend POSIX no-replace, revalida identidad y registra
-receipt/recovery. Los miembros virtuales de ZIP/RAR no son objetivos físicos y un
-archivo contenedor no se modifica por el nombre de un miembro.
+receipt/recovery. ZIP Intake sólo publica archivos físicos verificados; el
+nombre de un miembro no modifica el contenedor ni crea un objetivo virtual.
 
 Las rutas reutilizan extracción válida para reparar FTS y derivados sin repetir
 OCR, transcripción o análisis íntegros. Los reintentos sólo proceden con
@@ -565,8 +614,8 @@ FFmpeg/FFprobe y otros binarios se detectan antes de iniciar la ruta;
 una ausencia se reporta como cobertura o bloqueo, no como éxito vacío.
 
 Semantic pesado no descarga modelos automáticamente durante `--all`. El selector
-integrado considera Archive y Video cuando sus fuentes y heads están
-disponibles; `--semantic-source` puede acotar la selección. Un modelo o herramienta
+integrado considera los archivos físicos publicados por ZIP Intake y Video cuando
+sus fuentes y heads están disponibles; `--semantic-source` puede acotar la selección. Un modelo o herramienta
 ausente produce `unavailable`/`blocked` y cobertura `partial`/`incomplete`, no
 éxito vacío. La preparación de modelos sigue siendo una operación separada,
 explícita y autorizada.
@@ -678,9 +727,9 @@ release instalada requiere su propio gate de promoción y verificación. Un
 `--all` sin `--apply` no cruza ninguna frontera física, aunque puede escribir
 estado derivado del lifecycle.
 
-Las rutas integradas de Archive, PDF y video ya apuntan sus temporales de
-materialización, recuperación estructural y frames a raíces registradas bajo
-`state/scratch`. En éxito el workspace se cierra y retira; en error queda
+ZIP Intake, PDF y video ya apuntan sus temporales de extracción, recuperación
+estructural y frames a raíces registradas bajo `state/scratch`. En éxito el
+workspace se cierra y retira; en error queda
 `failed-retained` para diagnóstico posterior. No se deben sustituir esas raíces
 por el corpus, `/tmp` completo ni un directorio compartido.
 
@@ -865,7 +914,6 @@ Las comprobaciones tienen alcance explícito y no convierten lo omitido en sano:
 ```bash
 Neocortex --state-health --state-health-scope compatibility --state-health-json
 Neocortex --state-health --state-health-owner semantic --state-health-timeout 180 --state-health-json
-Neocortex --archive-issues 20 --diagnostics-reason archive_member_count_limit --diagnostics-json
 Neocortex --root /ruta/muestra --content-diagnostics 20 --diagnostics-owner all --diagnostics-json
 Neocortex --root /ruta/muestra --content-diagnostics 20 --diagnostics-owner text \
   --diagnostics-budget-rows 500 --diagnostics-deadline-seconds 5 --diagnostics-json
@@ -901,10 +949,10 @@ manifest/digest presentado, detén writers y sigue [RECOVERY.md](RECOVERY.md).
 
 Usa `Neocortex --factory-reset` para eliminar todo el estado operativo
 administrado de una raíz de estado explícita; no uses `rm` manual ni `databases purge` como
-sustituto. La operación retira las bases SQLite y sus sidecars, las
-materializaciones de ZIP administradas bajo esa raíz (incluido
-`state/archive-materialized`), las cachés y los metadatos de procesamiento que
-pertenecen a esa raíz. No toca destinos externos producidos por APIs standalone.
+sustituto. La operación retira las bases SQLite y sus sidecars, los workspaces
+de staging de ZIP Intake bajo esa raíz, las cachés y los metadatos de
+procesamiento que pertenecen a esa raíz. No toca destinos externos producidos
+por APIs standalone.
 La invocación principal es:
 
 ```bash

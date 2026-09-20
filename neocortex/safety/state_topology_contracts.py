@@ -14,7 +14,6 @@ from neocortex.safety.state_lifecycle_contracts import TableLifecycleRule
 
 from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 
-from neocortex.capabilities.formats.archive.state import ARCHIVE_SCHEMA_VERSION
 from neocortex.capabilities.formats.audio.state import AUDIO_SCHEMA_VERSION
 from neocortex.documents.document_catalog_schema import CATALOG_SCHEMA_VERSION
 from neocortex.capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION
@@ -193,13 +192,6 @@ STATE_STORE_REGISTRY = StateStoreRegistry(
         _store("video", "video.sqlite3", VIDEO_SCHEMA_VERSION, "documents"),
         _store("image", "image.sqlite3", KNOWLEDGE_IMAGE_SCHEMA_VERSION, "images"),
         _store("semantic", "semantic.sqlite3", SEMANTIC_SCHEMA_VERSION, "semantic"),
-        _store(
-            "archive",
-            "archive.sqlite3",
-            ARCHIVE_SCHEMA_VERSION,
-            "documents",
-            capture_mode="if_present",
-        ),
         _store(
             "text",
             "text.sqlite3",

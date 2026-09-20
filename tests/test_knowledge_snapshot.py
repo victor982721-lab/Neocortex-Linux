@@ -19,7 +19,6 @@ import neocortex.knowledge.knowledge_snapshot as knowledge_snapshot
 from neocortex.deduplication.persistence import ddl as inventory_ddl
 from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.persistence import framework_schema as framework_schema_module
-from neocortex.capabilities.formats.archive.state import initialize_archive_state
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.knowledge.knowledge_contracts import (
     OwnerAvailability,
@@ -796,26 +795,6 @@ def test_snapshot_rejects_invalid_inventory_checkpoint_head(tmp_path: Path) -> N
     assert mismatched_inventory.state is OwnerAvailability.INCOMPATIBLE
     assert mismatched_inventory.warning is not None
     assert "root-mismatched scan" in mismatched_inventory.warning
-
-
-def test_archive_owner_is_additive_only_after_archive_state_exists(
-    tmp_path: Path,
-) -> None:
-    state = tmp_path / "state"
-    paths = KnowledgeStatePaths.from_directory(state)
-
-    absent = collect_knowledge_snapshot(paths, source_version="0.7.0")
-
-    assert all(owner.owner != "archive" for owner in absent.owners)
-    state.mkdir()
-    initialize_archive_state(state / "archive.sqlite3")
-
-    available = collect_knowledge_snapshot(paths, source_version="0.7.0")
-
-    archive = _owner(available, "archive")
-    assert archive.state is OwnerAvailability.AVAILABLE
-    assert archive.observed_schema_version == 2
-    assert {mark.name: mark.value for mark in archive.watermarks}["current_rows"] == "0"
 
 
 def test_text_owner_is_additive_only_after_text_state_exists(tmp_path: Path) -> None:

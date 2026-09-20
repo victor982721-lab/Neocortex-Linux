@@ -39,11 +39,29 @@ pueden cambiar; un join no se resuelve sólo por nombre o extensión.
 Una revisión distingue bytes/contenido en un momento determinado. Resultados de
 otra revisión, firma de procesamiento o snapshot no se mezclan silenciosamente.
 
-Los miembros de un archivo compuesto son recursos virtuales: usan el namespace
-`resource:archive:*`, conservan su cadena de miembros y localizadores publicados,
-pero no exponen `physical_identity`. La ausencia se declara como
-`physical_identity_unresolved`; una clave de miembro nunca puede alimentar un
-join de inventario físico ni convertirse en identidad por su forma textual.
+Un ZIP genérico no crea recursos virtuales. Después de ZIP Intake, cada archivo
+publicado recibe su propio `resource:file`, identidad física, path y revisión;
+Knowledge no conserva claves `container.zip!/member`, cadenas de miembros ni una
+tabla de miembros para suplir al inventario. Si la transacción no termina, el
+ZIP original permanece protegido y sólo se expone la cobertura/razón del bloqueo.
+Los formatos cuyo contenedor es la unidad funcional (DOCX, Office, ODF, EPUB,
+APK, JAR y equivalentes reconocidos) siguen siendo un único `resource:file` y
+pueden publicar sus localizadores internos propios.
+
+## ZIP Intake y alcance de Knowledge
+
+La admisión global `-S/--max-size-mb` se decide con metadata de Inventory antes
+de abrir un ZIP. Un origen mayor al techo queda `skipped_by_size` y no produce
+nuevos outputs de Identify, Catalog, Semantic o Knowledge; cambiar el límite en
+otra corrida vuelve a evaluarlo sin borrar publicaciones históricas. Un miembro
+físico creado después de una extracción vuelve a pasar por la misma admisión y
+por las mismas rutas que cualquier otro archivo.
+
+El contenido extraído conserva la frontera `untrusted-corpus-data-v1`. ZIP Intake
+no ejecuta ni importa archivos, no concede confianza especial a sus sucesores y
+no afirma detectar malware desconocido. Knowledge sólo proyecta publicaciones
+físicas verificadas y mantiene `blocked`/`recovery_required` para una transacción
+incompleta.
 
 ## Snapshot y owners
 
@@ -117,12 +135,15 @@ La fusión preserva:
 ## Localizadores
 
 Knowledge puede transportar páginas, partes OOXML, celdas, slides, segmentos de
-audio/video, miembros ZIP o archivo completo sólo cuando el owner los publicó.
-El manifest de una capacidad no sustituye una materialización; la precisión no
-demostrada se omite.
+audio/video o el archivo completo sólo cuando el owner los publicó. Para un ZIP
+genérico, el localizador canónico es el path físico del sucesor, por ejemplo
+`/Corpus/container/invoice.pdf`; no existe un miembro ZIP virtual ni un
+manifest de materialización paralelo. El manifest de una capacidad no sustituye
+una publicación física; la precisión no demostrada se omite.
 
-Los ZIP anidados conservan la cadena de miembros. Audio y Video usan
-`start_ms/end_ms` cuando el resultado procede de un segmento.
+Los ZIP anidados se expanden dentro del árbol físico del contenedor antes de
+publicarse. Audio y Video usan `start_ms/end_ms` cuando el resultado procede de
+un segmento.
 
 ## Contexto para agentes
 

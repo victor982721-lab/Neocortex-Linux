@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 MAINTENANCE_SCHEMA = "neocortex.maintenance/v1"
-MAINTENANCE_SCOPES = frozenset({"owned-temp", "audit-work", "archive-materialized", "terminal-retention", "historical-temp"})
+MAINTENANCE_SCOPES = frozenset({"owned-temp", "audit-work", "terminal-retention", "historical-temp"})
 
 
 class MaintenanceBlocked(RuntimeError):

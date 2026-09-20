@@ -55,7 +55,6 @@ _DATABASE_STORE_CHOICES = (
     "video",
     "image",
     "semantic",
-    "archive",
     "text",
 )
 

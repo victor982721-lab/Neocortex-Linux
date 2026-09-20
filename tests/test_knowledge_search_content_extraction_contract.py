@@ -339,7 +339,7 @@ def test_lexical_wrapper_resolves_all_lower_dependencies_per_call(
         clock_ns=clock,
     )
 
-    assert owners == ["pdf", "docx", "office", "audio", "video", "archive", "text"]
+    assert owners == ["pdf", "docx", "office", "audio", "video", "text"]
     assert candidate_calls == [(resolved, "fts_pdf", 1, "pdf-fts-v1")]
     assert rankings == {"fts_pdf": (candidate,)}
     assert len(reports) == 1

@@ -28,7 +28,6 @@ from neocortex.documents import document_catalog_schema
 from neocortex.capabilities.formats.text import text_state
 from neocortex.semantic import semantic_schema as semantic_schema_module
 from neocortex.capabilities.formats.audio import state as audio_state
-from neocortex.capabilities.formats.archive import state as archive_state
 from neocortex.capabilities.formats.docx.schema import validate_docx_schema
 from neocortex.capabilities.formats.office import state as office_state
 from neocortex.capabilities.formats.video import state as video_state
@@ -154,7 +153,6 @@ class KnowledgeStatePaths:
     audio: Path
     image: Path
     semantic: Path
-    archive: Path | None = None
     text: Path | None = None
     video: Path | None = None
 
@@ -264,15 +262,6 @@ def _validate_audio(connection: sqlite3.Connection) -> None:
     )
 
 
-def _validate_archive(connection: sqlite3.Connection) -> None:
-    validate_sqlite_schema_contract(
-        connection,
-        archive_state.archive_schema_contract(),
-        label="archive state",
-        exact=True,
-    )
-
-
 def _validate_text(connection: sqlite3.Connection) -> None:
     validate_sqlite_schema_contract(
         connection,
@@ -358,7 +347,6 @@ _OWNER_VALIDATORS: dict[
             (9, _validate_semantic_legacy_v9),
         ),
     ),
-    "archive": (_validate_archive, ()),
     "text": (_validate_text, ()),
 }
 

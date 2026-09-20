@@ -1,11 +1,7 @@
 """Bounded classification of ZIP containers and functional package units.
 
-The Archive route historically treated every readable ZIP as one generic
-container.  That is a useful fallback, but it is not safe to apply generic
-normalisation to OOXML/ODF/EPUB packages or source projects whose relative
-layout is part of their meaning.  This module keeps the decision deliberately
-small: structural detection is followed by a bounded read of every member and
-XML validation of only the package markers.  It never extracts to the corpus or
+Classification uses only bounded structural/member evidence to distinguish a
+generic ZIP from an atomic package. It never extracts to the corpus or
 authorises a physical effect.
 """
 

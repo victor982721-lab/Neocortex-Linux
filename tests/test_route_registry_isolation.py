@@ -53,7 +53,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
 
             registry = builtin_route_registry()
             if tuple(registry) != (
-                "pdf", "docx", "office", "archive", "text", "audio", "video", "image"
+                "pdf", "docx", "office", "text", "audio", "video", "image"
             ):
                 raise SystemExit(f"unexpected registry: {tuple(registry)!r}")
             forbidden = {
@@ -65,8 +65,6 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "neocortex.capabilities.formats.image.route",
                 "neocortex.capabilities.formats.image.route",
                 "neocortex.capabilities.formats.office.route",
-                "neocortex.capabilities.formats.archive.route",
-                "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.text.text_route",
                 "neocortex.capabilities.formats.audio.route",
                 "neocortex.capabilities.formats.video.route",
@@ -118,8 +116,6 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "neocortex.capabilities.formats.docx.route",
                 "neocortex.capabilities.formats.image.route",
                 "neocortex.capabilities.formats.image.route",
-                "neocortex.capabilities.formats.archive.route",
-                "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.audio.route",
                 "neocortex.capabilities.formats.video.route",
             }
@@ -158,8 +154,6 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "neocortex.capabilities.formats.docx.route",
                 "neocortex.capabilities.formats.image.route",
                 "neocortex.capabilities.formats.image.route",
-                "neocortex.capabilities.formats.archive.route",
-                "neocortex.capabilities.formats.archive.route",
                 "neocortex.capabilities.formats.audio.route",
             }
             loaded = forbidden.intersection(sys.modules)
@@ -170,7 +164,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             print("SELECTION_ISOLATED:" + expression)
         """
 
-        for expression in ("pdf", "docx,office,archive,audio,video,image"):
+        for expression in ("pdf", "docx,office,audio,video,image"):
             with self.subTest(selection=expression):
                 completed = _run_isolated(script, NEOCORTEX_TEST_SELECTION=expression)
                 self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -190,7 +184,6 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "pdf": "neocortex.capabilities.formats.pdf.pdf_route",
                 "docx": "neocortex.capabilities.formats.docx.route",
                 "image": "neocortex.capabilities.formats.image.route",
-                "archive": "neocortex.capabilities.formats.archive.route",
                 "office": "neocortex.capabilities.formats.office.route",
                 "audio": "neocortex.capabilities.formats.audio.route",
                 "video": "neocortex.capabilities.formats.video.route",
@@ -199,13 +192,11 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             canonical_module_names = {
                 "docx": "neocortex.capabilities.formats.docx.route",
                 "image": "neocortex.capabilities.formats.image.route",
-                "archive": "neocortex.capabilities.formats.archive.route",
             }
             class_names = {
                 "pdf": ("PdfRoute", "PdfRouteConfig"),
                 "docx": ("DocxRoute", "DocxRouteConfig"),
                 "image": ("ImageRoute", "ImageRouteConfig"),
-                "archive": ("ArchiveRoute", "ArchiveRouteConfig"),
                 "office": ("OfficeRoute", "OfficeRouteConfig"),
                 "audio": ("AudioRoute", "AudioRouteConfig"),
                 "video": ("VideoRoute", "VideoRouteConfig"),
@@ -309,7 +300,6 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             "pdf",
             "docx",
             "office",
-            "archive",
             "text",
             "audio",
             "video",

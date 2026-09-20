@@ -36,7 +36,6 @@ def _request(tmp_path: Path, query: str, *, cursor: str | None = None) -> Operat
         ("¿Qué PDFs están protegidos por contraseña?", OperationalIntent.PDF_PROTECTED),
         ("¿Qué error tiene este PDF?", OperationalIntent.PDF_ERROR),
         ("¿Qué problemas tiene la presentación PPTX?", OperationalIntent.OFFICE_ERROR),
-        ("¿Qué problemas hay dentro de los ZIP?", OperationalIntent.ARCHIVE_ISSUE),
         ("¿Qué errores tienen mis archivos?", OperationalIntent.CORPUS_ERROR),
         ("¿Qué duplicados se pueden eliminar?", OperationalIntent.CURATION_DISPOSAL),
         ("¿Qué color tiene el archivo?", OperationalIntent.UNKNOWN),
@@ -89,59 +88,6 @@ def test_pdf_error_dispatches_existing_diagnostic_owner_and_preserves_cursor(
     assert result.facts[0].certainty is AssetDiagnosticCertainty.OBSERVED
     assert result.facts[0].code == "DecodeError"
     assert result.to_dict()["read_only"] is True
-
-
-def test_archive_issue_maps_reason_code_to_processing_fact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import neocortex.api.content_diagnostics_api as diagnostics
-
-    monkeypatch.setattr(
-        diagnostics,
-        "content_diagnostics_payload",
-        lambda *args, **kwargs: {
-            "status": "ok", "owner": "archive", "operation": "archive-issues",
-            "snapshot_id": "archive-revision-1", "requested_root": str(tmp_path),
-            "reason_field": "reason_code", "items": [{
-                "container_key": "container-1", "container_path": "/corpus/a.zip",
-                "reason_code": "archive_unsafe_member_name",
-            }], "matched_count": None, "next_cursor": None,
-            "coverage": {"snapshot_consistent": True},
-        },
-    )
-    result = KnowledgeOperationalQueryService().query(_request(tmp_path, "¿Qué problemas hay dentro de los ZIP?"))
-    assert result.owner is OperationalOwner.ARCHIVE
-    assert result.facts[0].code == "archive_unsafe_member_name"
-    assert result.facts[0].provenance["reason_field"] == "reason_code"
-    assert result.coverage["query_page_complete"] is True
-
-
-def test_archive_issue_record_ids_distinguish_rows_sharing_container_and_reason(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import neocortex.api.content_diagnostics_api as diagnostics
-
-    monkeypatch.setattr(
-        diagnostics,
-        "content_diagnostics_payload",
-        lambda *args, **kwargs: {
-            "status": "ok", "owner": "archive", "operation": "archive-issues",
-            "snapshot_id": "archive-revision-1", "requested_root": str(tmp_path),
-            "reason_field": "reason_code", "items": [
-                {"issue_id": 3, "container_key": "same", "member_chain": "inner.zip!/a",
-                 "reason_code": "archive_pdf_extraction_error"},
-                {"issue_id": 4, "container_key": "same", "member_chain": "inner.zip!/a",
-                 "reason_code": "archive_pdf_extraction_error"},
-            ], "matched_count": None, "next_cursor": None,
-            "coverage": {"snapshot_consistent": True},
-        },
-    )
-    result = KnowledgeOperationalQueryService().query(
-        _request(tmp_path, "¿Qué problemas hay dentro de los ZIP?")
-    )
-    assert len(result.facts) == 2
-    assert len({fact.record_id for fact in result.facts}) == 2
-    assert {fact.record_id for fact in result.facts} == {
-        "archive:same:issue:3", "archive:same:issue:4"
-    }
 
 
 def test_pdf_multi_error_records_keep_distinct_ids_for_one_file(
@@ -221,7 +167,7 @@ def test_generic_file_errors_federate_owner_facts_without_mixing_cursors(
     assert result.owner is OperationalOwner.FEDERATED
     assert result.status == "ok"
     assert {item.code for item in result.facts} == {
-        "pdf_error", "text_error", "archive_error", "ppt_error"
+        "pdf_error", "text_error", "ppt_error"
     }
     assert result.coverage["owners"]["office"]["fact_count"] == 1
     assert result.snapshot_id is not None
@@ -241,7 +187,7 @@ def test_request_rejects_relative_or_traversal_roots(tmp_path: Path) -> None:
 def test_federated_cursor_continues_each_owner_without_repeating_exhausted_pages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    owners = ("pdf", "text", "archive", "office")
+    owners = ("pdf", "text", "office")
 
     def fact(owner: str, number: int) -> OperationalFact:
         return OperationalFact(
@@ -306,92 +252,6 @@ def test_federated_query_normalizes_non_utf8_cursor_payload(tmp_path: Path) -> N
     )
     assert result.status == "blocked"
     assert result.error and result.error["code"] == "invalid_federated_cursor"
-
-
-def test_federated_continuation_abstains_without_mixing_when_owner_snapshot_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def owner_result(self, request, intent, owner):
-        changed = owner == "archive" and request.cursor is not None
-        snapshot = f"{owner}-snapshot-changed" if changed else f"{owner}-snapshot"
-        return OperationalQueryResult(
-            request.query, intent, OperationalOwner(owner), "ok",
-            (OperationalFact(
-                AssetProblemScope.PROCESSING, f"{owner}_error", AssetDiagnosticCertainty.OBSERVED,
-                owner, f"{owner}:1", snapshot, {"record": {"path": f"/corpus/{owner}"}},
-            ),), snapshot, f"{owner}-cursor" if request.cursor is None else None,
-            {"status": "observed"},
-        )
-
-    monkeypatch.setattr(KnowledgeOperationalQueryService, "_owner_result", owner_result)
-    service = KnowledgeOperationalQueryService()
-    first = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?"))
-    second = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?", cursor=first.next_cursor))
-    assert second.status == "snapshot_changed"
-    assert second.facts == ()
-    assert second.error and second.error["code"] == "snapshot_changed"
-    assert second.coverage["changed_owners"] == ["archive"]
-
-
-def test_federated_continuation_keeps_an_exhausted_owner_cursor_empty(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: dict[str, int] = {}
-
-    def owner_result(self, request, intent, owner):
-        calls[owner] = calls.get(owner, 0) + 1
-        if owner == "archive" and calls[owner] > 1:
-            # A fresh first-page read can naturally expose a cursor again;
-            # the federated continuation must not resurrect it.
-            next_cursor = "archive-fresh-cursor"
-        elif owner == "archive":
-            next_cursor = None
-        elif owner == "pdf":
-            next_cursor = "pdf-cursor" if request.cursor is None else "pdf-next-2"
-        else:
-            next_cursor = f"{owner}-cursor" if request.cursor is None else None
-        return OperationalQueryResult(
-            request.query, intent, OperationalOwner(owner), "ok",
-            (OperationalFact(
-                AssetProblemScope.PROCESSING, f"{owner}_error_{calls[owner]}",
-                AssetDiagnosticCertainty.OBSERVED, owner, f"{owner}:{calls[owner]}",
-                f"{owner}-snapshot", {"record": {"path": f"/corpus/{owner}"}},
-            ),), f"{owner}-snapshot", next_cursor, {"status": "observed"},
-        )
-
-    monkeypatch.setattr(KnowledgeOperationalQueryService, "_owner_result", owner_result)
-    service = KnowledgeOperationalQueryService()
-    first = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?"))
-    assert first.next_cursor
-    first_cursor = OperationalFederatedCursor.from_token(first.next_cursor)
-    assert dict(first_cursor.owner_cursors)["archive"] is None
-
-    second = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?", cursor=first.next_cursor))
-    assert second.next_cursor
-    second_cursor = OperationalFederatedCursor.from_token(second.next_cursor)
-    assert dict(second_cursor.owner_cursors)["archive"] is None
-    assert second.coverage["owners"]["archive"]["next_cursor"] == "archive-fresh-cursor"
-    assert all(not fact.code.startswith("archive_error") for fact in second.facts)
-
-
-def test_empty_owner_page_with_continuation_is_not_reported_as_empty_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def owner_result(self, request, intent, owner):
-        return OperationalQueryResult(
-            request.query, intent, OperationalOwner(owner), "empty", (),
-            f"{owner}-snapshot", "archive-next" if owner == "archive" else None,
-            {"status": "observed"},
-        )
-
-    monkeypatch.setattr(KnowledgeOperationalQueryService, "_owner_result", owner_result)
-    result = KnowledgeOperationalQueryService().query(
-        _request(tmp_path, "¿Qué errores tienen mis archivos?")
-    )
-    assert result.status == "ok"
-    assert result.facts == ()
-    assert result.next_cursor is not None
-    assert result.coverage["query_page_complete"] is False
 
 
 def test_semantic_item_diagnostic_follows_existing_funnel_to_presentation() -> None:

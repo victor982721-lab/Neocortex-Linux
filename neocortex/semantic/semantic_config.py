@@ -43,7 +43,6 @@ TEXT_VECTOR_SPACE = "jina-embeddings-v2-base-es-v1"
 TEXT_RETRIEVAL_CALIBRATION_SIGNATURE = "semantic-text-retrieval-abstention-jina-mixed-v2"
 TEXT_RETRIEVAL_CALIBRATION_BACKEND = "fastembed"
 TEXT_RETRIEVAL_SCORE_FLOORS = (
-    ("archive", 0.42),
     ("audio", 0.42),
     ("docx", 0.42),
     ("image", 0.42),

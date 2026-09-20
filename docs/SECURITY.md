@@ -65,10 +65,11 @@ operación path-only deja una ventana TOCTOU y no es aceptable.
 
 ## Papelera Linux objetivo
 
-La foundation `neocortex.safety.kio_trash` ya implementa descubrimiento de
-cliente, preflight de configuración, doble validación de snapshot, timeout,
-diagnósticos acotados y resultado/receipt tipados para `move <origen> trash:/`.
-Permanece desconectada de `--apply`, no promovida y sin prueba contra KIO real.
+La foundation `neocortex.safety.kio_trash` implementa descubrimiento de cliente,
+preflight de configuración, doble validación de snapshot, timeout, diagnósticos
+acotados y resultado/receipt tipados para `move <origen> trash:/`. ZIP Intake la
+usa sólo después de publicar y verificar completamente el sucesor físico; no
+se considera retirado el ZIP original hasta que KIO confirma su movimiento.
 
 La operación es path-bound, por lo que la integración `0.11.x` exige además
 autorización, guard same-filesystem, ledger y reconciliación explícita; no se usa
@@ -107,8 +108,51 @@ ZIP/OOXML/ODT se procesan con límites de miembros, profundidad, tamaño inflado
 tiempo. Se rechazan traversal, paths absolutos, dispositivos y enlaces. PDF,
 Office y media se aíslan mediante procesos acotados cuando corresponde.
 
-Un extractor fallido produce error o cobertura parcial. Nunca se usa texto
-extraído para construir comandos de shell.
+#### ZIP Intake físico
+
+Un ZIP genérico es un embalaje temporal y su contenido se considera hostil. La
+clasificación previa distingue `GENERIC_ZIP` de paquetes atómicos cuya unidad
+funcional es el archivo (`DOCX`, `XLSX`, `PPTX`, ODF, EPUB, APK, JAR, etc.).
+Los paquetes atómicos no se extraen como almacenamiento genérico; un ZIP de
+proyecto o de almacenamiento sí se extrae, incluido el ZIP genérico anidado.
+
+El Intake sólo crea datos: nunca ejecuta `.exe`, ELF, scripts, macros o módulos,
+no invoca intérpretes, no abre aplicaciones externas, no usa `shell=True` y no
+construye comandos con nombres del ZIP. Tampoco confía en permisos del archivo:
+elimina bits ejecutables, setuid/setgid, ACL, capabilities y ownership
+arbitrario; los archivos regulares publicados quedan en `0600` y los
+directorios en `0700` (o la política restrictiva equivalente del host).
+
+Antes de crear cualquier entrada valida estructuralmente que el nombre no sea
+vacío, absoluto, con NUL, `..`, prefijo de unidad/UNC o que escape el destino.
+Rechaza symlinks, hardlinks representables, dispositivos, FIFO, sockets y demás
+special files. Mantiene límites fail-closed para miembros, bytes por miembro y
+totales, ratio, directorio central, profundidad anidada, deadline y espacio
+temporal. Los ZIP cifrados, corruptos, ambiguos o con CRC/EOF/tamaños
+inconsistentes permanecen intactos; no se solicita contraseña ni se publica una
+extracción parcial.
+
+La extracción usa staging privado registrado bajo la raíz de estado, verifica
+el árbol completo y publica una sola vez en un destino determinista. Revalida
+identidad del origen antes de KIO Trash. Una colisión, cambio concurrente,
+cancelación, fallo de publicación o resultado KIO ambiguo deja el origen y
+marca `blocked`/`recovery_required`; nunca usa `unlink`, `rm` o borrado directo.
+Después de publicar, los archivos físicos sucesores se reconcilian con el
+inventario y atraviesan las rutas normales sin una confianza especial por venir
+de ZIP.
+
+`-S/--max-size-mb` se evalúa sobre la metadata de Inventory antes de abrir el
+ZIP: un contenedor mayor al techo queda `skipped_by_size` y no se clasifica ni
+extrae. Un miembro que aparezca tras una extracción se vuelve a evaluar de
+forma independiente. El límite no es retención ni borra evidencia histórica.
+
+Nada de esta política es un antivirus. Impide efectos peligrosos de ingestión y
+acota recursos, pero no demuestra que los bytes regulares extraídos estén libres
+de malware desconocido; las rutas posteriores siguen siendo parsers de datos no
+confiables, bounded y aislados cuando corresponde.
+
+Un extractor fallido produce error o cobertura parcial sin cruzar la frontera
+de publicación. Nunca se usa texto extraído para construir comandos de shell.
 
 ### Código
 
@@ -151,11 +195,11 @@ release o plataforma no sustituye esa revisión.
   propio contrato;
 - una lectura que altera sidecars invalida esa corrida como evidencia.
 
-`--factory-reset` sólo puede retirar SQLite operativas y sidecars,
-materializaciones de ZIP administradas dentro de la raíz de estado seleccionada
-(incluido `state/archive-materialized`), cachés y metadatos de procesamiento.
-Las salidas de APIs standalone en destinos externos quedan fuera. Protege
-corpus y ZIP originales, instalación, modelos y `installation-receipts`;
+`--factory-reset` sólo puede retirar SQLite operativas y sidecars, workspaces de
+staging de ZIP Intake que estén bajo la raíz de estado seleccionada, cachés y
+metadatos de procesamiento. Las salidas de APIs standalone en destinos externos
+quedan fuera. Protege corpus y ZIP originales, instalación, modelos y
+`installation-receipts`;
 desvincula symlinks dentro de la raíz sin tocar sus targets y no sigue ni borra
 targets externos. Un bloqueo produce un error con conteos parciales y código de
 salida distinto de cero.

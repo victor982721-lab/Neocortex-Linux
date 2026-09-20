@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 from neocortex.api.cli import cli_audio, cli_video
-from neocortex.capabilities.formats.archive.route import _xml_text
 from neocortex.capabilities.formats.office.extraction import extract_office_document
 from neocortex.capabilities.formats.office.models import OfficeExtractionError
 from neocortex.capabilities.formats.pdf import pdf_isolation
@@ -35,8 +34,6 @@ def test_xml_declarations_are_rejected_before_entity_expansion() -> None:
         safe_xml_fromstring(payload)
     with pytest.raises(UnsafeXmlDeclarationError):
         tuple(safe_xml_iterparse(io.BytesIO(payload), events=("end",)))
-    with pytest.raises(UnsafeXmlDeclarationError):
-        _xml_text(payload)
 
 
 def test_office_rejects_special_zip_members(tmp_path: Path) -> None:

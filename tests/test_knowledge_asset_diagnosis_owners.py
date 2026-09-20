@@ -10,7 +10,6 @@ import sqlite3
 
 import pytest
 
-from neocortex.capabilities.formats.archive.state import initialize_archive_state
 from neocortex.deduplication.domain.evidence import (
     PROOF_VERSION, DuplicateGroupProof, DuplicateMemberProof,
 )
@@ -80,34 +79,6 @@ def test_duplicate_diagnosis_requires_complete_exact_current_member_proofs(
         assert report.diagnostic_observations[0].evidence_refs[0].owner == "inventory"
     assert report.to_dict() == inspect_knowledge_asset_health(fixture.paths, fixture.query).to_dict()
     assert _state_fingerprint(fixture.paths.inventory.parent) == before
-
-
-def test_zip_ott_identification_is_consumed_from_the_archive_owner(tmp_path: Path) -> None:
-    fixture = _create_health_fixture(tmp_path)
-    assert fixture.paths.archive is not None
-    initialize_archive_state(fixture.paths.archive)
-    with closing(sqlite3.connect(fixture.paths.archive)) as connection, connection:
-        connection.execute(
-            """INSERT INTO containers(container_key,path,size,mtime_ns,birthtime_ns,
-            processing_signature,status,last_seen_run_id,updated_ns)
-            VALUES(?,'/corpus/docs/asset.txt',800,123,-1,'archive-fixture','complete',1,10)""",
-            (fixture.file_key,),
-        )
-        connection.execute(
-            """INSERT INTO archive_logical_documents VALUES(
-            ?,'','application/zip','application/vnd.oasis.opendocument.text-template',
-            'ott','.ott',?,'identified','not_verified','not_verified')""",
-            (fixture.file_key, json.dumps(["mimetype", "content.xml", "META-INF/manifest.xml"])),
-        )
-    _quiesce(fixture.paths.archive)
-    before = _state_fingerprint(fixture.paths.archive.parent)
-    report = inspect_knowledge_asset_health(fixture.paths, fixture.query)
-    codes = {item["code"] for item in report.to_dict()["diagnosis"]["findings"]}
-    assert "logical_format_ott" in codes
-    assert "format_identification_not_disposal_evidence" in codes
-    assert report.diagnostic_observations[0].evidence_refs[0].owner == "archive"
-    assert report.to_dict() == inspect_knowledge_asset_health(fixture.paths, fixture.query).to_dict()
-    assert _state_fingerprint(fixture.paths.archive.parent) == before
 
 
 def test_keeper_preference_factor_survives_a_deterministic_tiebreak(tmp_path: Path) -> None:

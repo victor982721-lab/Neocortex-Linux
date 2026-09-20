@@ -6,95 +6,6 @@ from typing import Final
 
 CAPABILITY_SPEC_PAYLOADS: Final = (
     {
-        "capability_id": "archive",
-        "architecture_family_id": "neocortex.capabilities.formats",
-        "logical_owner_id": "archive",
-        "canonical_module_tree": "neocortex.capabilities.formats.archive",
-        "modules": [
-            {
-                "role": "models",
-                "canonical_module_id": "neocortex.capabilities.formats.archive.models",
-                "public_symbols": ["ArchiveRouteSummary"],
-                "warning_policy": "silent",
-            },
-            {
-                "role": "route",
-                "canonical_module_id": "neocortex.capabilities.formats.archive.route",
-                "public_symbols": [
-                    "ARCHIVE_MIME",
-                    "ARCHIVE_ROUTE_VERSION",
-                    "ArchiveRoute",
-                    "ArchiveRouteConfig",
-                    "ArchiveRouteSummary",
-                ],
-                "warning_policy": "silent",
-            },
-            {
-                "role": "state",
-                "canonical_module_id": "neocortex.capabilities.formats.archive.state",
-                "public_symbols": [
-                    "ARCHIVE_SCHEMA_VERSION",
-                    "archive_database",
-                    "archive_schema_contract",
-                    "initialize_archive_state",
-                ],
-                "warning_policy": "silent",
-            },
-            {
-                "role": "text_worker",
-                "canonical_module_id": "neocortex.capabilities.formats.archive.text_worker",
-                "public_symbols": ["main"],
-                "warning_policy": "silent",
-            },
-        ],
-        "route": {
-            "route_name": "archive",
-            "input_source": "route_candidates",
-            "subject_match_kind": "exact_mime",
-            "subject_value": "application/zip",
-            "route_class": {
-                "module_id": "neocortex.capabilities.formats.archive.route",
-                "symbol_name": "ArchiveRoute",
-            },
-            "config_class": {
-                "module_id": "neocortex.capabilities.formats.archive.route",
-                "symbol_name": "ArchiveRouteConfig",
-            },
-            "summary_class": {
-                "module_id": "neocortex.capabilities.formats.archive.route",
-                "symbol_name": "ArchiveRouteSummary",
-            },
-            "version_symbol": {
-                "module_id": "neocortex.capabilities.formats.archive.route",
-                "symbol_name": "ARCHIVE_ROUTE_VERSION",
-            },
-        },
-        "state": {
-            "state_owner_id": "archive",
-            "state_store_id": "sqlite:archive.sqlite3",
-            "database_name": "archive.sqlite3",
-            "knowledge_path_attribute": "archive",
-            "expected_schema_version": 1,
-            "knowledge_read_kind": "documents",
-            "knowledge_capture_mode": "if_present",
-            "state_module_id": "neocortex.capabilities.formats.archive.state",
-            "schema_module_id": "neocortex.capabilities.formats.archive.state",
-            "schema_version_symbol": {
-                "module_id": "neocortex.capabilities.formats.archive.state",
-                "symbol_name": "ARCHIVE_SCHEMA_VERSION",
-            },
-            "storage_engine": "sqlite",
-        },
-        "test_roots": [
-            "tests/test_archive_cli.py",
-            "tests/test_archive_route.py",
-            "tests/test_archive_text_worker_unit.py",
-            "tests/test_capability_registry.py",
-            "tests/test_route_schema_contracts.py",
-        ],
-        "executable_module_ids": ["neocortex.capabilities.formats.archive.text_worker"],
-    },
-    {
         "capability_id": "audio",
         "architecture_family_id": "neocortex.capabilities.formats",
         "logical_owner_id": "audio",
@@ -192,7 +103,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             "tests/test_audio_route.py",
             "tests/test_capability_registry.py",
             "tests/test_cli_audio_surface.py",
-            "tests/test_route_schema_contracts.py",
         ],
         "executable_module_ids": [],
     },
@@ -547,7 +457,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             "tests/test_application_config_media_projections.py",
             "tests/test_capability_registry.py",
             "tests/test_office_route.py",
-            "tests/test_route_schema_contracts.py",
             "tests/test_text_derivation_route.py",
             "tests/test_text_implementation_identity.py",
         ],
@@ -658,7 +567,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
         "test_roots": [
             "tests/test_capability_registry.py",
             "tests/test_cli_video_surface.py",
-            "tests/test_route_schema_contracts.py",
             "tests/test_video_content_types.py",
             "tests/test_video_frames.py",
             "tests/test_video_knowledge_integration.py",

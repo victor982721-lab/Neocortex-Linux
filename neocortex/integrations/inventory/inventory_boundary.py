@@ -110,7 +110,6 @@ _CANONICAL_STATE_DATABASE_NAMES = (
     "video.sqlite3",
     "image.sqlite3",
     "semantic.sqlite3",
-    "archive.sqlite3",
     "text.sqlite3",
 )
 

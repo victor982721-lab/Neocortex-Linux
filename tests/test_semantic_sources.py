@@ -495,70 +495,6 @@ def _create_office_text_state(state_directory: Path) -> str:
     return file_key
 
 
-def _create_archive_text_state(state_directory: Path) -> str:
-    file_key = "archive:member-fixture"
-    text = "protección diferencial dentro de un ZIP anidado"
-    with sqlite3.connect(state_directory / "archive.sqlite3") as connection:
-        connection.executescript(
-            """
-            CREATE TABLE containers(
-                container_key TEXT PRIMARY KEY,path TEXT,status TEXT
-            );
-            CREATE TABLE documents(
-                file_key TEXT PRIMARY KEY,container_key TEXT,path TEXT,
-                container_path TEXT,member_chain TEXT,member_path TEXT,
-                archive_depth INTEGER,content_kind TEXT,media_type TEXT,
-                size INTEGER,mtime_ns INTEGER,birthtime_ns INTEGER,
-                processing_signature TEXT,status TEXT,text_xxh3_128 TEXT,
-                text_chars INTEGER,text_zlib BLOB,last_seen_run_id INTEGER
-            );
-            """
-        )
-        connection.execute(
-            "INSERT INTO containers VALUES(?,?,?)",
-            ("container-fixture", "C:/corpus/outer.zip", "complete"),
-        )
-        connection.execute(
-            "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                file_key,
-                "container-fixture",
-                "C:/corpus/outer.zip!/inner.zip!/relay.txt",
-                "C:/corpus/outer.zip",
-                "inner.zip!/relay.txt",
-                "relay.txt",
-                2,
-                "txt",
-                "text/plain",
-                48,
-                60,
-                -1,
-                "archive-route-fixture-v1",
-                "indexed",
-                fingerprint_text(text).xxh3_128,
-                len(text),
-                zlib.compress(text.encode("utf-8")),
-                9,
-            ),
-        )
-    return file_key
-
-
-def test_archive_text_adapter_preserves_nested_virtual_provenance(tmp_path: Path) -> None:
-    file_key = _create_archive_text_state(tmp_path)
-
-    records = tuple(iter_text_source_records(tmp_path, "archive"))
-
-    assert len(records) == 1
-    record = records[0]
-    assert record.item.item_id == f"item:archive:{file_key}"
-    assert record.item.path == "C:/corpus/outer.zip!/inner.zip!/relay.txt"
-    assert record.section.section_kind == "archive_member"
-    assert record.section.provenance["inside_zip"] is True
-    assert record.section.provenance["archive_depth"] == 2
-    assert record.section.provenance["member_chain"] == "inner.zip!/relay.txt"
-
-
 def test_generic_text_adapter_preserves_physical_provenance_and_email_title(
     tmp_path: Path,
 ) -> None:
@@ -657,7 +593,6 @@ def test_generic_text_adapter_preserves_physical_provenance_and_email_title(
     assert record.item.provenance["source_title"] == ("Prueba funcional del alimentador norte")
     assert record.item.provenance["source_author"] == ("Operacion <operacion@example.test>")
     assert record.section.text == f"{text}\n"
-    assert record.section.provenance["inside_zip"] is False
 
 
 @pytest.mark.parametrize(

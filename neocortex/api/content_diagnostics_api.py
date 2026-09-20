@@ -26,20 +26,19 @@ from neocortex.knowledge.knowledge_read_budget import (
 )
 
 CONTENT_DIAGNOSTICS_SCHEMA = "neocortex.content-diagnostics/v1"
-CONTENT_DIAGNOSTIC_OWNERS = ("pdf", "text", "archive")
+CONTENT_DIAGNOSTIC_OWNERS = ("pdf", "text")
 CONTENT_DIAGNOSTICS_V2_SCHEMA = "neocortex.content-diagnostics/v2"
 CONTENT_DIAGNOSTIC_V2_OWNERS = (
     "pdf",
     "docx",
     "office",
-    "archive",
     "text",
     "audio",
     "video",
     "image",
 )
-_OPERATIONS = {"pdf": "pdf-diagnostics", "text": "text-errors", "archive": "archive-issues"}
-_REASON_FIELDS = {"pdf": "error_type", "text": "error_type", "archive": "reason_code"}
+_OPERATIONS = {"pdf": "pdf-diagnostics", "text": "text-errors"}
+_REASON_FIELDS = {"pdf": "error_type", "text": "error_type"}
 
 
 def _optional_string(value: str | None, label: str, maximum: int) -> None:
@@ -62,7 +61,7 @@ def validate_content_diagnostics_request(
     """Validate before any owner access and return the explicit lexical root."""
 
     if owner not in CONTENT_DIAGNOSTIC_OWNERS:
-        raise ValueError("owner must be pdf, text or archive")
+        raise ValueError("owner must be pdf or text")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1_000:
         raise ValueError("limit must be between 1 and 1000")
     if not isinstance(source_root, (str, Path)):
@@ -153,8 +152,8 @@ def content_diagnostics_payload(
 ) -> dict[str, object]:
     """Read one bounded page without creating, migrating or repairing owners.
 
-    ``reason`` is an exact extractor error_type for PDF/Text and reason_code
-    for Archive. Root coverage is explicitly separate from filtered matches.
+    ``reason`` is an exact extractor error_type for PDF/Text. Root coverage is
+    explicitly separate from filtered matches.
     Missing owners never imply zero errors or complete extraction.
     """
 
@@ -247,20 +246,8 @@ def content_diagnostics_payload(
             next_cursor = page.next_cursor
             snapshot = page.snapshot_id
             source_coverage = read_text_coverage(path, path_scope=root)
-        else:
-            from neocortex.capabilities.formats.archive.state import list_archive_issues
-
-            archive_page = list_archive_issues(
-                path, limit, path_scope=root, container_key=file_key,
-                container_fragment=path_fragment, reason_code=reason, cursor=cursor,
-            )
-            items = [item.to_dict() for item in archive_page.items]
-            matched = None  # The Archive producer does not expose a population count.
-            next_cursor = archive_page.next_cursor
-            revision = archive_page.scope.get("owner_revision")
-            if not isinstance(revision, str):
-                raise TypeError("Archive diagnostic producer omitted its owner revision")
-            snapshot = revision
+        else:  # pragma: no cover - owner validation above is exhaustive
+            raise ValueError("unsupported diagnostic owner")
         verify_snapshot(path, before)
         if source_coverage is not None and (
             source_coverage.get("available") is not True
@@ -296,7 +283,7 @@ def content_diagnostics_payload(
         if "changed" in lowered:
             return _failed(payload, "state_changed", message)
         # The PDF reader reports an incompatible schema as ValueError, unlike
-        # Text and Archive. That is persisted-owner state, not bad caller input.
+        # Text. That is persisted-owner state, not bad caller input.
         if owner == "pdf" and "pdf diagnostics require schema " in lowered:
             return _failed(payload, "owner_state_unavailable", message, status="blocked")
         return _failed(payload, "invalid_request", message)
@@ -439,7 +426,6 @@ _V2_EXPECTED_SCHEMAS = {
     "pdf": 13,
     "docx": 6,
     "office": 3,
-    "archive": 2,
     "text": 2,
     "audio": 2,
     "video": 2,
@@ -450,7 +436,6 @@ _V2_REQUIRED_TABLES = {
     "pdf": ("documents", "page_errors"),
     "docx": ("documents", "document_diagnostics"),
     "office": ("documents",),
-    "archive": ("containers", "archive_issues"),
     "text": ("documents",),
     "audio": ("documents",),
     "video": ("documents", "frames"),
@@ -461,7 +446,6 @@ _V2_REQUIRED_COLUMNS = {
     "pdf": {"documents": ("file_key", "path", "status"), "page_errors": ("file_key", "page_number", "error_type")},
     "docx": {"documents": ("file_key", "path", "status"), "document_diagnostics": ("file_key", "ordinal", "code")},
     "office": {"documents": ("file_key", "path", "status")},
-    "archive": {"containers": ("container_key", "path", "status"), "archive_issues": ("issue_id", "container_key", "reason_code")},
     "text": {"documents": ("file_key", "path", "status")},
     "audio": {"documents": ("file_key", "path", "status")},
     "video": {"documents": ("file_key", "path", "status"), "frames": ("file_key", "frame_index", "timestamp_ms")},
@@ -697,22 +681,6 @@ def _v2_base_query(owner: str) -> str:
             FROM documents d
             WHERE d.error_type IS NOT NULL OR d.status IN ('error','failed','partial','processing')
         """
-    if owner == "archive":
-        return """
-            SELECT 'archive:container:' || c.container_key AS record_id,
-                   c.container_key AS file_key, c.path AS path,
-                   COALESCE(c.error_type,c.status) AS code, c.error_message AS message,
-                   c.status AS status, c.updated_ns AS updated_ns,
-                   'container' AS locator_kind, NULL AS locator_value
-            FROM containers c
-            WHERE c.error_type IS NOT NULL OR c.status IN ('error','failed','partial','processing')
-            UNION ALL
-            SELECT 'archive:issue:' || i.container_key || ':' || i.issue_id AS record_id,
-                   i.container_key AS file_key, c.path AS path, i.reason_code AS code,
-                   i.detail AS message, c.status AS status, i.created_ns AS updated_ns,
-                   'member' AS locator_kind, i.member_chain AS locator_value
-            FROM archive_issues i JOIN containers c ON c.container_key=i.container_key
-        """
     if owner == "text":
         return """
             SELECT 'text:document:' || d.file_key AS record_id,
@@ -816,12 +784,7 @@ def _v2_query_owner(
             "locator_kind": _v2_text(row["locator_kind"], maximum=128),
             "locator": _v2_text(row["locator_value"], maximum=2_048),
         }
-        if owner == "archive":
-            item["container_key"] = item["file_key"]
-            item["container_path"] = item["path"]
-            if item["locator_kind"] == "member":
-                item["member_chain"] = item["locator"]
-        elif owner == "pdf" and item["locator_kind"] == "page":
+        if owner == "pdf" and item["locator_kind"] == "page":
             try:
                 item["page_number"] = int(str(item["locator"]))
             except (TypeError, ValueError):

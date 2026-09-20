@@ -2,7 +2,6 @@
 
 Canonical route registry targets remain owned by their product namespaces:
 ``neocortex.capabilities.formats.audio``,
-``neocortex.capabilities.formats.archive``,
 ``neocortex.capabilities.formats.docx``,
 ``neocortex.capabilities.formats.image``,
 ``neocortex.capabilities.formats.office``,

@@ -24,10 +24,9 @@ def _hit(evidence, *, snippet, owner="pdf", resource="file:one"):
         "rank": 1, "resource": {"resource_id": resource, "owner": owner,
             "source_kind": owner, "current_path": "/fixture/report.pdf"},
         "revision": {"revision_id": "revision:one", "state": "current", "processing_signature": "owner-v1"},
-        "evidence": {"evidence_id": evidence, "page": 0, "snippet": snippet,
+            "evidence": {"evidence_id": evidence, "page": 0, "snippet": snippet,
             "method": "extracted", "identifiers": [
                 {"namespace": "source_identity", "value": "1:2"},
-                {"namespace": "archive_depth", "value": "0"},
             ]},
     }
 
@@ -50,7 +49,6 @@ def test_global_budget_sources_unique_and_substantive(transport):
     assert len(first["sources"]) == 1
     assert len(first["citations"]) == 2
     assert all(len(citation["excerpt"]) >= 240 for citation in first["citations"])
-    assert "archive_depth" not in serialize_context_response(first)
     assert "selected_hits" not in first and "result" not in first
     assert first["budget"]["characters_used"] == emitted_response_characters(first, transport)
     assert first["budget"]["characters_used"] <= 10000

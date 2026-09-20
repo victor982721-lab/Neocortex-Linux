@@ -44,7 +44,6 @@ class OperationalIntent(StrEnum):
     PDF_PROTECTED = "pdf_protected"
     PDF_ERROR = "pdf_error"
     OFFICE_ERROR = "office_error"
-    ARCHIVE_ISSUE = "archive_issue"
     CORPUS_ERROR = "corpus_error"
     CURATION_DISPOSAL = "curation_disposal"
     UNKNOWN = "unknown"
@@ -55,7 +54,6 @@ class OperationalOwner(StrEnum):
     DOCX = "docx"
     TEXT = "text"
     OFFICE = "office"
-    ARCHIVE = "archive"
     AUDIO = "audio"
     VIDEO = "video"
     IMAGE = "image"
@@ -321,7 +319,6 @@ def detect_operational_intent(query: str) -> OperationalIntent:
     )
     pdf = "pdf" in text
     office = any(token in text for token in ("ppt", "pptx", "powerpoint", "presentacion", "office"))
-    archive = any(token in text for token in ("zip", "archivo comprim", "archive"))
     disposal = any(
         token in text
         for token in ("elimin", "borr", "papelera", "disposal", "deletion", "duplicad")
@@ -330,8 +327,6 @@ def detect_operational_intent(query: str) -> OperationalIntent:
         return OperationalIntent.PDF_PROTECTED
     if disposal:
         return OperationalIntent.CURATION_DISPOSAL
-    if archive:
-        return OperationalIntent.ARCHIVE_ISSUE
     if office and error:
         return OperationalIntent.OFFICE_ERROR
     if pdf and error:
@@ -377,8 +372,6 @@ def _diagnostic_record_id(owner: str, item: Mapping[str, Any], code: str) -> str
     prefix = f"{owner}:{_record_component(key)}"
     issue_id = item.get("issue_id")
     if issue_id is not None:
-        # Archive issue_id is the owner key; it distinguishes rows sharing a
-        # container, reason and member chain.
         return _record_component(f"{prefix}:issue:{issue_id}", maximum=2048)
     page_number = item.get("page_number")
     member_chain = item.get("member_chain") or item.get("member_path")
@@ -737,7 +730,6 @@ class KnowledgeOperationalQueryService:
         try:
             if request.response_version == 2 and intent in {
                 OperationalIntent.PDF_ERROR,
-                OperationalIntent.ARCHIVE_ISSUE,
                 OperationalIntent.OFFICE_ERROR,
                 OperationalIntent.CORPUS_ERROR,
             }:
@@ -745,13 +737,10 @@ class KnowledgeOperationalQueryService:
                 if selected_owner is None:
                     selected_owner = {
                         OperationalIntent.PDF_ERROR: "pdf",
-                        OperationalIntent.ARCHIVE_ISSUE: "archive",
                     }.get(intent, "all")
                 return self.content_diagnostics(request, owner=selected_owner)
             if intent is OperationalIntent.PDF_ERROR:
                 return self._format_diagnostics(request, intent, "pdf")
-            if intent is OperationalIntent.ARCHIVE_ISSUE:
-                return self._format_diagnostics(request, intent, "archive")
             if intent is OperationalIntent.PDF_PROTECTED:
                 return self._review_candidates(
                     request, intent, route_name="pdf", recommendation="keep_protected"
@@ -766,7 +755,7 @@ class KnowledgeOperationalQueryService:
                 return self._federated_query(
                     request,
                     intent,
-                    ("pdf", "text", "archive", "office"),
+                    ("pdf", "text", "office"),
                 )
             return self._review_candidates(request, intent, recommendation="deletion_candidate")
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -1058,8 +1047,6 @@ class KnowledgeOperationalQueryService:
             if intent is OperationalIntent.OFFICE_ERROR:
                 result = self._presentation_text_result(result)
             return result
-        if owner == "archive":
-            return self._format_diagnostics(request, OperationalIntent.ARCHIVE_ISSUE, owner)
         if owner == "office":
             return self._review_candidates(
                 request,
@@ -1259,7 +1246,7 @@ class KnowledgeOperationalQueryService:
     ) -> OperationalQueryResult:
         """Compatibility wrapper retained for callers of the old seam."""
 
-        return self._federated_query(request, intent, ("pdf", "text", "archive", "office"))
+        return self._federated_query(request, intent, ("pdf", "text", "office"))
 
 
 __all__ = [
