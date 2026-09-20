@@ -14,7 +14,6 @@ from neocortex.deduplication import (
     FileChangedError,
     FileSnapshot,
     FULL_ALGORITHM,
-    files_equal_exact,
     stat_matches_snapshot,
 )
 from neocortex.foundation.hash_compat import HASH_ALGORITHM_128

@@ -108,37 +108,6 @@ def _redlist_reason_code(value: object) -> str:
     return "unspecified"
 
 
-class RedlistPrepassError(RuntimeError):
-    """A redlist effect stopped with bounded per-action recovery evidence."""
-
-    def __init__(
-        self,
-        *,
-        matched: int,
-        applied: int,
-        failed: int,
-        protected: int,
-        blocked: int = 0,
-        failed_pre_effect: int = 0,
-        recovery_required: int = 0,
-        reason_codes: dict[str, int] | None = None,
-        examples: tuple[dict[str, object], ...] = (),
-    ) -> None:
-        self.matched = matched
-        self.applied = applied
-        self.failed = failed
-        self.protected = protected
-        self.blocked = blocked
-        self.failed_pre_effect = failed_pre_effect
-        self.recovery_required = recovery_required
-        self.reason_codes = {} if reason_codes is None else dict(reason_codes)
-        self.examples = tuple(examples)
-        super().__init__(
-            "redlist prepass incomplete: "
-            f"matched={matched} applied={applied} failed={failed} "
-            f"blocked={blocked} protected={protected} "
-            f"failed_pre_effect={failed_pre_effect} recovery_required={recovery_required}"
-        )
 _LEGAL_METADATA_NAMES = frozenset(
     {
         "authors",
