@@ -60,6 +60,7 @@ class FrameworkConfig:
     # does not shift the long-standing positional construction order above.
     run_max_items: int | None = field(default=None, kw_only=True)
     run_max_bytes: int | None = field(default=None, kw_only=True)
+    max_file_bytes: int | None = field(default=None, kw_only=True)
     run_time_budget_seconds: float | None = field(default=None, kw_only=True)
     retry_recoverable_errors: bool = field(default=False, kw_only=True)
     selection: CandidateSelection = field(default_factory=CandidateSelection)
@@ -285,6 +286,7 @@ class InitialRunResult:
     organization_apply: OrganizationApplySummary | None = None
     route_failures: dict[str, str] = field(default_factory=dict, kw_only=True)
     maintenance: dict[str, object] = field(default_factory=dict, kw_only=True)
+    size_admission: dict[str, object] = field(default_factory=dict, kw_only=True)
 
 @dataclass(frozen=True, slots=True)
 class RouteOnlyRunResult:
@@ -329,4 +331,7 @@ class ActionSummary:
     empty_directories_trashed: int = 0
     empty_directory_skips: int = 0
     errors: int = 0
+    size_skipped_files: int = field(default=0, kw_only=True)
+    size_skipped_bytes: int = field(default=0, kw_only=True)
+    max_file_bytes: int | None = field(default=None, kw_only=True)
 # endregion [02]

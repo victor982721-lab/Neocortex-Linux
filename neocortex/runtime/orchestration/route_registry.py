@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, is_dataclass, replace
 import heapq
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, TYPE_CHECKING
+from typing import Any, Callable, Literal, Mapping, TYPE_CHECKING, cast
 
 from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER as BUILTIN_ROUTE_ORDER,
@@ -61,6 +61,10 @@ class RouteExecutionContext:
     resource_coordinator: GlobalResourceCoordinator | None
     cancellation: "CancellationToken"
     source_published: Callable[[str], None] | None = None
+    # The field is optional for legacy route doubles.  Built-in adapters use
+    # the FrameworkConfig value through ``effective_route_config`` below so a
+    # direct route invocation cannot widen the global ceiling.
+    max_file_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +172,7 @@ def _candidate_route_workload(
 
     capability = content_capability_by_id(route_name)
     selection = context.config.selection
-    max_file_bytes = getattr(context.config, f"{route_name}_max_file_bytes", None)
+    max_file_bytes = effective_route_max_file_bytes(context.config, route_name)
     max_documents = getattr(context.config, f"{route_name}_max_documents", None)
     if max_documents is not None and (type(max_documents) is not int or max_documents < 1):
         raise ValueError(f"{route_name} max documents is invalid")
@@ -202,7 +206,9 @@ def _candidate_route_workload(
                     for previous in prior_selectors
                 ):
                     continue
-                if max_file_bytes is not None and snapshot.size > max_file_bytes:
+                if max_file_bytes is not None and not _size_is_admitted(
+                    snapshot.size, max_file_bytes
+                ):
                     continue
                 yield max(0, int(snapshot.size))
             prior_selectors.append(mime)
@@ -217,6 +223,64 @@ def _candidate_route_workload(
 
 def _candidate_workload_estimator(route_name: str) -> Callable[[RouteExecutionContext], RouteWorkload]:
     return lambda context: _candidate_route_workload(context, route_name)
+
+
+def _validated_route_limit(value: object, *, name: str) -> int | None:
+    """Validate only configured limits, preserving lazy route imports."""
+
+    if value is None:
+        return None
+    # Keep the route registry import-light: most direct route calls have no
+    # global/local limit and must not import the dedup package merely to
+    # construct an adapter.  Configured values use the canonical validator.
+    from neocortex.deduplication.admission import validate_max_file_bytes
+
+    try:
+        return validate_max_file_bytes(value)  # type: ignore[arg-type]
+    except ValueError as exc:
+        raise ValueError(f"{name} is invalid") from exc
+
+
+def _size_is_admitted(size: int, max_file_bytes: int) -> bool:
+    from neocortex.deduplication.admission import size_is_admitted
+
+    return size_is_admitted(size, max_file_bytes)
+
+
+def effective_route_max_file_bytes(config: "FrameworkConfig", route_name: str) -> int | None:
+    """Return ``min(global, route-specific)`` for one built-in route.
+
+    The global option is a run admission ceiling, not a replacement for the
+    existing route-local safety limit.  Keeping the combination at this
+    projection boundary means direct ``--route`` calls and ``--all`` share the
+    same contract, while each route owner continues to receive its ordinary
+    config field.
+    """
+
+    global_limit = _validated_route_limit(
+        getattr(config, "max_file_bytes", None), name="global max_file_bytes"
+    )
+    route_limit = _validated_route_limit(
+        getattr(config, f"{route_name}_max_file_bytes", None),
+        name=f"{route_name} max_file_bytes",
+    )
+    if global_limit is None:
+        return route_limit
+    if route_limit is None:
+        return global_limit
+    return min(global_limit, route_limit)
+
+
+def effective_route_config(config: "FrameworkConfig", route_name: str) -> "FrameworkConfig":
+    """Project a route config with its effective global/local size ceiling."""
+
+    field_name = f"{route_name}_max_file_bytes"
+    effective = effective_route_max_file_bytes(config, route_name)
+    if getattr(config, field_name, None) == effective:
+        return config
+    # FrameworkConfig is frozen, but keeping this replacement at the
+    # orchestration boundary avoids mutating the shared application config.
+    return cast("FrameworkConfig", replace(cast(Any, config), **{field_name: effective}))
 
 
 # endregion [01b]
@@ -235,14 +299,14 @@ def pdf_route_config_from_framework(config: "FrameworkConfig") -> "PdfRouteConfi
         pdf_route_config_from_application,
     )
 
-    return pdf_route_config_from_application(config)
+    return pdf_route_config_from_application(effective_route_config(config, "pdf"))
 
 
 def _run_pdf(context: RouteExecutionContext) -> object:
     from neocortex.deduplication import DedupIndex
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute
 
-    config = context.config
+    config = effective_route_config(context.config, "pdf")
     with DedupIndex(config.dedup_database) as dedup_index:
         summary = PdfRoute(
             pdf_route_config_from_framework(config),
@@ -271,7 +335,9 @@ def image_route_config_from_framework(
         image_route_config_from_application,
     )
 
-    return image_route_config_from_application(config, root=root)
+    return image_route_config_from_application(
+        effective_route_config(config, "image"), root=root
+    )
 
 
 def _run_image(context: RouteExecutionContext) -> object:
@@ -282,7 +348,7 @@ def _run_image(context: RouteExecutionContext) -> object:
 
     from neocortex.capabilities.formats.image.route import ImageRoute
 
-    config = context.config
+    config = effective_route_config(context.config, "image")
     # A fatal Image admission stops only its own executor. Framework retains
     # the original route error and decides how sibling routes should proceed.
     cancellation = CancellationToken(parent=context.cancellation)
@@ -316,14 +382,14 @@ def docx_route_config_from_framework(config: "FrameworkConfig") -> "DocxRouteCon
         docx_route_config_from_application,
     )
 
-    return docx_route_config_from_application(config)
+    return docx_route_config_from_application(effective_route_config(config, "docx"))
 
 
 def _run_docx(context: RouteExecutionContext) -> object:
     from neocortex.capabilities.formats.docx.route import DocxRoute
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
-    config = context.config
+    config = effective_route_config(context.config, "docx")
     gate = (
         None
         if context.resource_coordinator is None
@@ -352,14 +418,14 @@ def office_route_config_from_framework(
         office_route_config_from_application,
     )
 
-    return office_route_config_from_application(config)
+    return office_route_config_from_application(effective_route_config(config, "office"))
 
 
 def _run_office(context: RouteExecutionContext) -> object:
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
     from neocortex.capabilities.formats.office.route import OfficeRoute
 
-    config = context.config
+    config = effective_route_config(context.config, "office")
     gate = (
         None
         if context.resource_coordinator is None
@@ -388,7 +454,7 @@ def archive_route_config_from_framework(
         archive_route_config_from_application,
     )
 
-    return archive_route_config_from_application(config)
+    return archive_route_config_from_application(effective_route_config(config, "archive"))
 
 
 def _run_archive(context: RouteExecutionContext) -> object:
@@ -399,8 +465,9 @@ def _run_archive(context: RouteExecutionContext) -> object:
         from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
         gate = CoordinatedMemoryGate(context.resource_coordinator, "archive")
+    config = effective_route_config(context.config, "archive")
     summary = ArchiveRoute(
-        archive_route_config_from_framework(context.config),
+        archive_route_config_from_framework(config),
         context.framework_state,
         context.run_id,
         progress=context.progress,
@@ -420,7 +487,7 @@ def text_route_config_from_framework(config: "FrameworkConfig") -> "TextRouteCon
         text_route_config_from_application,
     )
 
-    return text_route_config_from_application(config)
+    return text_route_config_from_application(effective_route_config(config, "text"))
 
 
 def _run_text(context: RouteExecutionContext) -> object:
@@ -432,8 +499,9 @@ def _run_text(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "text")
     )
+    config = effective_route_config(context.config, "text")
     summary = TextRoute(
-        text_route_config_from_framework(context.config),
+        text_route_config_from_framework(config),
         context.framework_state,
         context.run_id,
         progress=context.progress,
@@ -453,14 +521,14 @@ def audio_route_config_from_framework(config: "FrameworkConfig") -> "AudioRouteC
         audio_route_config_from_application,
     )
 
-    return audio_route_config_from_application(config)
+    return audio_route_config_from_application(effective_route_config(config, "audio"))
 
 
 def _run_audio(context: RouteExecutionContext) -> object:
     from neocortex.capabilities.formats.audio.route import AudioRoute
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
-    config = context.config
+    config = effective_route_config(context.config, "audio")
     gate = (
         None
         if context.resource_coordinator is None
@@ -495,7 +563,9 @@ def video_route_config_from_framework(
         video_route_config_from_application,
     )
 
-    return video_route_config_from_application(config, root=root)
+    return video_route_config_from_application(
+        effective_route_config(config, "video"), root=root
+    )
 
 
 def _run_video(context: RouteExecutionContext) -> object:
@@ -507,8 +577,9 @@ def _run_video(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "video")
     )
+    config = effective_route_config(context.config, "video")
     summary = VideoRoute(
-        video_route_config_from_framework(context.config, root=context.root),
+        video_route_config_from_framework(config, root=context.root),
         context.framework_state,
         context.run_id,
         progress=context.progress,

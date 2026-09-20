@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Protocol
 
+from ..admission import size_is_admitted, validate_max_file_bytes
 from ..domain.errors import FileChangedError, KeeperConflictError
 from ..domain.evidence import (
     KEEPER_POLICY_VERSION,
@@ -434,6 +435,7 @@ class PlanningSession:
         fingerprint: FingerprintProvider,
         capture_snapshot: SnapshotCapture,
         exact_matcher: ExactMatcher,
+        max_file_bytes: int | None = None,
         keeper_policy: KeeperPolicy | None = None,
         keeper_validation: Callable[[], None] | None = None,
         fingerprint_batch: FingerprintBatchProvider | None = None,
@@ -444,6 +446,7 @@ class PlanningSession:
         self._scan_id = scan_id
         self._preview_limit = preview_limit
         self._exact_compare = exact_compare
+        self._max_file_bytes = validate_max_file_bytes(max_file_bytes)
         self._fingerprint = fingerprint
         self._fingerprint_batch = fingerprint_batch
         self._checkpoint = checkpoint
@@ -455,7 +458,17 @@ class PlanningSession:
             raise TypeError("keeper_validation must be callable")
         self._keeper_validation = keeper_validation
         self._counters = _PlanCounters()
-        self._work = _PlanningProgress(progress, index.size_candidate_file_count(scan_id))
+        candidate_count = (
+            index.size_candidate_file_count(scan_id)
+            if self._max_file_bytes is None
+            else index.size_candidate_file_count(
+                scan_id, max_file_bytes=self._max_file_bytes,
+            )
+        )
+        self._work = _PlanningProgress(
+            progress,
+            candidate_count,
+        )
         self._groups = _PlanAccumulator(
             index,
             scan_id,
@@ -469,7 +482,14 @@ class PlanningSession:
             self._checkpoint()
         self._work.start()
         self._index.begin_planning_fingerprints()
-        for size, _raw_count in self._index.size_collision_sizes(self._scan_id):
+        sizes = (
+            self._index.size_collision_sizes(self._scan_id)
+            if self._max_file_bytes is None
+            else self._index.size_collision_sizes(
+                self._scan_id, max_file_bytes=self._max_file_bytes,
+            )
+        )
+        for size, _raw_count in sizes:
             if self._checkpoint is not None:
                 self._checkpoint()
             self._plan_size(size)
@@ -503,6 +523,12 @@ class PlanningSession:
         return "partial" if self._counters.failures else "complete"
 
     def _plan_size(self, size: int) -> None:
+        # Keep this guard even though the SQL candidate query applies the
+        # same predicate.  It makes the admission boundary fail closed for
+        # alternate index implementations and keeps oversize snapshots out of
+        # every subsequent planning stage.
+        if not size_is_admitted(size, self._max_file_bytes):
+            return
         self._index.clear_planning_fingerprints()
         if not self._fingerprint_size_members(size):
             return
@@ -548,9 +574,18 @@ class PlanningSession:
 
     def _capture_size_members(self, size: int) -> None:
         observations: list[tuple[FileSnapshot, KeeperRank, int]] = []
-        for recorded in self._index.snapshots_by_size(self._scan_id, size):
+        recorded_members = (
+            self._index.snapshots_by_size(self._scan_id, size)
+            if self._max_file_bytes is None
+            else self._index.snapshots_by_size(
+                self._scan_id, size, max_file_bytes=self._max_file_bytes,
+            )
+        )
+        for recorded in recorded_members:
             if self._checkpoint is not None:
                 self._checkpoint()
+            if not size_is_admitted(recorded.size, self._max_file_bytes):
+                continue
             try:
                 snapshot = self._capture_snapshot(recorded.path)
                 if not self._matches_recorded(snapshot, recorded):

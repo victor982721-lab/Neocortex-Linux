@@ -11,6 +11,7 @@ import json
 import hashlib
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -25,6 +26,10 @@ from neocortex.deduplication import (
 from neocortex.deduplication.inventory.index import (
     DEFAULT_EXCLUDED_PATHS,
     InventoryExclusionPolicy,
+)
+from neocortex.deduplication.admission import (
+    size_is_admitted,
+    validate_max_file_bytes,
 )
 from neocortex.progress import ProgressCallback
 from neocortex.platform.content_types import DETECTOR_VERSION, DetectedType, detect_content_type
@@ -230,6 +235,7 @@ class FrameworkActions(IdentifyActionsMixin, RedlistActionsMixin, EffectsActions
         scan_id: int,
         *,
         apply: bool,
+        max_file_bytes: int | None = None,
         verify_bytes_before_trash: bool = True,
         excluded_paths: Iterable[str | Path] = DEFAULT_EXCLUDED_PATHS,
         exclusion_policy: InventoryExclusionPolicy | None = None,
@@ -244,6 +250,12 @@ class FrameworkActions(IdentifyActionsMixin, RedlistActionsMixin, EffectsActions
         self._run_id = run_id
         self._scan_id = scan_id
         self._apply = apply
+        # This ceiling is a run-scoped admission decision.  Inventory remains
+        # complete; every content-aware action owner consults this same value
+        # before opening a source or consulting any content cache.
+        self._max_file_bytes = validate_max_file_bytes(max_file_bytes)
+        self._size_skipped_files = 0
+        self._size_skipped_bytes = 0
         # Destructive mode never relies on a non-cryptographic fingerprint
         # alone, even when candidate reduction used the fast policy.
         self._verify_bytes_before_trash = apply or verify_bytes_before_trash
@@ -297,6 +309,38 @@ class FrameworkActions(IdentifyActionsMixin, RedlistActionsMixin, EffectsActions
         }
         self._redlist_batch_diagnostics: dict[str, object] = {}
 
+    def _size_is_admitted(self, snapshot: FileSnapshot) -> bool:
+        """Return the single global admission decision for one snapshot."""
+
+        return size_is_admitted(snapshot.size, self._max_file_bytes)
+
+    def _record_size_skip(
+        self,
+        summary: ActionSummary,
+        snapshot: FileSnapshot,
+    ) -> ActionSummary:
+        """Record bounded run metrics without making a file-level decision durable.
+
+        Older focused action fixtures may construct an ``ActionSummary`` from
+        before the global-size fields existed.  The conditional update keeps
+        that compatibility seam while allowing the runtime model to expose
+        ``size_skipped_files``/``size_skipped_bytes`` when present.
+        """
+
+        self._size_skipped_files += 1
+        self._size_skipped_bytes += max(0, int(snapshot.size))
+        return replace(
+            summary,
+            size_skipped_files=summary.size_skipped_files + 1,
+            size_skipped_bytes=summary.size_skipped_bytes + max(0, int(snapshot.size)),
+            max_file_bytes=self._max_file_bytes,
+        )
+
+    def _with_size_limit(self, summary: ActionSummary) -> ActionSummary:
+        """Attach the run-scoped ceiling to summaries that expose the field."""
+
+        return replace(summary, max_file_bytes=self._max_file_bytes)
+
 
 
 
@@ -344,7 +388,9 @@ class FrameworkActions(IdentifyActionsMixin, RedlistActionsMixin, EffectsActions
         # that pass instead of invoking the detector a second time.  Direct
         # FrameworkActions callers that skip Identify retain the historical
         # one-shot fallback below for compatibility and focused action tests.
-        summary = self._identify_summary or ActionSummary(apply_actions=self._apply)
+        summary = self._with_size_limit(
+            self._identify_summary or ActionSummary(apply_actions=self._apply)
+        )
         started = time.perf_counter_ns()
         summary = self._trash_empty_files(plan, summary)
         self._record_phase("empty-files", started, summary)
@@ -518,6 +564,7 @@ def apply_exact_dedupe_plan(
     run_id: int,
     plan: DedupPlan,
     *,
+    max_file_bytes: int | None = None,
     trash_backend: KioTrashBackend | None = None,
     excluded_paths: Iterable[str | Path] = DEFAULT_EXCLUDED_PATHS,
     exclusion_policy: InventoryExclusionPolicy | None = None,
@@ -543,6 +590,7 @@ def apply_exact_dedupe_plan(
         run_id,
         plan.scan_id,
         apply=True,
+        max_file_bytes=max_file_bytes,
         verify_bytes_before_trash=True,
         excluded_paths=excluded_paths,
         exclusion_policy=exclusion_policy,

@@ -121,12 +121,16 @@ class DedupIndex(
             scanner_type=InventoryScanner,
         )
 
-    def size_collision_groups(self, scan_id: int) -> Iterator[tuple[FileSnapshot, ...]]:
-        yield from iter_size_collision_groups(
-            self._connection,
-            scan_id,
-            snapshot_resolver=snapshot_path,
-        )
+    def size_collision_groups(
+        self, scan_id: int, *, max_file_bytes: int | None = None,
+    ) -> Iterator[tuple[FileSnapshot, ...]]:
+        if max_file_bytes is None:
+            yield from iter_size_collision_groups(self._connection, scan_id, snapshot_resolver=snapshot_path)
+        else:
+            yield from iter_size_collision_groups(
+                self._connection, scan_id, snapshot_resolver=snapshot_path,
+                max_file_bytes=max_file_bytes,
+            )
 
     def close(self) -> None:
         ConnectionLifecycleMixin.close(self)

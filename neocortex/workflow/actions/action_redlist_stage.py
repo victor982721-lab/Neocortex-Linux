@@ -279,6 +279,12 @@ class RedlistActionsMixin:
                     bytes_override=0,
                 )
                 for snapshot in page:
+                    # Redlist matching is an action/effect decision.  Keep
+                    # the global content-admission gate ahead of it so an
+                    # oversize source remains untouched and cannot acquire a
+                    # redlist ledger row under this run's temporary policy.
+                    if not self._size_is_admitted(snapshot):
+                        continue
                     policy_path = self._normalized_paths.get(snapshot.path, snapshot.path)
                     token = redlist_match(policy_path)
                     if token is None:

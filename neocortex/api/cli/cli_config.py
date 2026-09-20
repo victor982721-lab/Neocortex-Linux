@@ -35,6 +35,7 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         resume_run_id=args.resume_run,
         run_max_items=getattr(args, "run_max_items", None),
         run_max_bytes=getattr(args, "run_max_bytes", None),
+        max_file_bytes=getattr(args, "max_file_bytes", None),
         run_time_budget_seconds=getattr(args, "run_time_budget_seconds", None),
         retry_recoverable_errors=bool(getattr(args, "all", False)),
         selection=CandidateSelection.from_values(

@@ -578,6 +578,21 @@ Las coincidencias se envían a Papelera con el backend KIO receipt-bound; sin
 una extensión canónica cuando el detector bounded tiene evidencia fuerte; un
 destino existente, drift o una identidad fuera del root producen abstención.
 
+### Límite global de tamaño
+
+`-S10` limita a 10 MB y `-S100` a 100 MB. El valor usa megabytes decimales
+(`1 MB = 1,000,000 bytes`). Las formas `-S10` y `-S 10` son equivalentes;
+`--max-size-mb 10` es la forma larga canónica. El límite se aplica globalmente
+a `--all` después del inventario: los archivos mayores quedan fuera de las
+fases posteriores sin modificarse. Sin `-S` ni `--max-size-mb`, la corrida es
+ilimitada.
+
+```bash
+Neocortex --root "$Root" --all --apply -S10
+Neocortex --root "$Root" --all --apply -S 10
+Neocortex --root "$Root" --all --apply --max-size-mb 100
+```
+
 Ejemplo de una copia controlada:
 
 ```bash

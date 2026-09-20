@@ -44,6 +44,33 @@ from neocortex.deduplication.inventory.index import validate_inventory_root
 class IdentifyActionsMixin:
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
 
+    def _content_type_total(self) -> int:
+        """Count non-empty snapshots admitted by this run's size ceiling.
+
+        The inventory remains the complete physical universe.  This metadata
+        pass only establishes the denominator for Identify progress; it does
+        not stat, open, hash, or inspect any source payload.
+        """
+
+        if self._max_file_bytes is None:
+            return self._index.file_count(self._scan_id) - self._index.file_count_by_size(
+                self._scan_id, 0
+            )
+        total = 0
+        after_path = ""
+        while True:
+            page = self._index.snapshots_page(
+                self._scan_id,
+                after_path=after_path,
+                limit=TRASH_BATCH_SIZE,
+            )
+            if not page:
+                return total
+            after_path = page[-1].path
+            for snapshot in page:
+                if snapshot.size > 0 and self._size_is_admitted(snapshot):
+                    total += 1
+
     def identify_and_normalize(self) -> ActionSummary:
         """Run bounded Identify/Normalize before any duplicate planning.
 
@@ -64,7 +91,7 @@ class IdentifyActionsMixin:
         try:
             summary = self._validate_extensions(
                 None,
-                ActionSummary(apply_actions=self._apply),
+                self._with_size_limit(ActionSummary(apply_actions=self._apply)),
                 publish_routes=False,
                 prune_cache=False,
             )
@@ -99,9 +126,7 @@ class IdentifyActionsMixin:
         # content-type denominator, but never subtract proposed duplicate
         # files: unlike an observed effect, a dry-run proposal leaves those
         # physical sources available for extraction.
-        total = self._index.file_count(self._scan_id) - self._index.file_count_by_size(
-            self._scan_id, 0
-        )
+        total = self._content_type_total()
         emit_progress(
             self._progress,
             ProgressEvent(
@@ -186,14 +211,17 @@ class IdentifyActionsMixin:
                 break
             after_path = page[-1].path
             if self._reserve_work is not None and not reuse_identified:
+                admitted_prefix_bytes = 0
+                for snapshot in page:
+                    if self._size_is_admitted(snapshot):
+                        admitted_prefix_bytes += min(
+                            CONTENT_PREFIX_BYTES, max(0, int(snapshot.size))
+                        )
                 self._reserve_snapshot_work(
                     "content-prefix",
                     page,
                     items=0,
-                    bytes_override=sum(
-                        min(CONTENT_PREFIX_BYTES, max(0, int(snapshot.size)))
-                        for snapshot in page
-                    ),
+                    bytes_override=admitted_prefix_bytes,
                 )
             if reuse_identified:
                 # The integrated route pass normally consumes the in-memory
@@ -217,8 +245,9 @@ class IdentifyActionsMixin:
                         route_candidates.append(route_candidate)
                         if len(route_candidates) >= 1000:
                             flush_route_candidates()
-                    processed += 1
-                    report_progress()
+                    if self._size_is_admitted(planned):
+                        processed += 1
+                        report_progress()
                 continue
 
             admitted: list[FileSnapshot] = []
@@ -232,7 +261,7 @@ class IdentifyActionsMixin:
                 )
                 if is_admitted:
                     admitted.append(planned)
-                else:
+                elif self._size_is_admitted(planned):
                     processed += 1
                     report_progress()
             if not admitted:
@@ -446,7 +475,7 @@ class IdentifyActionsMixin:
                 "content-types",
                 "Validación de tipos completada",
                 processed,
-                processed,
+                total,
                 "archivos",
                 True,
             ),
@@ -486,6 +515,7 @@ class IdentifyActionsMixin:
             planned,
             summary,
             count_files_checked=not reuse_identified,
+            record_size_skip=not reuse_identified,
         )
         if not admitted:
             return summary, None, None
@@ -542,7 +572,15 @@ class IdentifyActionsMixin:
         summary: ActionSummary,
         *,
         count_files_checked: bool = True,
+        record_size_skip: bool = True,
     ) -> tuple[ActionSummary, bool]:
+        # This must be the first branch: Inventory already captured the size,
+        # so an oversize source cannot reach redlist evaluation, protected
+        # checks, stat refresh, cache lookup, detector, or route publication.
+        if not self._size_is_admitted(planned):
+            if record_size_skip:
+                summary = self._record_size_skip(summary, planned)
+            return summary, False
         if self._redlist_is_excluded(planned.path):
             # A redlisted source that remains physically present because a
             # hard boundary or a pre-effect block refused Trash is still a

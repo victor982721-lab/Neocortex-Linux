@@ -70,6 +70,21 @@ class ExplicitArgumentParser(argparse.ArgumentParser):
         return parsed, extras
 
 
+class _CanonicalSizeHelpFormatter(argparse.HelpFormatter):
+    """Render both global size spellings with their value placeholder.
+
+    ``argparse`` normally renders an optional with multiple spellings as
+    ``-S, --max-size-mb MB``.  The compact global contract is intentionally
+    documented as ``-S MB, --max-size-mb MB`` so that attached ``-S10`` and
+    separated ``-S 10`` usage are both obvious in ``--help``.
+    """
+
+    def _format_action_invocation(self, action):
+        if getattr(action, "dest", None) == "max_file_bytes":
+            return "-S MB, --max-size-mb MB"
+        return super()._format_action_invocation(action)
+
+
 class _MachineJsonModeAction(argparse.Action):
     """Keep ``--machine-json`` compatible while exposing a detail opt-in.
 
@@ -150,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="Neocortex",
         description="Run the integrated NeoCortex pre-index framework.",
         allow_abbrev=False,
+        formatter_class=_CanonicalSizeHelpFormatter,
     )
     # Keep the existing flat option surface while admitting explicit
     # control-plane commands.  This is intentionally not a subparser: all
@@ -177,6 +193,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=default_corpus_root(),
         help="root directory to scan; defaults to the platform corpus root",
+    )
+    parser.add_argument(
+        "-S",
+        "--max-size-mb",
+        dest="max_file_bytes",
+        type=decimal_megabytes,
+        default=None,
+        metavar="MB",
+        help=(
+            "global maximum file size admitted to content processing, in "
+            "decimal megabytes; without this option the limit is unlimited"
+        ),
     )
     parser.add_argument(
         "--state-directory",

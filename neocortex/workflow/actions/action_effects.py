@@ -276,6 +276,34 @@ class EffectsActionsMixin:
             expected_snapshots,
             reference_snapshots,
         )
+        if self._max_file_bytes is not None:
+            # Effect callers must provide the inventory-bound snapshot.  Do
+            # not stat an omitted candidate here: an oversize source is
+            # rejected from the action frontier using metadata already held
+            # by the caller, with no ledger row, hash, or backend call.
+            admitted_batch: list[tuple[str, str]] = []
+            admitted_expected: list[FileSnapshot | None] = []
+            admitted_references: list[FileSnapshot | None] = []
+            for item, planned, reference in zip(
+                batch, expected, references, strict=True
+            ):
+                if (
+                    planned is None
+                    or not self._size_is_admitted(planned)
+                    or (
+                        reference is not None
+                        and not self._size_is_admitted(reference)
+                    )
+                ):
+                    continue
+                admitted_batch.append(item)
+                admitted_expected.append(planned)
+                admitted_references.append(reference)
+            batch = tuple(admitted_batch)
+            expected = tuple(admitted_expected)
+            references = tuple(admitted_references)
+            if not batch:
+                return 0, 0, 0
         # Reserve before preservation-prefix reads and before any digest or
         # exact keeper comparison.  The bound covers the candidate and its
         # reference once; callers may use a stricter owner-level multiplier.
@@ -1251,6 +1279,8 @@ class EffectsActionsMixin:
             bytes_override=max(0, int(plan.reclaimable_bytes)) * 2,
         )
         self._duplicate_work_reserved = True
+        size_skipped = 0
+        effective_candidates = candidates
         summary = replace(
             summary,
             duplicate_candidates=summary.duplicate_candidates + candidates,
@@ -1276,7 +1306,7 @@ class EffectsActionsMixin:
             return (
                 ProgressMetric(
                     "planned",
-                    max(0, candidates - skipped) if not self._apply else 0,
+                    max(0, effective_candidates - skipped) if not self._apply else 0,
                 ),
                 ProgressMetric(
                     "applied",
@@ -1357,13 +1387,34 @@ class EffectsActionsMixin:
             report()
 
         for group in self._index.iter_duplicate_groups(plan.scan_id):
+            # The planner normally receives the same admission contract, but
+            # keep the effect owner fail-closed for direct callers and stale
+            # plans.  Do this before keeper validation, full hashing, exact
+            # comparison, or action-ledger creation.  A temporary run limit
+            # must not turn an oversize source into a duplicate skip/error.
+            admitted_redundant = tuple(
+                redundant
+                for redundant in group.redundant
+                if self._size_is_admitted(redundant)
+            )
+            oversize_count = len(group.redundant) - len(admitted_redundant)
+            if not self._size_is_admitted(group.keep):
+                oversize_count = len(group.redundant)
+                admitted_redundant = ()
+            if oversize_count:
+                size_skipped += oversize_count
+                effective_candidates = max(0, effective_candidates - oversize_count)
+                completed += oversize_count
+                report()
+            if not admitted_redundant:
+                continue
             evidence = (
                 f"{HASH_ALGORITHM_128}={group.full_fingerprint};"
                 f"byte-for-byte={str(self._verify_bytes_before_trash).lower()};"
                 f"keep={group.keep.path}"
             )
             _keep_now, keep_error = self._validated_duplicate_keeper(group.keep)
-            for redundant in group.redundant:
+            for redundant in admitted_redundant:
                 if _is_legal_metadata_name(redundant.path):
                     fail_candidate(
                         redundant.path,
@@ -1395,6 +1446,15 @@ class EffectsActionsMixin:
         # inventory successor before this generator is exhausted would make
         # ``plan.scan_id`` resolve to a generation without its duplicate plan.
         self._flush_deferred_reconciliation()
+        if size_skipped:
+            # Size admission is not an action failure.  Keep the candidate
+            # and skip counters scoped to the eligible duplicate population.
+            summary = replace(
+                summary,
+                duplicate_candidates=max(
+                    0, summary.duplicate_candidates - size_skipped
+                ),
+            )
         emit_progress(
             self._progress,
             ProgressEvent(

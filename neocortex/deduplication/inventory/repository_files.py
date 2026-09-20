@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ..domain.models import FileSnapshot
 from ..domain.fingerprint_observation import FingerprintObservation
+from ..admission import validate_max_file_bytes
 from ..fingerprinting import FULL_ALGORITHM, snapshot_path
 from .scan import id_blob as _id_blob
 from .repository_scans import resolve_scan_id
@@ -19,16 +20,20 @@ def iter_size_collision_groups(
     scan_id: int,
     *,
     snapshot_resolver: Callable[[str], FileSnapshot] | None = None,
+    max_file_bytes: int | None = None,
 ) -> Iterator[tuple[FileSnapshot, ...]]:
     """Yield physically distinct, still-current files from equal-size buckets."""
 
     scan_id = resolve_scan_id(connection, scan_id)
+    max_file_bytes = validate_max_file_bytes(max_file_bytes)
     resolver = snapshot_path if snapshot_resolver is None else snapshot_resolver
+    size_clause = "AND size <= ?" if max_file_bytes is not None else ""
+    size_parameters: tuple[int, ...] = () if max_file_bytes is None else (max_file_bytes,)
     sizes = connection.execute(
-        "SELECT size FROM files WHERE scan_id=? AND size>0 "
+        "SELECT size FROM files WHERE scan_id=? AND size>0 " + size_clause + " "
         "GROUP BY size HAVING COUNT(*) > 1 "
         "ORDER BY size",
-        (scan_id,),
+        (scan_id, *size_parameters),
     )
     for (size,) in sizes:
         rows = connection.execute(
@@ -294,34 +299,53 @@ class FileRepositoryMixin:
             is not None
         )
 
-    def size_candidate_file_count(self, scan_id: int) -> int:
+    def size_candidate_file_count(
+        self, scan_id: int, *, max_file_bytes: int | None = None,
+    ) -> int:
+        """Count duplicate-planning candidates admitted by this run's ceiling."""
+
         scan_id = resolve_scan_id(self._connection, scan_id)
+        max_file_bytes = validate_max_file_bytes(max_file_bytes)
+        size_clause = "AND size <= ?" if max_file_bytes is not None else ""
+        size_parameters: tuple[int, ...] = () if max_file_bytes is None else (max_file_bytes,)
         row = self._connection.execute(
             "SELECT COALESCE(SUM(candidate_count), 0) FROM ("
             "SELECT COUNT(*) AS candidate_count FROM files WHERE scan_id=? AND size>0 "
+            + size_clause + " "
             "GROUP BY size HAVING COUNT(*) > 1)",
-            (scan_id,),
+            (scan_id, *size_parameters),
         ).fetchone()
         return int(row[0])
 
-    def size_collision_sizes(self, scan_id: int) -> Iterator[tuple[int, int]]:
+    def size_collision_sizes(
+        self, scan_id: int, *, max_file_bytes: int | None = None,
+    ) -> Iterator[tuple[int, int]]:
         """Stream size buckets without materializing their file members."""
 
         scan_id = resolve_scan_id(self._connection, scan_id)
+        max_file_bytes = validate_max_file_bytes(max_file_bytes)
+        size_clause = "AND size <= ?" if max_file_bytes is not None else ""
+        size_parameters: tuple[int, ...] = () if max_file_bytes is None else (max_file_bytes,)
         rows = self._connection.execute(
             "SELECT size,COUNT(*) FROM files WHERE scan_id=? AND size>0 "
+            + size_clause + " "
             "GROUP BY size HAVING COUNT(*)>1 ORDER BY size",
-            (scan_id,),
+            (scan_id, *size_parameters),
         )
         for size, count in rows:
             yield int(size), int(count)
 
-    def snapshots_by_size(self, scan_id: int, size: int) -> Iterator[FileSnapshot]:
+    def snapshots_by_size(
+        self, scan_id: int, size: int, *, max_file_bytes: int | None = None,
+    ) -> Iterator[FileSnapshot]:
         scan_id = resolve_scan_id(self._connection, scan_id)
+        max_file_bytes = validate_max_file_bytes(max_file_bytes)
+        size_clause = "AND size <= ?" if max_file_bytes is not None else ""
+        size_parameters: tuple[int, ...] = () if max_file_bytes is None else (max_file_bytes,)
         rows = self._connection.execute(
             "SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns "
-            "FROM files WHERE scan_id=? AND size=? ORDER BY path",
-            (scan_id, size),
+            "FROM files WHERE scan_id=? AND size=? " + size_clause + " ORDER BY path",
+            (scan_id, size, *size_parameters),
         )
         for path, volume, file_id, item_size, mtime, birth in rows:
             yield FileSnapshot(

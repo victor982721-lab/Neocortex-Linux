@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from typing import cast
 
+from ..admission import validate_max_file_bytes
 from ..domain.models import DedupPlan, FileSnapshot
 from ..domain.fingerprint_observation import ExactComparisonObservation, FingerprintObservation, FingerprintReadFailure
 from ..domain.errors import FileChangedError
@@ -35,6 +37,9 @@ from neocortex.progress import ProgressCallback
 # region [02] Implementación
 
 
+_MAX_FILE_BYTES_UNSET = object()
+
+
 class DedupPlanner:
     """Build content evidence while hashing only physical size-collision candidates."""
 
@@ -47,6 +52,7 @@ class DedupPlanner:
         resource_gate=None,
         cancellation=None,
         max_workers: int | None = None,
+        max_file_bytes: int | None = None,
     ):
         self._index = index
         self._keeper_policy = keeper_policy or KeeperPolicy()
@@ -61,6 +67,7 @@ class DedupPlanner:
         self._resource_gate = resource_gate
         self._cancellation = cancellation
         self._max_workers = max_workers
+        self._max_file_bytes = validate_max_file_bytes(max_file_bytes)
         self._scan_device: str | None = None
 
     def _checkpoint(self) -> None:
@@ -169,11 +176,20 @@ class DedupPlanner:
         progress: ProgressCallback | None = None,
         preview_limit: int | None = 0,
         exact_compare: bool = True,
+        max_file_bytes: int | None | object = _MAX_FILE_BYTES_UNSET,
     ) -> DedupPlan:
         if preview_limit is not None and preview_limit < 0:
             raise ValueError("preview_limit cannot be negative")
+        effective_max_file_bytes = (
+            self._max_file_bytes
+            if max_file_bytes is _MAX_FILE_BYTES_UNSET
+            else validate_max_file_bytes(cast(int | None, max_file_bytes))
+        )
         if self._resource_gate is not None:
-            return self._plan_admitted(scan_id, progress=progress, preview_limit=preview_limit, exact_compare=exact_compare)
+            return self._plan_admitted(
+                scan_id, progress=progress, preview_limit=preview_limit,
+                exact_compare=exact_compare, max_file_bytes=effective_max_file_bytes,
+            )
         from neocortex.runtime.control.global_resources import (
             CoordinatedMemoryGate, GlobalResourceCoordinator, GlobalResourceLimits,
             resource_gate, resource_scope,
@@ -182,20 +198,27 @@ class DedupPlanner:
         if shared is not None:
             self._resource_gate = shared
             try:
-                return self._plan_admitted(scan_id, progress=progress, preview_limit=preview_limit, exact_compare=exact_compare)
+                return self._plan_admitted(
+                    scan_id, progress=progress, preview_limit=preview_limit,
+                    exact_compare=exact_compare, max_file_bytes=effective_max_file_bytes,
+                )
             finally:
                 self._resource_gate = None
         coordinator = GlobalResourceCoordinator(("dedup",), GlobalResourceLimits(), cancellation=self._cancellation)
         with resource_scope(coordinator):
             self._resource_gate = CoordinatedMemoryGate(coordinator, "dedup", cancellation=self._cancellation)
             try:
-                return self._plan_admitted(scan_id, progress=progress, preview_limit=preview_limit, exact_compare=exact_compare)
+                return self._plan_admitted(
+                    scan_id, progress=progress, preview_limit=preview_limit,
+                    exact_compare=exact_compare, max_file_bytes=effective_max_file_bytes,
+                )
             finally:
                 self._resource_gate = None
 
     def _plan_admitted(
         self, scan_id: int, *, progress: ProgressCallback | None,
         preview_limit: int | None, exact_compare: bool,
+        max_file_bytes: int | None,
     ) -> DedupPlan:
         self._checkpoint()
         scan_id = self._index.current_scan_id(scan_id)
@@ -209,6 +232,7 @@ class DedupPlanner:
             progress=progress,
             preview_limit=preview_limit,
             exact_compare=exact_compare,
+            max_file_bytes=max_file_bytes,
             fingerprint=self._fingerprint,
             capture_snapshot=snapshot_path,
             exact_matcher=self._compare_exact,

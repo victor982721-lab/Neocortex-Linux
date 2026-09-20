@@ -764,6 +764,7 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
             organization_apply=work.organization_apply,
             route_failures=work.route_failures,
             maintenance=dict(work.maintenance),
+            size_admission=dict(work.size_admission),
         )
 
     def _require_publication_ready(self) -> None:

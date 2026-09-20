@@ -72,6 +72,9 @@ class InitialWork:
     organization_apply: OrganizationApplySummary | None
     route_failures: dict[str, str] = field(default_factory=dict)
     maintenance: dict[str, object] = field(default_factory=dict)
+    # Aggregate, run-scoped admission evidence.  It deliberately remains a
+    # mapping rather than a new persistence table or per-file status.
+    size_admission: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

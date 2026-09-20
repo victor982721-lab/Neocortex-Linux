@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from neocortex.deduplication import DedupIndex, DedupPlan, DedupPlanner, InventoryExclusionPolicy
+from neocortex.deduplication.admission import size_is_admitted, validate_max_file_bytes
 from neocortex.integrations.inventory.inventory_coordinator import (
     PreparedInventory,
     prepare_inventory,
@@ -41,6 +43,52 @@ if TYPE_CHECKING:
     from neocortex.integrations.inventory.inventory_boundary import NormalInventoryBoundary
     from neocortex.persistence.framework_state_writer import FrameworkState
     from neocortex.runtime.orchestration.run_manifest import RunBudget
+
+
+def collect_size_admission_metrics(
+    snapshots: Iterable[object],
+    max_file_bytes: int | None,
+    *,
+    total_files: int | None = None,
+) -> dict[str, object]:
+    """Aggregate global size admission from metadata-only snapshots.
+
+    The canonical validation/decision lives in
+    :mod:`neocortex.deduplication.admission`; this helper only shapes the
+    bounded run/status counters consumed by the orchestration owner.
+    """
+
+    limit = validate_max_file_bytes(max_file_bytes)
+    if total_files is not None and (type(total_files) is not int or total_files < 0):
+        raise ValueError("total_files must be a non-negative integer or null")
+    if limit is None and total_files is not None:
+        return {
+            "total_files": total_files,
+            "eligible_files": total_files,
+            "size_skipped_files": 0,
+            "size_skipped_bytes": 0,
+            "max_file_bytes": None,
+        }
+    total = eligible = skipped = skipped_bytes = 0
+    for snapshot in snapshots:
+        total += 1
+        size = int(snapshot.size)  # type: ignore[attr-defined]
+        if size_is_admitted(size, limit):
+            eligible += 1
+        else:
+            skipped += 1
+            skipped_bytes += size
+    if total_files is not None and total != total_files:
+        raise RuntimeError(
+            f"size-admission inventory count mismatch: expected {total_files}, observed {total}"
+        )
+    return {
+        "total_files": total,
+        "eligible_files": eligible,
+        "size_skipped_files": skipped,
+        "size_skipped_bytes": skipped_bytes,
+        "max_file_bytes": limit,
+    }
 
 
 class InitialPipelineMixin(_FrameworkOrchestratorOwner):
@@ -162,6 +210,9 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             redlist_policy_digest,
             redlist_policy_payload,
         )
+        max_file_bytes = validate_max_file_bytes(
+            getattr(self.config, "max_file_bytes", None)
+        )
 
         return {
             "route": self.config.route,
@@ -172,6 +223,12 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             },
             "run_max_items": getattr(self.config, "run_max_items", None),
             "run_max_bytes": getattr(self.config, "run_max_bytes", None),
+            # Persist None explicitly: it is the reproducible unlimited mode.
+            "max_file_bytes": max_file_bytes,
+            "size_admission": {
+                "max_file_bytes": max_file_bytes,
+                "unlimited": max_file_bytes is None,
+            },
             "run_time_budget_seconds": getattr(
                 self.config,
                 "run_time_budget_seconds",
@@ -503,6 +560,12 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         boundary.verify()
         if inventory.inventory_policy_signature != boundary.exclusion_policy.signature:
             raise RuntimeError("inventory result escaped its effective exclusion boundary")
+        self._record_size_admission_metrics(
+            state,
+            run_id,
+            dedup_index,
+            inventory,
+        )
         self._reserve_lifecycle_stage_work(
             state,
             run_id,
@@ -513,6 +576,32 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             worker="inventory",
         )
         return inventory
+
+    def _record_size_admission_metrics(
+        self,
+        state: FrameworkState,
+        run_id: int,
+        dedup_index: DedupIndex,
+        inventory: PreparedInventory,
+    ) -> None:
+        """Publish one metadata-only size decision after complete inventory."""
+
+        max_file_bytes = validate_max_file_bytes(
+            getattr(self.config, "max_file_bytes", None)
+        )
+        metrics = collect_size_admission_metrics(
+            dedup_index.snapshots(inventory.scan.scan_id),
+            max_file_bytes,
+            total_files=int(inventory.scan.files_seen),
+        )
+        self._size_admission_metrics = metrics
+        state.record_event(
+            run_id,
+            "info",
+            "size-admission",
+            "Política global de tamaño aplicada después del inventario",
+            metrics,
+        )
 
     def _plan_initial_dedup(
         self,
@@ -537,6 +626,9 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             keeper_validation=selection.verify,
             resource_gate=resource_gate("dedup", self._active_coordinator),
             cancellation=self._cancellation,
+            max_file_bytes=validate_max_file_bytes(
+                getattr(self.config, "max_file_bytes", None)
+            ),
         ).plan(
             scan_id,
             progress=self.progress,
@@ -617,6 +709,9 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             scan_id,
             apply=self.config.apply_actions,
             verify_bytes_before_trash=True,
+            max_file_bytes=validate_max_file_bytes(
+                getattr(self.config, "max_file_bytes", None)
+            ),
             excluded_paths=excluded_paths,
             exclusion_policy=inventory_policy,
             progress=self.progress,
@@ -807,6 +902,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             organization_plan,
             organization_apply,
             dict(getattr(self, "_unavailable_routes", {})),
+            size_admission=dict(getattr(self, "_size_admission_metrics", {})),
         )
 
     @staticmethod
