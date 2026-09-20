@@ -239,10 +239,10 @@ def test_release_identifier_is_version_sha_python_and_platform_bound() -> None:
         "0.10.0-" + "d" * 40 + "-cp313-linux-x86_64",
     ],
 )
-def test_release_identifier_parser_is_cross_version_but_strict(name: str) -> None:
+def test_release_identifier_parser_accepts_current_and_legacy_abis(name: str) -> None:
     assert release_linux.parse_release_id(name) is not None
     assert release_linux.parse_release_id("0.9.0-backup") is None
-    assert release_linux.parse_release_id(name.replace("cp313", "cp314")) is None
+    assert release_linux.parse_release_id(name.replace("cp313", "cp314")) is not None
 
 
 def test_offline_environment_drops_indexes_credentials_and_import_overrides() -> None:

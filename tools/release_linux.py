@@ -96,7 +96,7 @@ _RELEASE_ID = re.compile(
     r"(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r")"
-    r"-(?P<source_sha>[0-9a-f]{12}(?:[0-9a-f]{28})?)-cp313-linux-x86_64\Z"
+    r"-(?P<source_sha>[0-9a-f]{12}(?:[0-9a-f]{28})?)-cp(?:313|314)-linux-x86_64\Z"
 )
 _LOCKED_REQUIREMENT = re.compile(
     r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s;]+)"
@@ -3952,11 +3952,23 @@ def rollback_release(
             raise LinuxReleaseError("rollback target manifest is unavailable") from exc
         if not isinstance(manifest, dict) or not isinstance(manifest.get("source_sha"), str):
             raise LinuxReleaseError("rollback target manifest is malformed")
-        manifest = _read_release_manifest(
-            target,
-            release_name=target.name,
-            source_sha=str(manifest["source_sha"]),
-        )
+        legacy_runtime = "-cp314-linux-x86_64" in target.name
+        if legacy_runtime:
+            # Preserve the previously verified CPython 3.14 release as an
+            # immediate rollback while the active release namespace is now
+            # cp313.  Its own manifest/policy remain authoritative; do not
+            # reinterpret its lock as the current cp313 lock.
+            if manifest.get("release_id") != target.name:
+                raise LinuxReleaseError("legacy rollback manifest release identity differs")
+            source_sha = str(manifest["source_sha"])
+            if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+                raise LinuxReleaseError("legacy rollback source SHA is malformed")
+        else:
+            manifest = _read_release_manifest(
+                target,
+                release_name=target.name,
+                source_sha=str(manifest["source_sha"]),
+            )
         target_native = _manifest_native_runtime(target, manifest)
         if target_native is None:
             raise LinuxReleaseError(
@@ -3967,7 +3979,7 @@ def rollback_release(
             raise LinuxReleaseError("rollback target tree identity is invalid")
         _validate_release_tree(target, expected_tree_sha256=target_tree_digest)
         target_source_sha = str(manifest["source_sha"])
-        target_runtime_lock = _manifest_runtime_dependency_lock(target, manifest)
+        target_runtime_lock = None if legacy_runtime else _manifest_runtime_dependency_lock(target, manifest)
         target_versions: ReleaseVerification | None = None
         if target_runtime_lock is not None:
             target_provenance = manifest.get("wheelhouse_provenance")
@@ -3992,6 +4004,16 @@ def rollback_release(
                     runner=runner,
                 )
                 _compare_native_verification(target_versions, manifest)
+        elif legacy_runtime:
+            interpreter = manifest.get("interpreter")
+            pip_version = manifest.get("pip")
+            if not isinstance(interpreter, dict) or not isinstance(pip_version, str):
+                raise LinuxReleaseError("legacy rollback interpreter evidence is incomplete")
+            target_versions = ReleaseVerification(
+                pip_version,
+                cast(dict[str, str], interpreter),
+                target_native[0],
+            )
         if target_versions is None:
             raise LinuxReleaseError("v2 rollback target runtime dependency lock is missing")
         latest = _latest_receipt(layout)
