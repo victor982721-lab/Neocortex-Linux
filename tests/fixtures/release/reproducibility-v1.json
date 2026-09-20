@@ -3,13 +3,13 @@
     {
       "label": "first",
       "logical_manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-      "source_tree_sha256": "0abec4acc248816cabe6119db5730b2f1b49d9655f50f722ff2a69d3e68ecce1",
+      "source_tree_sha256": "6091bd27f65b6da9ff8ae29f47169204391040e2f4ebe203a106a1e71f7b8753",
       "wheel_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
     },
     {
       "label": "second",
       "logical_manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-      "source_tree_sha256": "0abec4acc248816cabe6119db5730b2f1b49d9655f50f722ff2a69d3e68ecce1",
+      "source_tree_sha256": "6091bd27f65b6da9ff8ae29f47169204391040e2f4ebe203a106a1e71f7b8753",
       "wheel_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
     }
   ],
@@ -17,7 +17,7 @@
   "logical_manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
   "release_tree_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "schema_version": 1,
-  "source_manifest_sha256": "0abec4acc248816cabe6119db5730b2f1b49d9655f50f722ff2a69d3e68ecce1",
+  "source_manifest_sha256": "6091bd27f65b6da9ff8ae29f47169204391040e2f4ebe203a106a1e71f7b8753",
   "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "source_tree_sha256": "0abec4acc248816cabe6119db5730b2f1b49d9655f50f722ff2a69d3e68ecce1"
+  "source_tree_sha256": "6091bd27f65b6da9ff8ae29f47169204391040e2f4ebe203a106a1e71f7b8753"
 }

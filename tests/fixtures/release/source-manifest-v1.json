@@ -4,7 +4,7 @@
     {
       "blob": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "mode": "100644",
-      "path": "constraints-linux-cp313-runtime.lock"
+      "path": "constraints-linux-cp313-full.lock"
     },
     {
       "blob": "cccccccccccccccccccccccccccccccccccccccc",
@@ -13,7 +13,7 @@
     }
   ],
   "kind": "neocortex_source_manifest",
-  "manifest_sha256": "0abec4acc248816cabe6119db5730b2f1b49d9655f50f722ff2a69d3e68ecce1",
+  "manifest_sha256": "6091bd27f65b6da9ff8ae29f47169204391040e2f4ebe203a106a1e71f7b8753",
   "runtime_dependency_lock_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "schema_version": 1,
   "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

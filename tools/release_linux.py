@@ -75,7 +75,7 @@ RUNTIME_PYTHON_MINIMUM = (3, 13, 5)
 RUNTIME_PYTHON_CACHE_TAG = "cpython-313"
 RUNTIME_PYTHON_ABI = "cp313"
 RELEASE_MANIFEST_NAME = "neocortex-release.json"
-RUNTIME_DEPENDENCY_LOCK_NAME = "constraints-linux-cp313-runtime.lock"
+RUNTIME_DEPENDENCY_LOCK_NAME = "constraints-linux-cp313-full.lock"
 RUNTIME_PROFILE = "product-only-v1"
 WHEELHOUSE_MANIFEST_NAME = "wheelhouse-manifest.json"
 WHEELHOUSE_SCHEMA_VERSION = 1
@@ -110,7 +110,12 @@ _GC_MARKER = ".gc.json"
 _GC_PREFIX = ".gc-"
 _IMPORT_MODULES = (
     "PIL",
+    "ctranslate2",
+    "fastembed",
+    "faster_whisper",
     "fitz",
+    "mcp",
+    "numpy",
     "pytesseract",
 )
 
@@ -670,7 +675,7 @@ def _hashed_requirements(
         name, version, digest = project
         if _SHA256.fullmatch(digest) is None:
             raise LinuxReleaseError("project wheel hash is malformed")
-        rows.insert(0, f"{name}=={version} --hash=sha256:{digest}")
+        rows.insert(0, f"{name}[full]=={version} --hash=sha256:{digest}")
     if not rows:
         raise LinuxReleaseError("hashed requirements are empty")
     try:
@@ -1637,7 +1642,7 @@ def _install_wheel(
     if requirements_path is not None:
         install_command += ("--requirement", requirements_path)
     else:
-        install_command += (str(wheel),)
+        install_command += (f"{wheel}[full]",)
     try:
         runner(
             install_command,
@@ -3064,12 +3069,15 @@ def _preflight_install(
     if os.path.lexists(layout.source_root / ".git"):
         try:
             project = tomllib.loads((layout.source_root / "pyproject.toml").read_text())["project"]
-            # The checked-in release is product-only.  Optional inference,
-            # audio, MCP, and document profiles require a separately
-            # authenticated wheelhouse and are never implied by this install.
-            project_requirements = list(project["dependencies"])
+            # The canonical release is the authenticated full profile.  Its
+            # closure is explicit in the release lock and wheelhouse; no
+            # optional capability is silently omitted from the product.
+            project_requirements = [
+                *project["dependencies"],
+                *project["optional-dependencies"]["full"],
+            ]
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise LinuxReleaseError("offline product runtime requirements are unavailable") from exc
+            raise LinuxReleaseError("offline full profile requirements are unavailable") from exc
     _validate_runtime_dependency_closure(
         wheelhouse_artifacts, locked_dependencies, project_requirements=project_requirements,
     )

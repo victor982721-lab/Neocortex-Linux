@@ -53,6 +53,7 @@ def actual_sdists(tmp_path_factory: pytest.TempPathFactory):
     for filename in (
         "MANIFEST.in", "pyproject.toml", "README.md", "constraints.txt",
         "constraints-linux-cp313.lock", "constraints-linux-cp313-runtime.lock",
+        "constraints-linux-cp313-full.lock",
     ):
         shutil.copy2(root / filename, source / filename)
     for directory in ("neocortex", "tools", "docs"):

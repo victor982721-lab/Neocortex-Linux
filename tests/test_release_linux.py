@@ -610,9 +610,9 @@ def test_linux_cp313_runtime_lock_is_exact_for_the_available_offline_closure() -
     lock = PROJECT_ROOT / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
     entries = release_linux._runtime_dependency_lock(lock)
 
-    # The installed product is the authenticated base runtime.  Inference,
-    # audio, MCP, and document profiles remain separately provisioned extras.
-    assert len(entries) == 14
+    # The installed product is the authenticated full runtime closure,
+    # including inference, audio, MCP, documents, and image adapters.
+    assert len(entries) == 61
     assert entries["pip"] == release_linux.PIP_BOOTSTRAP_VERSION
     assert "neocortex-framework" not in entries
     assert all(name == release_linux._normalized_distribution_name(name) for name in entries)

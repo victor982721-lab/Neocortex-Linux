@@ -960,7 +960,7 @@ la instalación se abstiene; no cambies constraints para sortearla.
 `--prepare-models` es una operación adicional explícita que puede adquirir pesos
 y requiere su autorización; omítela cuando sólo corresponda usar modelos locales.
 
-Una release productiva base termina cuando artefacto, manifest, launcher y `source_sha`
+Una release productiva full termina cuando artefacto, manifest, launcher y `source_sha`
 coinciden, el smoke público pasa sin `PYTHONPATH`, el replay es verificable,
 staging queda vacío y sólo permanecen `current` y el rollback inmediato.
 Conserva además la distinción entre corpus operativo y raíz temporal de smoke;

@@ -70,7 +70,13 @@ def test_linux_release_direct_pins_satisfy_current_product_metadata() -> None:
                 *metadata["build-system"]["requires"],
             ],
         ),
-        ("constraints-linux-cp313-runtime.lock", metadata["project"]["dependencies"]),
+        (
+            "constraints-linux-cp313-full.lock",
+            [
+                *metadata["project"]["dependencies"],
+                *metadata["project"]["optional-dependencies"]["full"],
+            ],
+        ),
     ):
         pins = {}
         for line in (root / filename).read_text(encoding="utf-8").splitlines():
@@ -117,7 +123,7 @@ def test_sdist_manifest_includes_active_docs_and_release_tools() -> None:
         if line.startswith("include ") and line.endswith(".md")
     }
     assert markdown_includes == _SDIST_MARKDOWN_ALLOWLIST
-    assert "include constraints-linux-cp313-runtime.lock" in manifest_lines
+    assert "include constraints-linux-cp313-full.lock" in manifest_lines
     assert "include tools/__init__.py" in manifest_lines
     assert "include tools/release_archive_safety.py" in manifest_lines
     assert "include tools/release_artifacts.py" in manifest_lines

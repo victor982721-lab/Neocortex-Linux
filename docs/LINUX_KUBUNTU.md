@@ -56,11 +56,11 @@ necesarios, sin preparación adicional ni historial Git. Usa un venv nuevo, sin
 `dev-resources/offline/artifacts/` contiene los wheels originales del cierre
 transitivo para CPython 3.13/Linux x86_64, `locks/` fija versiones y SHA-256 por
 capacidad, y `provenance.json` conserva origen y licencias. No requiere cachés
-personales, Git LFS ni otra descarga. `constraints-linux-cp313-runtime.lock` es
-el lock de la release productiva (base + documentos/imagen); el lock agregado de
-suministro permanece en `constraints-linux-cp313.lock`. No existe un cierre
-paralelo para CPython 3.14. Dedupe y las claves de idempotencia usan SHA-256
-completo de la biblioteca estándar.
+personales, Git LFS ni otra descarga. `constraints-linux-cp313-full.lock` es el
+lock canónico de la release productiva completa; los locks base permanecen para
+desarrollo/provisionamiento parcial. No existe un cierre paralelo productivo para
+CPython 3.14. Dedupe y las claves de idempotencia usan SHA-256 completo de la
+biblioteca estándar.
 
 | Capacidad | Extra / recurso | Incluido offline |
 |---|---|---|
@@ -68,8 +68,8 @@ completo de la biblioteca estándar.
 | Construcción ordinaria | `build`, backend `setuptools` y transitivos | Sí, lock `build-cp313-linux-x86_64.lock` |
 | Pruebas base | `test-base`: pytest, backend `setuptools==83.0.0` para auditorías de empaquetado y transitivos, sin plugins obligatorios | Sí, lock `test-base-cp313-linux-x86_64.lock` |
 | Documentos e imagen | `documents`, `image`: Pillow, PyMuPDF, pdfminer.six, pytesseract y transitivos | Sí, lock `documents-image-cp313-linux-x86_64.lock` |
-| Inferencia | `semantic`, `audio` y pesos originales locales | No |
-| MCP / agente | `agent` | No |
+| Inferencia | `semantic`, `audio` y pesos originales locales | Sí, en el lock full; los pesos se preparan aparte |
+| MCP / agente | `agent` | Sí, en el lock full |
 | Herramientas de desarrollo adicionales | `analysis` | No; no es requisito de las pruebas base |
 
 Desde la extracción, con CPython 3.13 disponible:
@@ -179,10 +179,9 @@ integridad del archivo; la revisión del proveedor acredita el build concreto.
 
 Antes de crear el corpus o activar una release se verifican todos los hashes,
 tags Python/ABI/plataforma de los wheels, `Requires-Python`, dependencias
-transitivas y markers del perfil productivo. Los extras `semantic`, `audio` y
-`agent` siguen siendo perfiles optativos y requieren su propio wheelhouse y lock
-autenticados; no se infieren ni se instalan desde la release base. No modifiques
-constraints ni uses paquetes globales para completar el entorno.
+transitivas, markers y extras `full` del perfil productivo. Los requisitos
+ausentes se enumeran con sus versiones. No modifiques constraints ni uses
+paquetes globales para completar el entorno.
 
 `--require-models` exige modelos locales completos antes de promover el launcher.
 El nombre anterior `--prepare-models` se conserva como alias de esta exigencia;
@@ -191,16 +190,12 @@ realiza por separado, de forma explícita y con su autorización propia. Los
 modelos compartidos se conservan fuera de las releases. La presencia de pesos
 y `pip check` no sustituyen el smoke de inferencia de las capacidades solicitadas.
 
-El paquete offline incluido para CPython 3.13 continúa limitado a los perfiles
-de la tabla anterior. Una aceptación ampliada con Semantic/audio/MCP necesita
-además inventariar el intérprete, bibliotecas nativas, ejecutables e idiomas de
-OCR, y los modelos y tokenizers originales con hashes y licencias. Esa aceptación
-se ejecuta desde el wheel instalado, con red denegada, HOME/XDG/TMP privados, sin
-`PYTHONPATH` ni cachés del checkout. Incluye primer procesamiento y replay de
-fixtures por capacidad, inventario instalado y SHA de fuente; un perfil base
-correcto no acredita de forma implícita las extras optativas. La prueba
-`test_semantic_numpy_binding.py` comprueba la ruta NumPy instalada concreta, sin
-acreditar de forma implícita toda versión `<3`.
+La aceptación full para CPython 3.13 necesita además inventariar el intérprete,
+bibliotecas nativas, ejecutables e idiomas de OCR, y los modelos y tokenizers
+originales con hashes y licencias. Se ejecuta desde el wheel instalado, con red
+denegada, HOME/XDG/TMP privados, sin `PYTHONPATH` ni cachés del checkout. Incluye
+primer procesamiento y replay por capacidad e inventario instalado; la prueba
+`test_semantic_numpy_binding.py` comprueba la ruta NumPy instalada concreta.
 
 ## Evidencia nativa SQLite
 
