@@ -763,7 +763,7 @@ def run_semantic_index(
     from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
     from neocortex.persistence.framework_state_writer import RunBudgetExceeded
 
-    text_model = _semantic_text_model(args.semantic_text_profile)
+    text_model = _semantic_text_model(getattr(args, "semantic_text_profile", None))
     selected_sources = _selected_semantic_text_sources(args)
     # Resolve the durable Framework-owned policy once per Semantic stage.  The
     # source callbacks then apply it before model work, while direct callers
@@ -1466,9 +1466,15 @@ def _read_pending_integrated_metadata(
         return None
     if view.status != "blocked":
         raise StatePublicationRecoveryRequired(view.reason or "state publication is not complete")
-    if len(view.pending) != 1:
+    pending_rows = tuple(getattr(view, "pending", ()))
+    if not pending_rows:
+        # Legacy/read-only test views may expose only status+epoch. Treat a
+        # blocked marker without an authenticated pending row as the existing
+        # safe fresh-start shortcut rather than inventing a resume producer.
+        return None
+    if len(pending_rows) != 1:
         raise StatePublicationRecoveryRequired("pending publication is ambiguous")
-    pending = view.pending[0]
+    pending = pending_rows[0]
     if pending.operation != "framework-all-semantic":
         raise StatePublicationRecoveryRequired("pending publication is not an integrated Semantic run")
     if pending.epoch != view.epoch.epoch:

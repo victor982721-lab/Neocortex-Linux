@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from functools import wraps
 import inspect
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from neocortex.semantic import semantic_application as _application
 
@@ -127,12 +127,13 @@ _FORWARD_NAMES = (
 for _name in _FORWARD_NAMES:
     globals()[_name] = _forward(_name)
 
-# Static analyzers cannot infer the explicit forwarding loop above; retain
-# typed aliases for the public dispatcher while the implementation remains
-# owned by ``semantic_application``.
-semantic_resume_available = _application.semantic_resume_available
-run_integrated_all_semantic_index = _application.run_integrated_all_semantic_index
-prepare_integrated_semantic_start = _application.prepare_integrated_semantic_start
+# Static analyzers cannot infer the explicit forwarding loop above.  Keep
+# type-only declarations while retaining the runtime wrappers (which are the
+# compatibility seam for monkeypatching and direct callers).
+if TYPE_CHECKING:
+    semantic_resume_available: Callable[..., Any]
+    run_integrated_all_semantic_index: Callable[..., Any]
+    prepare_integrated_semantic_start: Callable[..., Any]
 
 __all__ = list(_application.__all__)
 
