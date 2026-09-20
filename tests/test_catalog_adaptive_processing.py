@@ -120,9 +120,12 @@ def test_publication_preparation_retries_sibling_commit_without_global_exclusion
         assert prepared.wait(8)
         sibling = catalog.update_document_catalog_source(target, image, "image", source_root=root)
         sibling_finished.set()
-        result = primary.result(timeout=10)
+    result = primary.result(timeout=10)
     assert result.classified == sibling.classified == 1
-    assert observations.count("docx") == 2
+    # An unrelated source commit no longer invalidates this prepared DOCX
+    # publication.  The source-scoped proof still permits both builders to
+    # publish without a retry.
+    assert observations.count("docx") == 1
     assert len(catalog.list_catalog_documents(target, limit=10)) == 2
 
 

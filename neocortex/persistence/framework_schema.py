@@ -5,14 +5,12 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import cast
 
 from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     SQLiteSchemaContractError,
-    capture_sqlite_schema_contract,
     schema_contract_from_builder,
     validate_sqlite_schema_contract,
 )
@@ -33,6 +31,21 @@ SCHEMA_VERSION = 25
 _PATH_COLLATION = sqlite_path_collation()
 
 
+class FrameworkStateIncompatible(RuntimeError):
+    """A durable Framework state belongs to an older, non-migratable schema."""
+
+    code = "factory_reset_required"
+    action = "factory_reset_required"
+
+    def __init__(self, observed_schema: int, expected_schema: int = SCHEMA_VERSION) -> None:
+        self.observed_schema = observed_schema
+        self.expected_schema = expected_schema
+        super().__init__(
+            f"framework schema {observed_schema} is incompatible with the current "
+            f"contract; factory_reset_required (expected {expected_schema})"
+        )
+
+
 def _allowed_framework_extension_tables(connection: sqlite3.Connection) -> tuple[str, ...]:
     """Return optional extension tables without weakening the core contract."""
 
@@ -51,10 +64,6 @@ def _allowed_framework_extension_objects(connection: sqlite3.Connection) -> tupl
     if content_admission_extension_present(connection):
         objects.extend(sorted(CONTENT_ADMISSION_EXTENSION_OBJECTS))
     return tuple(objects)
-
-
-class _FrameworkSchemaMigrationError(RuntimeError):
-    """A legacy schema cannot be transformed without risking persisted data."""
 
 
 # region [01] Canonical schema
@@ -1692,579 +1701,11 @@ _NAMED_INDEXES = {
 # endregion [01]
 
 
-# region [02] Sequential migrations
-
-
-def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
-    return {
-        str(row[1]) for row in connection.execute(f"PRAGMA table_info({_quoted_identifier(table)})")
-    }
-
-
-def _add_columns(
-    connection: sqlite3.Connection,
-    table: str,
-    columns: tuple[tuple[str, str], ...],
-) -> None:
-    existing = _column_names(connection, table)
-    for name, declaration in columns:
-        if name in existing:
-            continue
-        connection.execute(
-            f"ALTER TABLE {_quoted_identifier(table)} ADD COLUMN "
-            f"{_quoted_identifier(name)} {declaration}"
-        )
-
-
-def _migrate_1_to_2(connection: sqlite3.Connection) -> None:
-    _add_columns(
-        connection,
-        "initial_runs",
-        (
-            ("reconciliation_records", "INTEGER"),
-            ("inventory_attempts", "INTEGER"),
-        ),
-    )
-
-
-def _migrate_2_to_3(connection: sqlite3.Connection) -> None:
-    del connection
-
-
-def _migrate_3_to_4(connection: sqlite3.Connection) -> None:
-    _add_columns(
-        connection,
-        "run_actions",
-        (
-            ("empty_directory_candidates", "INTEGER NOT NULL DEFAULT 0"),
-            ("empty_directories_trashed", "INTEGER NOT NULL DEFAULT 0"),
-            ("empty_directory_skips", "INTEGER NOT NULL DEFAULT 0"),
-        ),
-    )
-
-
-def _migrate_4_to_5(connection: sqlite3.Connection) -> None:
-    del connection
-
-
-def _migrate_5_to_6(connection: sqlite3.Connection) -> None:
-    _add_columns(connection, "initial_runs", (("inventory_mode", "TEXT"),))
-
-
-def _migrate_6_to_7(connection: sqlite3.Connection) -> None:
-    _add_columns(
-        connection,
-        "run_actions",
-        (
-            ("type_cache_hits", "INTEGER NOT NULL DEFAULT 0"),
-            ("type_cache_misses", "INTEGER NOT NULL DEFAULT 0"),
-        ),
-    )
-
-
-def _migrate_7_to_8(connection: sqlite3.Connection) -> None:
-    _add_columns(
-        connection,
-        "content_type_cache",
-        (("last_seen_run_id", "INTEGER NOT NULL DEFAULT 0"),),
-    )
-    _add_columns(
-        connection,
-        "run_actions",
-        (("type_cache_pruned", "INTEGER NOT NULL DEFAULT 0"),),
-    )
-
-
-def _migrate_8_to_9(connection: sqlite3.Connection) -> None:
-    _add_columns(
-        connection,
-        "run_actions",
-        (("stale_inventory", "INTEGER NOT NULL DEFAULT 0"),),
-    )
-
-
-def _migrate_9_to_10(connection: sqlite3.Connection) -> None:
-    del connection
-
-
-def _migrate_10_to_11(connection: sqlite3.Connection) -> None:
-    _add_columns(
-        connection,
-        "content_type_cache",
-        (("birthtime_ns", "INTEGER NOT NULL DEFAULT -1"),),
-    )
-
-
-def _migrate_11_to_12(connection: sqlite3.Connection) -> None:
-    del connection
-
-
-def _migrate_12_to_13(connection: sqlite3.Connection) -> None:
-    _add_columns(
-        connection,
-        "initial_runs",
-        (
-            ("run_kind", "TEXT NOT NULL DEFAULT 'initial'"),
-            ("source_run_id", "INTEGER"),
-            ("current_phase", "TEXT"),
-            ("owner_pid", "INTEGER"),
-            ("heartbeat_ns", "INTEGER"),
-        ),
-    )
-    _add_columns(
-        connection,
-        "route_runs",
-        (
-            ("current_phase", "TEXT"),
-            ("heartbeat_ns", "INTEGER"),
-            ("source_run_id", "INTEGER"),
-        ),
-    )
-
-
-def _migrate_13_to_14(connection: sqlite3.Connection) -> None:
-    _add_columns(
-        connection,
-        "review_candidates",
-        (("resolved_run_id", "INTEGER"),),
-    )
-
-
-def _migrate_14_to_15(connection: sqlite3.Connection) -> None:
-    _add_columns(
-        connection,
-        "review_decisions",
-        (
-            ("source_status", "TEXT"),
-            (
-                "recommendation",
-                "TEXT CHECK(recommendation IS NULL OR recommendation IN "
-                "('retry','keep_protected','manual_review','deletion_candidate'))",
-            ),
-            (
-                "retryable",
-                "INTEGER CHECK(retryable IS NULL OR retryable IN (0,1))",
-            ),
-            (
-                "confidence",
-                "REAL CHECK(confidence IS NULL OR (confidence>=0.0 AND confidence<=1.0))",
-            ),
-            ("evidence_json", "TEXT"),
-            ("detector_version", "TEXT"),
-        ),
-    )
-
-
-def _migrate_15_to_16(connection: sqlite3.Connection) -> None:
-    # ``_create_tables`` runs before sequential migrations so this is normally
-    # already present.  Keep the transition explicit and independently safe.
-    connection.execute(_REVIEW_EVIDENCE_TABLE_STATEMENT)
-    connection.execute(_REVIEW_EVIDENCE_PROGRESS_TABLE_STATEMENT)
-
-
-_REVIEW_CANDIDATE_COLUMNS = (
-    "route_name",
-    "volume_id",
-    "file_id",
-    "reason_code",
-    "path",
-    "size",
-    "mtime_ns",
-    "birthtime_ns",
-    "source_status",
-    "recommendation",
-    "retryable",
-    "confidence",
-    "evidence_json",
-    "detector_version",
-    "status",
-    "first_detected_ns",
-    "last_detected_ns",
-    "last_seen_run_id",
-    "resolved_ns",
-    "resolved_run_id",
-    "resolution_note",
-)
-
-_REVIEW_DECISION_COLUMNS = (
-    "decision_id",
-    "idempotency_key",
-    "route_name",
-    "volume_id",
-    "file_id",
-    "reason_code",
-    "candidate_generation",
-    "path",
-    "size",
-    "mtime_ns",
-    "birthtime_ns",
-    "source_status",
-    "recommendation",
-    "retryable",
-    "confidence",
-    "evidence_json",
-    "detector_version",
-    "status",
-    "actor",
-    "provenance_json",
-    "note",
-    "decided_ns",
-    "recorded_ns",
-)
-
-_REVIEW_CANDIDATE_LEGACY_COLUMN_ORDER = (
-    *_REVIEW_CANDIDATE_COLUMNS[:-3],
-    "resolved_ns",
-    "resolution_note",
-    "resolved_run_id",
-)
-
-_REVIEW_DECISION_LEGACY_COLUMN_ORDER = (
-    "decision_id",
-    "idempotency_key",
-    "route_name",
-    "volume_id",
-    "file_id",
-    "reason_code",
-    "candidate_generation",
-    "path",
-    "size",
-    "mtime_ns",
-    "birthtime_ns",
-    "status",
-    "actor",
-    "provenance_json",
-    "note",
-    "decided_ns",
-    "recorded_ns",
-    "source_status",
-    "recommendation",
-    "retryable",
-    "confidence",
-    "evidence_json",
-    "detector_version",
-)
-
-type _CanonicalTokens = tuple[str, ...]
-type _OrdinaryDefinitionParts = tuple[
-    tuple[tuple[str, _CanonicalTokens], ...],
-    tuple[_CanonicalTokens, ...],
-]
-
-
-def _ordinary_definition_parts(definition: object) -> _OrdinaryDefinitionParts:
-    columns = getattr(definition, "columns", None)
-    constraints = getattr(definition, "constraints", None)
-    if not isinstance(columns, tuple) or not isinstance(constraints, tuple):
-        raise _FrameworkSchemaMigrationError("review table does not have an ordinary definition")
-    return (
-        cast(tuple[tuple[str, _CanonicalTokens], ...], columns),
-        cast(tuple[_CanonicalTokens, ...], constraints),
-    )
-
-
-def _definition_without_inline_checks(
-    definition: object,
-    checkless_columns: frozenset[str],
-) -> _OrdinaryDefinitionParts:
-    columns, constraints = _ordinary_definition_parts(definition)
-    legacy_columns: list[tuple[str, _CanonicalTokens]] = []
-    for name, tokens in columns:
-        if name in checkless_columns:
-            try:
-                check_index = tokens.index("keyword:check")
-            except ValueError as exc:  # pragma: no cover - canonical DDL invariant
-                raise RuntimeError(f"canonical CHECK is missing from {name}") from exc
-            tokens = tokens[:check_index]
-        legacy_columns.append((name, tokens))
-    return tuple(legacy_columns), constraints
-
-
-def _rebuild_table_with_current_definition(
-    connection: sqlite3.Connection,
-    table: str,
-    columns: tuple[str, ...],
-) -> None:
-    """Atomically copy one known legacy table into its canonical definition."""
-
-    legacy_table = f"__neocortex_schema_17_{table}"
-    collision = connection.execute(
-        "SELECT type FROM sqlite_master WHERE name=?",
-        (legacy_table,),
-    ).fetchone()
-    if collision is not None:
-        raise _FrameworkSchemaMigrationError(
-            f"reserved migration object already exists: {legacy_table}"
-        )
-    source_count = int(
-        connection.execute(f"SELECT COUNT(*) FROM {_quoted_identifier(table)}").fetchone()[0]
-    )
-    connection.execute(
-        f"ALTER TABLE {_quoted_identifier(table)} RENAME TO {_quoted_identifier(legacy_table)}"
-    )
-    _create_tables(connection)
-    column_sql = ",".join(_quoted_identifier(column) for column in columns)
-    inserted = connection.execute(
-        f"INSERT INTO {_quoted_identifier(table)}({column_sql}) "
-        f"SELECT {column_sql} FROM {_quoted_identifier(legacy_table)}"
-    )
-    target_count = int(
-        connection.execute(f"SELECT COUNT(*) FROM {_quoted_identifier(table)}").fetchone()[0]
-    )
-    if inserted.rowcount != source_count or target_count != source_count:
-        raise _FrameworkSchemaMigrationError(f"row preservation failed while rebuilding {table}")
-    connection.execute(f"DROP TABLE {_quoted_identifier(legacy_table)}")
-
-
-def _migrate_16_to_17(connection: sqlite3.Connection) -> None:
-    """Materialize CHECK constraints omitted by historical additive upgrades."""
-
-    actual = {table.name: table for table in capture_sqlite_schema_contract(connection).tables}
-    expected = {table.name: table for table in _exact_schema_contract().tables}
-    review_tables = (
-        (
-            "review_candidates",
-            _REVIEW_CANDIDATE_COLUMNS,
-            (_REVIEW_CANDIDATE_COLUMNS, _REVIEW_CANDIDATE_LEGACY_COLUMN_ORDER),
-            frozenset({"recommendation", "retryable", "confidence", "status"}),
-        ),
-        (
-            "review_decisions",
-            _REVIEW_DECISION_COLUMNS,
-            (_REVIEW_DECISION_COLUMNS, _REVIEW_DECISION_LEGACY_COLUMN_ORDER),
-            frozenset({"candidate_generation", "status"}),
-        ),
-    )
-    for table, columns, allowed_orders, checkless_columns in review_tables:
-        actual_table = actual.get(table)
-        expected_table = expected.get(table)
-        if actual_table is None or expected_table is None:  # pragma: no cover
-            raise _FrameworkSchemaMigrationError(f"review schema table is missing: {table}")
-        if actual_table.definition == expected_table.definition:
-            continue
-        actual_order = tuple(column.name for column in actual_table.columns)
-        if actual_order not in allowed_orders:
-            raise _FrameworkSchemaMigrationError(
-                f"{table} has an unexpected legacy column layout: {actual_order!r}"
-            )
-        if (
-            actual_table.table_type != expected_table.table_type
-            or actual_table.without_rowid != expected_table.without_rowid
-            or actual_table.strict != expected_table.strict
-            or actual_table.foreign_keys != expected_table.foreign_keys
-            or {column.name: column for column in actual_table.columns}
-            != {column.name: column for column in expected_table.columns}
-        ):
-            raise _FrameworkSchemaMigrationError(
-                f"{table} has incompatible legacy column declarations or options"
-            )
-        unexpected_indexes = set(actual_table.indexes) - set(expected_table.indexes)
-        if unexpected_indexes:
-            names = sorted(index.name or "<automatic>" for index in unexpected_indexes)
-            raise _FrameworkSchemaMigrationError(
-                f"{table} has unexpected legacy indexes: {', '.join(names)}"
-            )
-        triggers = tuple(
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=? ORDER BY name",
-                (table,),
-            )
-        )
-        if triggers:
-            raise _FrameworkSchemaMigrationError(f"{table} has unexpected triggers: {triggers!r}")
-        if _ordinary_definition_parts(actual_table.definition) != _definition_without_inline_checks(
-            expected_table.definition,
-            checkless_columns,
-        ):
-            raise _FrameworkSchemaMigrationError(f"{table} has an unsupported legacy definition")
-        _rebuild_table_with_current_definition(connection, table, columns)
-
-
-_FILE_ACTION_COLUMNS_V17 = frozenset(
-    {
-        "action_id",
-        "run_id",
-        "action_type",
-        "source_path",
-        "target_path",
-        "detected_mime",
-        "evidence",
-        "apply_requested",
-        "status",
-        "detail",
-        "started_ns",
-        "completed_ns",
-    }
-)
-
-
-def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
-    """Add action receipts without assigning meaning to legacy action rows."""
-
-    existing = _column_names(connection, "file_actions")
-    # Very old schemas can lack file_actions, so _create_tables() materializes
-    # its current definition before the sequential migrations run.  Accept
-    # only the explicitly known post-v17 columns; owner extensions still fail
-    # closed as unexpected schema.
-    current_additions = {
-        "idempotency_key",
-        "expected_identity_json",
-        "effect_receipt_json",
-        "applying_ns",
-        "corpus_access_mode",
-        "protected_root",
-        "protected_root_device_id_hex",
-        "protected_root_file_id_hex",
-        "protected_root_birthtime_ns",
-    }
-    unexpected = existing - _FILE_ACTION_COLUMNS_V17 - current_additions
-    missing_legacy = _FILE_ACTION_COLUMNS_V17 - existing
-    if unexpected or missing_legacy:
-        raise _FrameworkSchemaMigrationError(
-            "file_actions has an unsupported version-17 column layout: "
-            f"missing={sorted(missing_legacy)!r}, unexpected={sorted(unexpected)!r}"
-        )
-    source_count = int(connection.execute("SELECT COUNT(*) FROM file_actions").fetchone()[0])
-    _add_columns(
-        connection,
-        "file_actions",
-        (
-            ("idempotency_key", "TEXT"),
-            ("expected_identity_json", "TEXT"),
-            ("effect_receipt_json", "TEXT"),
-            ("applying_ns", "INTEGER"),
-        ),
-    )
-    target_count = int(connection.execute("SELECT COUNT(*) FROM file_actions").fetchone()[0])
-    if target_count != source_count:
-        raise _FrameworkSchemaMigrationError(
-            "file_actions row preservation failed during version-18 migration"
-        )
-
-
-def _migrate_18_to_19(connection: sqlite3.Connection) -> None:
-    """Add an empty append-only reconciliation log without rewriting actions."""
-
-    action_count = int(connection.execute("SELECT COUNT(*) FROM file_actions").fetchone()[0])
-    action_event_count = int(
-        connection.execute("SELECT COUNT(*) FROM file_action_events").fetchone()[0]
-    )
-    reconciliation_count = int(
-        connection.execute("SELECT COUNT(*) FROM file_action_reconciliation_events").fetchone()[0]
-    )
-    if reconciliation_count != 0:
-        raise _FrameworkSchemaMigrationError(
-            "version-18 database already contains reconciliation events"
-        )
-    if int(connection.execute("SELECT COUNT(*) FROM file_actions").fetchone()[0]) != (action_count):
-        raise _FrameworkSchemaMigrationError(
-            "file_actions row preservation failed during version-19 migration"
-        )
-    if (
-        int(connection.execute("SELECT COUNT(*) FROM file_action_events").fetchone()[0])
-        != action_event_count
-    ):
-        raise _FrameworkSchemaMigrationError(
-            "file_action_events row preservation failed during version-19 migration"
-        )
-
-
-def _migrate_19_to_20(connection: sqlite3.Connection) -> None:
-    """Add immutable corpus-policy evidence without reinterpreting legacy rows."""
-
-    run_count = int(connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0])
-    action_count = int(connection.execute("SELECT COUNT(*) FROM file_actions").fetchone()[0])
-    _add_columns(
-        connection,
-        "initial_runs",
-        (
-            (
-                "corpus_access_mode",
-                "TEXT NOT NULL DEFAULT 'normal' CHECK("
-                "corpus_access_mode IN ('normal','analyze_only'))",
-            ),
-            ("root_device_id_hex", "TEXT"),
-            ("root_file_id_hex", "TEXT"),
-            ("root_birthtime_ns", "INTEGER"),
-            ("state_directory", "TEXT"),
-            ("inventory_policy_signature", "TEXT"),
-        ),
-    )
-    _add_columns(
-        connection,
-        "file_actions",
-        (
-            (
-                "corpus_access_mode",
-                "TEXT NOT NULL DEFAULT 'normal' CHECK("
-                "corpus_access_mode IN ('normal','analyze_only'))",
-            ),
-            ("protected_root", "TEXT"),
-            ("protected_root_device_id_hex", "TEXT"),
-            ("protected_root_file_id_hex", "TEXT"),
-            ("protected_root_birthtime_ns", "INTEGER"),
-        ),
-    )
-    if int(connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0]) != (run_count):
-        raise _FrameworkSchemaMigrationError(
-            "initial_runs row preservation failed during version-20 migration"
-        )
-    if int(connection.execute("SELECT COUNT(*) FROM file_actions").fetchone()[0]) != (action_count):
-        raise _FrameworkSchemaMigrationError(
-            "file_actions row preservation failed during version-20 migration"
-        )
-
-
-def _migrate_20_to_21(connection: sqlite3.Connection) -> None:
-    """Publish empty review-task stores without deriving synthetic tasks."""
-
-    preserved_tables = (
-        "initial_runs",
-        "run_events",
-        "route_runs",
-        "route_phase_runs",
-        "run_actions",
-        "file_actions",
-        "file_action_events",
-        "file_action_reconciliation_events",
-        "route_candidates",
-        "content_type_cache",
-        "review_candidates",
-        "review_decisions",
-        "review_evidence_examples",
-        "review_evidence_progress",
-    )
-    before = {
-        table: int(
-            connection.execute(f"SELECT COUNT(*) FROM {_quoted_identifier(table)}").fetchone()[0]
-        )
-        for table in preserved_tables
-    }
-    for table in (
-        "review_tasks",
-        "review_task_events",
-        "review_task_batches",
-        "review_task_batch_memberships",
-        "review_task_scan_progress",
-        "review_task_source_publications",
-    ):
-        if int(
-            connection.execute(f"SELECT COUNT(*) FROM {_quoted_identifier(table)}").fetchone()[0]
-        ):
-            raise _FrameworkSchemaMigrationError(
-                f"version-20 database already contains rows in {table}"
-            )
-    after = {
-        table: int(
-            connection.execute(f"SELECT COUNT(*) FROM {_quoted_identifier(table)}").fetchone()[0]
-        )
-        for table in preserved_tables
-    }
-    if after != before:
-        raise _FrameworkSchemaMigrationError("owner rows changed during empty version-21 migration")
-
-
+# region [02] Legacy read-contract helpers
+
+# Knowledge snapshots can still inspect exact v19-v23 Framework databases.  The
+# current writer never migrates those schemas; it requires an explicit factory
+# reset instead.
 _ROUTE_CANDIDATE_COLUMNS = (
     "run_id",
     "mime",
@@ -2275,107 +1716,6 @@ _ROUTE_CANDIDATE_COLUMNS = (
     "mtime_ns",
     "birthtime_ns",
 )
-
-
-def _migrate_21_to_22(connection: sqlite3.Connection) -> None:
-    """Adopt host path equivalence for the routing snapshot primary key."""
-
-    # v22 also tightens the ReviewTask lifecycle contract.  Recreate these
-    # triggers on every platform; Windows still needs the lifecycle upgrade
-    # even though its filesystem collation remains NOCASE.
-    # A direct v20→v22 upgrade creates the additive v21 tables before walking
-    # migrations, but their v21 triggers have never existed.  Existing v21
-    # databases do have them and must replace them.  Both routes converge on
-    # the same current triggers below without repairing an inexact source
-    # schema (the exact preflight already ran before this point).
-    connection.execute("DROP TRIGGER IF EXISTS review_tasks_validate_insert")
-    connection.execute("DROP TRIGGER IF EXISTS review_task_events_validate_insert")
-    if _PATH_COLLATION == "NOCASE":
-        return
-    legacy_table = "__neocortex_schema_22_route_candidates"
-    collision = connection.execute(
-        "SELECT type FROM sqlite_master WHERE name=?",
-        (legacy_table,),
-    ).fetchone()
-    if collision is not None:
-        raise _FrameworkSchemaMigrationError(
-            f"reserved migration object already exists: {legacy_table}"
-        )
-    source_count = int(connection.execute("SELECT COUNT(*) FROM route_candidates").fetchone()[0])
-    connection.execute("DROP TRIGGER IF EXISTS file_actions_corpus_policy_insert")
-    connection.execute("ALTER TABLE route_candidates RENAME TO " + _quoted_identifier(legacy_table))
-    connection.execute(_ROUTE_CANDIDATES_TABLE_STATEMENT)
-    column_sql = ",".join(_quoted_identifier(column) for column in _ROUTE_CANDIDATE_COLUMNS)
-    inserted = connection.execute(
-        f"INSERT INTO route_candidates({column_sql}) "
-        f"SELECT {column_sql} FROM {_quoted_identifier(legacy_table)}"
-    )
-    if inserted.rowcount != source_count:
-        raise _FrameworkSchemaMigrationError(
-            "route_candidates row count changed during version-22 migration"
-        )
-    missing = connection.execute(
-        f"SELECT {column_sql} FROM {_quoted_identifier(legacy_table)} "
-        f"EXCEPT SELECT {column_sql} FROM route_candidates LIMIT 1"
-    ).fetchone()
-    extra = connection.execute(
-        f"SELECT {column_sql} FROM route_candidates "
-        f"EXCEPT SELECT {column_sql} FROM {_quoted_identifier(legacy_table)} LIMIT 1"
-    ).fetchone()
-    if missing is not None or extra is not None:
-        raise _FrameworkSchemaMigrationError(
-            "route_candidates evidence changed during version-22 migration"
-        )
-    connection.execute(f"DROP TABLE {_quoted_identifier(legacy_table)}")
-
-
-def _migrate_22_to_23(connection: sqlite3.Connection) -> None:
-    """Version 23 adds the operational-reset reader contract in metadata."""
-    connection.execute("SELECT key,value FROM metadata LIMIT 0")
-
-
-def _migrate_23_to_24(connection: sqlite3.Connection) -> None:
-    """Index the identity join used by the writer's route projection."""
-
-    connection.execute(_ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT)
-
-
-def _migrate_24_to_25(connection: sqlite3.Connection) -> None:
-    """Retired human-review state requires an explicit factory reset."""
-
-    del connection
-    raise _FrameworkSchemaMigrationError(
-        "framework schema contains retired Review/Authorization state; "
-        "factory_reset_required"
-    )
-
-
-_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
-    1: _migrate_1_to_2,
-    2: _migrate_2_to_3,
-    3: _migrate_3_to_4,
-    4: _migrate_4_to_5,
-    5: _migrate_5_to_6,
-    6: _migrate_6_to_7,
-    7: _migrate_7_to_8,
-    8: _migrate_8_to_9,
-    9: _migrate_9_to_10,
-    10: _migrate_10_to_11,
-    11: _migrate_11_to_12,
-    12: _migrate_12_to_13,
-    13: _migrate_13_to_14,
-    14: _migrate_14_to_15,
-    15: _migrate_15_to_16,
-    16: _migrate_16_to_17,
-    17: _migrate_17_to_18,
-    18: _migrate_18_to_19,
-    19: _migrate_19_to_20,
-    20: _migrate_20_to_21,
-    21: _migrate_21_to_22,
-    22: _migrate_22_to_23,
-    23: _migrate_23_to_24,
-    24: _migrate_24_to_25,
-}
 
 
 # endregion [02]
@@ -2435,12 +1775,15 @@ def _build_exact_schema(connection: sqlite3.Connection) -> None:
 def _build_v23_exact_schema(connection: sqlite3.Connection) -> None:
     """Retain the deployed v22/v23 DDL before the identity index existed."""
 
-    for statement in _retained_ddl(_TABLE_STATEMENTS):
+    # These builders serve the read-only Knowledge compatibility path.  They
+    # must reconstruct the historical owner, including ReviewTask tables that
+    # the current writer deliberately retires from schema 25.
+    for statement in _TABLE_STATEMENTS:
         connection.execute(statement)
-    for statement in _retained_ddl(_INDEX_STATEMENTS):
+    for statement in _INDEX_STATEMENTS:
         if statement != _ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT:
             connection.execute(statement)
-    for statement in _retained_ddl(_TRIGGER_STATEMENTS):
+    for statement in _TRIGGER_STATEMENTS:
         connection.execute(statement)
 
 
@@ -2452,16 +1795,16 @@ def _build_v21_exact_schema(connection: sqlite3.Connection) -> None:
     which deployed v21 databases are accepted for migration.
     """
 
-    for statement in _retained_ddl(_TABLE_STATEMENTS):
+    for statement in _TABLE_STATEMENTS:
         connection.execute(
             _V21_ROUTE_CANDIDATES_TABLE_STATEMENT
             if statement == _ROUTE_CANDIDATES_TABLE_STATEMENT
             else statement
         )
-    for statement in _retained_ddl(_INDEX_STATEMENTS):
+    for statement in _INDEX_STATEMENTS:
         if statement != _ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT:
             connection.execute(statement)
-    for statement in _retained_ddl(_TRIGGER_STATEMENTS):
+    for statement in _TRIGGER_STATEMENTS:
         if statement in {
             _REVIEW_TASKS_VALIDATE_INSERT_TRIGGER_STATEMENT,
             _REVIEW_TASK_EVENTS_VALIDATE_INSERT_TRIGGER_STATEMENT,
@@ -2875,52 +2218,25 @@ def _create_triggers(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
-def _apply_migrations(connection: sqlite3.Connection, version: int) -> None:
-    while version < SCHEMA_VERSION:
-        migration = _MIGRATIONS.get(version)
-        if migration is None:  # pragma: no cover - module invariant
-            raise RuntimeError(f"framework schema migration {version} is missing")
-        migration(connection)
-        version += 1
-        updated = connection.execute(
-            "UPDATE metadata SET value=? WHERE key='schema_version'",
-            (str(version),),
-        )
-        if updated.rowcount != 1:
-            raise RuntimeError("framework schema_version disappeared during migration")
-
-
 def initialize_framework_schema(
     connection: sqlite3.Connection,
     post_migration: Callable[[], None],
 ) -> None:
-    """Create, migrate, and validate the schema in one atomic transaction."""
+    """Create or validate the exact current schema in one atomic transaction.
+
+    Older Framework databases are deliberately not migrated.  Their state may
+    contain retired Review/Authorization data, so callers must invoke the
+    explicit factory-reset operation before creating a fresh schema.
+    """
 
     initial_version = _read_schema_version(connection)
     _require_supported_version(initial_version)
-    if initial_version is not None and initial_version != SCHEMA_VERSION:
-        # The current Framework contract intentionally removes the human
-        # Review/Authorization state.  Reinterpreting an older owner would
-        # silently preserve a deleted capability; factory reset is explicit.
-        raise RuntimeError(
-            f"framework schema {initial_version} is incompatible with the current "
-            f"contract; factory_reset_required (expected {SCHEMA_VERSION})"
-        )
+    if initial_version is not None and initial_version < SCHEMA_VERSION:
+        raise FrameworkStateIncompatible(initial_version)
     if initial_version == SCHEMA_VERSION:
         # Reject a falsely current database without repairing or otherwise mutating it.
         _validate_schema(connection)
         _validate_framework_storage_integrity(connection, label=f"framework v{initial_version}")
-    elif initial_version in {22, 23}:
-        validate_framework_schema_v23(connection)
-        _validate_framework_storage_integrity(connection, label=f"framework v{initial_version}")
-    elif initial_version == 21:
-        # The path-policy migration must start from the exact prior contract.
-        validate_framework_schema_v21(connection)
-        _validate_framework_storage_integrity(connection, label="framework v21")
-    elif initial_version == 20:
-        # The additive v21 migration must not silently repair damaged v20 state.
-        validate_framework_schema_v20(connection)
-        _validate_framework_storage_integrity(connection, label="framework v20")
 
     _configure_connection(connection)
     connection.execute("BEGIN IMMEDIATE")
@@ -2934,38 +2250,17 @@ def initialize_framework_schema(
                 (str(SCHEMA_VERSION),),
             )
         elif version < SCHEMA_VERSION:
-            if version in {22, 23}:
-                validate_framework_schema_v23(connection)
-                _validate_framework_storage_integrity(connection, label=f"framework v{version} locked preflight")
-            elif version == 21:
-                validate_framework_schema_v21(connection)
-                _validate_framework_storage_integrity(
-                    connection,
-                    label="framework v21 locked preflight",
-                )
-            elif version == 20:
-                validate_framework_schema_v20(connection)
-                _validate_framework_storage_integrity(
-                    connection,
-                    label="framework v20 locked preflight",
-                )
-            _create_tables(connection)
-            _apply_migrations(connection, version)
+            # Re-check under the writer transaction in case the owner changed
+            # between the initial read and lock acquisition.  No migration or
+            # repair is permitted on this path.
+            raise FrameworkStateIncompatible(version)
 
         _create_indexes(connection)
         _create_triggers(connection)
         _validate_schema(connection)
         post_migration()
         _validate_schema(connection)
-        if initial_version in {20, 21, 22, 23}:
-            _validate_framework_storage_integrity(connection, label=f"framework v{SCHEMA_VERSION} migration")
         connection.commit()
-    except _FrameworkSchemaMigrationError as exc:
-        connection.rollback()
-        source = "new" if initial_version is None else str(initial_version)
-        raise RuntimeError(
-            f"framework schema initialization from version {source} failed: {exc}"
-        ) from exc
     except sqlite3.DatabaseError as exc:
         connection.rollback()
         source = "new" if initial_version is None else str(initial_version)

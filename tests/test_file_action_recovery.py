@@ -22,6 +22,7 @@ from neocortex.workflow.actions.file_action_recovery import (
     expected_identity_json,
     list_file_action_reconciliations,
 )
+from neocortex.persistence.framework_schema import FrameworkStateIncompatible
 from neocortex.persistence.framework_schema import initialize_framework_schema
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
@@ -178,11 +179,10 @@ def test_current_schema_abstains_on_unknown_version_17_objects(
     database = tmp_path / "framework.sqlite3"
     _create_version_17_database(database, extra_schema=extra_schema)
 
-    with pytest.raises(
-        RuntimeError,
-        match=r"initialization from version 17 failed|schema contract validation failed",
-    ):
+    with pytest.raises(FrameworkStateIncompatible) as raised:
         FrameworkState(database)
+    assert raised.value.observed_schema == 17
+    assert raised.value.action == "factory_reset_required"
 
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute(

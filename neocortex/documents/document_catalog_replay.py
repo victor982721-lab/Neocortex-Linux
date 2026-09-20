@@ -72,6 +72,45 @@ class CatalogReadFence:
             return False
 
 
+@dataclass(frozen=True, slots=True)
+class CatalogPublicationFence:
+    """Connection-local evidence for a prepared catalog publication.
+
+    ``PRAGMA data_version`` is intentionally absent here.  It is a database-
+    wide counter: a commit for an unrelated ``source_kind`` changes it on
+    every sibling connection and used to make an otherwise valid publication
+    fail after the bounded retry loop.  Publication callers separately
+    revalidate the source-scoped generation, manifest and correction
+    evidence, while this fence retains the two local/physical checks that do
+    not depend on another owner making progress.
+    """
+
+    total_changes: int
+    database_identity: tuple[str, tuple[int, int] | None]
+
+    @classmethod
+    def capture(cls, connection: sqlite3.Connection) -> "CatalogPublicationFence":
+        if connection.in_transaction:
+            raise ValueError("catalog publication requires a fresh read transaction")
+        path, stamp = _catalog_database_stamp(connection)
+        identity = None if stamp is None else (stamp[0], stamp[1])
+        return cls(
+            total_changes=connection.total_changes,
+            database_identity=(path, identity),
+        )
+
+    def matches(self, connection: sqlite3.Connection) -> bool:
+        try:
+            path, stamp = _catalog_database_stamp(connection)
+            identity = None if stamp is None else (stamp[0], stamp[1])
+            return (
+                connection.total_changes == self.total_changes
+                and (path, identity) == self.database_identity
+            )
+        except (OSError, ValueError):
+            return False
+
+
 def begin_catalog_write(connection: sqlite3.Connection, cancellation: CancellationToken | None) -> None:
     """Admit cancellation between bounded SQLite busy waits.
 

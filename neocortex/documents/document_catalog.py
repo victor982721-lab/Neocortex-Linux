@@ -78,6 +78,7 @@ from .document_catalog_replay import (
     RECEIPT_KEY,
     CatalogClassificationEvidence,
     CatalogInputDigest,
+    CatalogPublicationFence,
     CatalogReadFence,
     CatalogReplayReceipt,
     catalog_sql_cancellation,
@@ -128,6 +129,12 @@ _DEFAULT_CATALOG_CLASSIFIER = classify_document
 _DEFAULT_CATALOG_CLASSIFIER_IDENTITY = (
     _taxonomy_module.CLASSIFIER_VERSION, _taxonomy_module.NAMING_VERSION,
 )
+# The commit-side checks run after BEGIN IMMEDIATE.  Keep stable owner-local
+# callables for that locked revalidation so test/embedding seams that inject a
+# competing writer remain outside the transaction, while the actual effect is
+# still guarded by the same checks under the lock.
+_COMMIT_CATALOG_GENERATION_DIGEST = catalog_generation_digest
+_COMMIT_CORRECTIONS_DIGEST = corrections_digest
 
 
 def _catalog_owner_key(path: Path) -> str:
@@ -2146,12 +2153,12 @@ def _prepare_catalog_publication(
     classification_evidence: CatalogClassificationEvidence | None,
     cancellation: CancellationToken | None,
     *, expected_corrections_digest: str | None = None,
-) -> tuple[CatalogReadFence, str, str, int]:
+) -> tuple[CatalogPublicationFence, str, str, int, str | None]:
     """Read the staged digest and stale count before taking the writer lock."""
 
     with _CATALOG_WRITE_LOCK:
         connection.commit()
-    catalog_fence = CatalogReadFence.capture(connection)
+    catalog_fence = CatalogPublicationFence.capture(connection)
     connection.execute("BEGIN DEFERRED")
     try:
         with catalog_sql_cancellation(connection, cancellation):
@@ -2184,7 +2191,7 @@ def _prepare_catalog_publication(
             )
             if correction_guard is not None and corrections_digest(connection) != correction_guard:
                 raise CatalogSourceDrift("catalog corrections changed during publication preparation")
-            return catalog_fence, generation_digest, input_manifest_digest, stale
+            return catalog_fence, generation_digest, input_manifest_digest, stale, correction_guard
     finally:
         if connection.in_transaction:
             connection.rollback()
@@ -2192,6 +2199,32 @@ def _prepare_catalog_publication(
 
 class _CatalogPreparationStale(CatalogPublicationConflict):
     """A fresh owner read may retry only while its original proof is intact."""
+
+
+def _catalog_generation_manifest_input_digest(
+    connection: sqlite3.Connection,
+    build: CatalogBuild,
+    generation_digest: str,
+) -> str | None:
+    """Recompute the input-manifest proof for one still-building generation."""
+
+    row = connection.execute(
+        """SELECT source_kind,source_path,source_fence_json,source_root,
+        source_root_identity_json,input_policy_signature
+        FROM catalog_generation_manifests WHERE generation_id=?""",
+        (build.generation_id,),
+    ).fetchone()
+    if row is None or str(row[0]) != build.source_kind:
+        return None
+    return catalog_input_manifest_digest(
+        source_kind=str(row[0]),
+        source_path=None if row[1] is None else str(row[1]),
+        source_fence_json=str(row[2]),
+        source_root=None if row[3] is None else str(row[3]),
+        source_root_identity_json=None if row[4] is None else str(row[4]),
+        input_policy_signature=None if row[5] is None else str(row[5]),
+        generation_digest=generation_digest,
+    )
 
 
 def _publish_catalog_build(
@@ -2228,9 +2261,8 @@ def _publish_catalog_build(
                 connection, build, classification_evidence, cancellation,
                 expected_corrections_digest=expected_corrections_digest,
             )
-            fence, generation_digest, input_manifest_digest, _stale = prepared
-            owner_stamp = fence.database_stamp
-            owner_identity = (owner_stamp[0], None if owner_stamp[1] is None else owner_stamp[1][:2])
+            fence, generation_digest, input_manifest_digest, _stale, _corrections_digest = prepared
+            owner_identity = fence.database_identity
             proof = (generation_digest, input_manifest_digest, owner_identity)
             if original_proof is None:
                 original_proof = proof
@@ -2252,12 +2284,12 @@ def _commit_catalog_build(
     connection: sqlite3.Connection,
     build: CatalogBuild,
     summary: CatalogUpdateSummary,
-    prepared: tuple[CatalogReadFence, str, str, int],
+    prepared: tuple[CatalogPublicationFence, str, str, int, str | None],
     *,
     classification_evidence: CatalogClassificationEvidence | None,
     cancellation: CancellationToken | None,
 ) -> CatalogUpdateSummary:
-    catalog_fence, generation_digest, input_manifest_digest, stale = prepared
+    catalog_fence, generation_digest, input_manifest_digest, stale, prepared_corrections_digest = prepared
     try:
         begin_catalog_write(connection, cancellation)
         with catalog_sql_cancellation(connection, cancellation):
@@ -2298,7 +2330,26 @@ def _commit_catalog_build(
                     f"{current_generation_id!r}/{current_generation_digest!r}"
                 )
             if not catalog_fence.matches(connection):
-                raise _CatalogPreparationStale("catalog changed during publication preparation")
+                raise _CatalogPreparationStale(
+                    "catalog owner changed during publication preparation"
+                )
+            if _COMMIT_CATALOG_GENERATION_DIGEST(connection, build.generation_id) != generation_digest:
+                raise _CatalogPreparationStale(
+                    "catalog staged generation changed during publication preparation"
+                )
+            if _catalog_generation_manifest_input_digest(
+                connection, build, generation_digest
+            ) != input_manifest_digest:
+                raise _CatalogPreparationStale(
+                    "catalog generation manifest changed during publication preparation"
+                )
+            if (
+                prepared_corrections_digest is not None
+                and _COMMIT_CORRECTIONS_DIGEST(connection) != prepared_corrections_digest
+            ):
+                raise _CatalogPreparationStale(
+                    "catalog corrections changed during publication preparation"
+                )
             if build.source_path is not None and not _source_fence_matches(
                 Path(build.source_path), build.source_fence_json
             ):

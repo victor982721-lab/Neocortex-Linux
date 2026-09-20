@@ -2457,13 +2457,9 @@ def _plan_framework(
                WHERE phase.run_id=run.run_id AND phase.status IN
                ('running','partial','recovery','recovering','recovery_required'))
                AS live_or_incomplete_phase,
-        EXISTS(SELECT 1 FROM review_candidates review
-               WHERE review.last_seen_run_id=run.run_id
-                  OR review.resolved_run_id=run.run_id) OR
-        EXISTS(SELECT 1 FROM review_decisions decision
-               WHERE decision.candidate_generation=run.run_id) OR
-        EXISTS(SELECT 1 FROM review_evidence_examples evidence
-               WHERE evidence.candidate_generation=run.run_id) AS human_reference,
+        EXISTS(SELECT 1 FROM findings finding
+               WHERE finding.last_seen_run_id=run.run_id
+                  OR finding.resolved_run_id=run.run_id) AS finding_reference,
         1+(SELECT COUNT(*) FROM run_events event WHERE event.run_id=run.run_id)+
           (SELECT COUNT(*) FROM route_runs route WHERE route.run_id=run.run_id)+
           (SELECT COUNT(*) FROM route_phase_runs phase WHERE phase.run_id=run.run_id)+
@@ -2505,7 +2501,7 @@ def _plan_framework(
             reasons.append("uncertain_file_action")
         if bool(row["action_evidence"]):
             reasons.append("file_action_audit_evidence")
-        if bool(row["human_reference"]):
+        if bool(row["finding_reference"]):
             reasons.append("human_evidence_provenance")
         if run_id in catalog_references:
             reasons.append("referenced_by_catalog_run")

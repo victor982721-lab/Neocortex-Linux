@@ -430,6 +430,8 @@ def _emit_json_execution_error(
     code: str,
     failure: BaseException,
     failed_routes: Sequence[str] = (),
+    status: str = "partial",
+    extra: Mapping[str, object] | None = None,
 ) -> None:
     """Keep ``--json`` parseable when execution fails before a result object."""
 
@@ -437,7 +439,7 @@ def _emit_json_execution_error(
 
     payload = {
         "schema": "neocortex.lifecycle-envelope/v1",
-        "status": "partial",
+        "status": status,
         "completion": "incomplete",
         "exit_code": 2,
         "error": {
@@ -447,6 +449,9 @@ def _emit_json_execution_error(
         },
         "failed_routes": [sanitize_untrusted_text(item, limit=128) for item in failed_routes],
     }
+    if extra is not None:
+        payload["error_code"] = code
+        payload.update(extra)
     print(
         json.dumps(
             sanitize_untrusted_payload(payload),
@@ -697,6 +702,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     from rich.console import Console
     from neocortex.api.read_contract import sanitize_untrusted_text
     from neocortex.deduplication import InventoryError
+    from neocortex.persistence.framework_schema import FrameworkStateIncompatible
     from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
     from neocortex.persistence.state_publication import StatePublicationError
     from neocortex.persistence.framework_state_writer import RunBudgetExceeded
@@ -803,10 +809,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 RuntimeCacheConfigurationError,
                 ProtectedContentError,
                 RedlistPrepassError,
+                FrameworkStateIncompatible,
             ) as exc:
                 error_code = (
                     "budget_exhausted"
                     if isinstance(exc, RunBudgetExceeded)
+                    else "factory_reset_required"
+                    if isinstance(exc, FrameworkStateIncompatible)
                     else "recovery_required"
                     if isinstance(exc, StatePublicationError)
                     else "protected_content_root"
@@ -849,6 +858,28 @@ def main(arguments: Sequence[str] | None = None) -> int:
             + sanitize_untrusted_text(exc, limit=800),
             file=sys.stderr,
         )
+        return 2
+    except FrameworkStateIncompatible as exc:
+        details = {
+            "observed_schema": exc.observed_schema,
+            "expected_schema": exc.expected_schema,
+            "action": exc.action,
+        }
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(
+                code=exc.code,
+                failure=exc,
+                status="failed",
+                extra=details,
+            )
+            return 2
+        print(
+            f"ERROR {exc.code}: El estado local pertenece al schema {exc.observed_schema} "
+            f"y esta release requiere schema {exc.expected_schema}.",
+            file=sys.stderr,
+        )
+        print("Ejecuta: Neocortex --factory-reset", file=sys.stderr)
+        print("Después vuelve a ejecutar el comando.", file=sys.stderr)
         return 2
     except StatePublicationError as exc:
         if bool(getattr(args, "json_output", False)):
