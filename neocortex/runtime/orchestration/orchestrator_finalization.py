@@ -7,10 +7,8 @@ terminal state transitions together without owning route scheduling.
 
 from __future__ import annotations
 
-# mypy: disable-error-code=attr-defined
-
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sized
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -24,6 +22,7 @@ from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.runtime.models import InitialRunResult, RouteOnlyRunResult
 from neocortex.runtime.orchestration.orchestrator_types import (
+    _FrameworkOrchestratorOwner,
     InitialExecution,
     InitialWork,
 )
@@ -31,6 +30,7 @@ from neocortex.persistence.framework_state_writer import RunBudgetExceeded
 from neocortex.safety.corpus_access import CorpusAccessPolicy
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
     from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary
@@ -40,14 +40,63 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.video.models import VideoRouteSummary
     from neocortex.integrations.inventory.inventory_boundary import NormalInventoryBoundary
     from neocortex.persistence.framework_state_writer import FrameworkState
+    from neocortex.progress import ProgressEvent
+    from neocortex.runtime.control.global_resources import GlobalResourceCoordinator
+    from neocortex.runtime.orchestration.run_lifecycle import RunHeartbeat
+    from neocortex.integrations.inventory.inventory_coordinator import PreparedInventory
+    from neocortex.runtime.models import FrameworkConfig
 
 
 _InitialWork = InitialWork
 _InitialExecution = InitialExecution
 
 
-class InitialFinalizationMixin:
+class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
     """Initial-run entry, recovery, and terminal publication."""
+
+    config: FrameworkConfig
+    _active_run: tuple[Path, int] | None
+
+    if TYPE_CHECKING:
+        def run_route_only(self) -> RouteOnlyRunResult: ...
+
+        def _validated_root(self) -> Path: ...
+
+        def _prepare_run_contract(self, boundary: NormalInventoryBoundary) -> None: ...
+
+        def _run_resource_scope(self) -> AbstractContextManager[GlobalResourceCoordinator]: ...
+
+        def _record_initial_start(
+            self,
+            state: FrameworkState,
+            run_id: int,
+            boundary: NormalInventoryBoundary,
+            journal_before: None,
+            journal_error: str | None,
+            excluded_paths: tuple[Path, ...],
+        ) -> None: ...
+
+        def _execute_initial_work(
+            self,
+            *,
+            state: FrameworkState,
+            run_id: int,
+            boundary: NormalInventoryBoundary,
+            journal_before: None,
+            excluded_paths: tuple[Path, ...],
+        ) -> InitialWork: ...
+
+        @staticmethod
+        def _initial_journal_after(inventory: PreparedInventory) -> None: ...
+
+        def _start_run_heartbeat(self, run_id: int) -> RunHeartbeat: ...
+
+        def _framework_state(self) -> FrameworkState: ...
+
+        def _prepare_initial_run(
+            self,
+            boundary: NormalInventoryBoundary,
+        ) -> tuple[None, str | None]: ...
 
     def run(
         self,
@@ -127,8 +176,10 @@ class InitialFinalizationMixin:
         # Some early adapters expose buckets as tuples/lists instead of
         # counters.  Taking only their bounded length is safe and avoids
         # serializing arbitrary record payloads into the Framework owner.
+        if not isinstance(value, Sized):
+            return 0
         try:
-            size = len(value)  # type: ignore[arg-type]
+            size = len(value)
         except (TypeError, AttributeError):
             return 0
         if isinstance(size, bool) or type(size) is not int:

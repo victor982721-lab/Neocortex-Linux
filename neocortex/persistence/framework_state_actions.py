@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-# mypy: disable-error-code=attr-defined
-
 from collections.abc import Iterable
 
 from neocortex.runtime.models import ActionSummary
+from neocortex.persistence.framework_state_types import _FrameworkStateOwner
 from neocortex.persistence.framework_state_common import (
     FileActionSpec,
     begin_file_actions,
@@ -20,7 +19,7 @@ from neocortex.workflow.actions.file_action_reconciliation_store import (
     record_file_action_reconciliation,
 )
 
-class FrameworkStateActionsMixin:
+class FrameworkStateActionsMixin(_FrameworkStateOwner):
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
 
     def begin_file_action(

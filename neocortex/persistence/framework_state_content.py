@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-# mypy: disable-error-code=attr-defined
-
 import json
 import time
 from collections.abc import Iterable, Mapping
@@ -17,11 +15,12 @@ from neocortex.persistence.framework_state_common import CACHE_PRUNE_BATCH_SIZE
 from neocortex.persistence.framework_state_types import (
     CONTENT_TYPE_CACHE_LOOKUP_BATCH_SIZE as _CONTENT_TYPE_CACHE_LOOKUP_BATCH_SIZE,
     CONTENT_TYPE_CACHE_WRITE_BATCH_SIZE as _CONTENT_TYPE_CACHE_WRITE_BATCH_SIZE,
+    _FrameworkStateOwner,
     InventoryRunEvidence,
 )
 from neocortex.persistence.operational_freshness import operational_identity_floor
 
-class FrameworkStateContentMixin:
+class FrameworkStateContentMixin(_FrameworkStateOwner):
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
 
     def get_content_type_cache_batch(

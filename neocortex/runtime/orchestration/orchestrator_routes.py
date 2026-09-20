@@ -8,8 +8,6 @@ not create a second orchestration object or a second persistence owner.
 
 from __future__ import annotations
 
-# mypy: disable-error-code=attr-defined
-
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -23,15 +21,31 @@ from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceSummary,
 )
-from neocortex.runtime.orchestration.orchestrator_types import RouteExecutionError
+from neocortex.runtime.orchestration.orchestrator_types import (
+    RouteExecutionError,
+    _FrameworkOrchestratorOwner,
+)
 from neocortex.runtime.orchestration.route_registry import RouteExecutionContext
 
 if TYPE_CHECKING:
+    from neocortex.progress import ProgressEvent
     from neocortex.persistence.framework_state_writer import FrameworkState
 
 
-class RouteExecutionMixin:
+class RouteExecutionMixin(_FrameworkOrchestratorOwner):
     """Route DAG scheduling and durable route result publication."""
+
+    if TYPE_CHECKING:
+        def _resource_coordinator(self) -> GlobalResourceCoordinator: ...
+
+        def _coordinated_progress(self, event: ProgressEvent) -> None: ...
+
+        def _finish_route_progress(self, route_name: str, outcome: str) -> None: ...
+
+        def request_cancellation(self) -> None: ...
+
+    _active_coordinator: GlobalResourceCoordinator | None
+    _unavailable_routes: dict[str, str]
 
     def _run_content_routes(
         self,
@@ -172,7 +186,7 @@ class RouteExecutionMixin:
         candidate_database: Path | None,
     ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
         coordinator: GlobalResourceCoordinator | None = None
-        previous_coordinator = self._active_coordinator
+        previous_coordinator: GlobalResourceCoordinator | None = self._active_coordinator
         executor: ThreadPoolExecutor | None = None
         interrupted = False
         futures: dict[Future[tuple[object, int]], str] = {}

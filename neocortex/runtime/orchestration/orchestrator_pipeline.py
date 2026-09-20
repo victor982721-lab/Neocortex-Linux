@@ -7,8 +7,6 @@ route hand-off code into one cohesive slice.
 
 from __future__ import annotations
 
-# mypy: disable-error-code=attr-defined
-
 import os
 import time
 from dataclasses import replace
@@ -25,6 +23,7 @@ from neocortex.runtime.config.runtime_cache import XDG_CACHE_HOME_ENVIRONMENT
 from neocortex.runtime.control.global_resources import GlobalResourceSummary, resource_gate
 from neocortex.runtime.models import ActionSummary
 from neocortex.runtime.orchestration.orchestrator_types import (
+    _FrameworkOrchestratorOwner,
     InitialWork as _InitialWork,
     _complete_root_identity,
 )
@@ -41,10 +40,37 @@ if TYPE_CHECKING:
     )
     from neocortex.integrations.inventory.inventory_boundary import NormalInventoryBoundary
     from neocortex.persistence.framework_state_writer import FrameworkState
+    from neocortex.runtime.orchestration.run_manifest import RunBudget
 
 
-class InitialPipelineMixin:
+class InitialPipelineMixin(_FrameworkOrchestratorOwner):
     """Preparation, inventory, curation, and initial route hand-off."""
+
+    if TYPE_CHECKING:
+        def _reserve_lifecycle_stage_work(
+            self,
+            state: FrameworkState,
+            run_id: int,
+            stage: str,
+            reservation_id: str,
+            *,
+            items: int = 0,
+            bytes_count: int = 0,
+            worker: str | None = None,
+        ) -> dict[str, object] | None: ...
+
+        def _durable_run_budget(self) -> RunBudget: ...
+
+        def _bind_resource_deadline(self, state: FrameworkState, run_id: int) -> None: ...
+
+        def _run_content_routes(
+            self,
+            *,
+            root: Path,
+            state: FrameworkState,
+            run_id: int,
+            scan_id: int,
+        ) -> tuple[dict[str, object], GlobalResourceSummary | None]: ...
 
     def _run_document_organization(
         self,

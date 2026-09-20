@@ -19,11 +19,43 @@ from neocortex.runtime.models import ActionSummary
 from neocortex.safety.corpus_access import CorpusAccessPolicy
 
 if TYPE_CHECKING:
+    from _thread import LockType
+    from collections.abc import Callable
+    from pathlib import Path
+
+    from neocortex.progress import ProgressCallback
+    from neocortex.runtime.control.cancellation import CancellationToken
+    from neocortex.runtime.control.global_resources import GlobalResourceCoordinator
+    from neocortex.runtime.models import FrameworkConfig
+    from neocortex.runtime.orchestration.route_registry import RouteAdapter
     from neocortex.capabilities.formats.image.route import ImageRouteSummary
     from neocortex.documents.document_organization import (
         OrganizationApplySummary,
         OrganizationPlanSummary,
     )
+
+
+class _FrameworkOrchestratorOwner:
+    """Type-only shared state surface for extracted orchestration mixins."""
+
+    if TYPE_CHECKING:
+        config: FrameworkConfig
+        selected_routes: tuple[str, ...]
+        route_registry: Mapping[str, RouteAdapter]
+        progress: ProgressCallback
+        _cancellation: CancellationToken
+        _organization_resume_pending: bool
+        _lifecycle_stage_runner: Callable[[int], object] | None
+        _lifecycle_stage_details: Mapping[str, object]
+        _active_coordinator: GlobalResourceCoordinator | None
+        _coordinator_lock: LockType
+        _active_run: tuple[Path, int] | None
+        _unavailable_routes: dict[str, str]
+        _resource_deadline: tuple[int, Mapping[str, object]] | None
+        _SCRATCH_OWNER: str
+        _SCRATCH_SCOPE: str
+        _SCRATCH_REPORT_COUNT_LIMIT: int
+        _SCRATCH_REPORT_BYTES_LIMIT: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,14 +118,16 @@ class RouteExecutionError(RuntimeError):
 def _complete_root_identity(policy: CorpusAccessPolicy) -> tuple[int, int, int]:
     """Return a manifest identity only when all root fields are captured."""
 
-    identity = (
-        policy.root_device_id,
-        policy.root_file_id,
-        policy.root_birthtime_ns,
-    )
-    if any(type(value) is not int for value in identity):
+    device_id = policy.root_device_id
+    file_id = policy.root_file_id
+    birthtime_ns = policy.root_birthtime_ns
+    if (
+        type(device_id) is not int
+        or type(file_id) is not int
+        or type(birthtime_ns) is not int
+    ):
         raise ValueError("corpus root identity is incomplete")
-    return identity
+    return device_id, file_id, birthtime_ns
 
 
 __all__ = [

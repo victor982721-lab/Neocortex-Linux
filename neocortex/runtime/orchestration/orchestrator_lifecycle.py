@@ -7,8 +7,6 @@ provided by :mod:`orchestrator_routes`.
 
 from __future__ import annotations
 
-# mypy: disable-error-code=attr-defined
-
 import os
 from collections.abc import Mapping
 from dataclasses import replace
@@ -25,6 +23,7 @@ from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.runtime.models import RouteOnlyRunResult
 from neocortex.runtime.orchestration.orchestrator_types import (
+    _FrameworkOrchestratorOwner,
     RouteOnlyExecution,
     RouteOnlySource,
     _complete_root_identity,
@@ -45,15 +44,70 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.video.models import VideoRouteSummary
     from neocortex.integrations.inventory.inventory_boundary import NormalInventoryBoundary
     from neocortex.persistence.framework_state_writer import FrameworkState
+    from neocortex.runtime.models import FrameworkConfig
     from neocortex.runtime.orchestration.run_lifecycle import RunHeartbeat
+    from neocortex.runtime.orchestration.run_manifest import RunBudget
+    from neocortex.documents.document_organization import (
+        OrganizationApplySummary,
+        OrganizationPlanSummary,
+    )
+    from contextlib import AbstractContextManager
+    from neocortex.runtime.control.global_resources import (
+        GlobalResourceCoordinator,
+        GlobalResourceSummary,
+    )
 
 
 _RouteOnlySource = RouteOnlySource
 _RouteOnlyExecution = RouteOnlyExecution
 
 
-class RouteLifecycleMixin:
+class RouteLifecycleMixin(_FrameworkOrchestratorOwner):
     """Route-only continuation and recovery lifecycle."""
+
+    config: FrameworkConfig
+    selected_routes: tuple[str, ...]
+    _active_run: tuple[Path, int] | None
+
+    if TYPE_CHECKING:
+        def _validated_root(self) -> Path: ...
+
+        def _prepare_run_contract(self, boundary: NormalInventoryBoundary) -> None: ...
+
+        def _run_resource_scope(self) -> AbstractContextManager[GlobalResourceCoordinator]: ...
+
+        def _require_publication_ready(self) -> None: ...
+
+        def _framework_state(self) -> FrameworkState: ...
+
+        def _route_only_budget(
+            self,
+            state: FrameworkState,
+            source_run_id: int,
+        ) -> tuple[RunBudget, Mapping[str, object] | None]: ...
+
+        def _record_run_preparation(self, state: FrameworkState, run_id: int) -> None: ...
+
+        def _start_run_heartbeat(self, run_id: int) -> RunHeartbeat: ...
+
+        def _bind_resource_deadline(self, state: FrameworkState, run_id: int) -> None: ...
+
+        def _run_content_routes(
+            self,
+            *,
+            root: Path,
+            state: FrameworkState,
+            run_id: int,
+            scan_id: int,
+        ) -> tuple[dict[str, object], GlobalResourceSummary | None]: ...
+
+        def _run_document_organization(
+            self,
+            *,
+            root: Path,
+            state: FrameworkState,
+            run_id: int,
+        ) -> tuple[OrganizationPlanSummary | None, OrganizationApplySummary | None]: ...
 
     def run_route_only(self) -> RouteOnlyRunResult:
         """Run content routes over durable inputs without common maintenance."""

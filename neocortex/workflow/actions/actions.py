@@ -276,8 +276,8 @@ class FrameworkActions(IdentifyActionsMixin, RedlistActionsMixin, EffectsActions
         # Identify/Normalize.  Direct FrameworkActions callers retain the
         # legacy late-redlist compatibility path until they opt into the
         # ordered pipeline through ``identify_and_normalize``.
-        self._redlist_suppress_late_mutation = False
-        self._normalize_without_full_hash = False
+        self._redlist_suppress_late_mutation: bool = False
+        self._normalize_without_full_hash: bool = False
         # Identify is deliberately a single content-aware pass.  Keep the
         # decisions observed by that pass bound to the complete physical
         # identity, rather than to a path that Normalize may replace.  The

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 # mypy: disable-error-code=attr-defined
+# The mixin is composed into FrameworkActions at runtime; its two boolean
+# lifecycle flags are owned by that facade and are intentionally not duplicated
+# as a second runtime base.
+# mypy: disable-error-code=has-type
 
 import json
 import threading
@@ -168,6 +172,9 @@ class IdentifyActionsMixin:
         # page tuple closes its SQLite cursor before this loop can persist
         # route/cache state or apply an extension rename; reopening the same
         # WAL-backed inventory here can exhaust the temporary snapshot budget.
+        capacity_cache = [0, 0]
+        observation_samples: list[int] = []
+        observation_samples_lock = threading.Lock()
         after_path = ""
         while True:
             page = self._index.snapshots_page(
@@ -260,9 +267,10 @@ class IdentifyActionsMixin:
                 # for the complete run.  Registering this short-lived phase
                 # keeps worker capacity elastic without adding a second
                 # coordinator or a fixed worker ceiling.
-                from neocortex.runtime.control.elastic_workers import elastic_map
+                from concurrent.futures import ThreadPoolExecutor
                 from neocortex.runtime.control.global_resources import (
                     current_resource_coordinator,
+                    resource_grant_scope,
                     resource_gate,
                 )
                 from neocortex.runtime.control.cpu_runtime import effective_cpu_count
@@ -281,10 +289,6 @@ class IdentifyActionsMixin:
                 # dominates small detector workloads and defeats the bounded
                 # worker pipeline.  A bound coordinator owns its own live
                 # capacity probe and is intentionally left untouched.
-                capacity_cache = [0, 0]
-                observation_samples: list[int] = []
-                observation_samples_lock = threading.Lock()
-
                 def direct_capacity(
                     cache: list[int] = capacity_cache,
                     samples: list[int] = observation_samples,
@@ -309,7 +313,22 @@ class IdentifyActionsMixin:
                         # Only widen for clearly I/O-bound observations; a
                         # few-millisecond sample can be scheduler/GIL noise
                         # and must not cause a memory-heavy worker surge.
-                        divisor = 2 if mean_ns >= 8_000_000 else 4
+                        if len(recent) < 8:
+                            # Keep a short pilot wide enough to expose a
+                            # genuinely blocking detector before narrowing a
+                            # CPU-bound workload.  A cold page has no timing
+                            # evidence yet, so the initial live-capacity
+                            # divisor remains the conservative value used by
+                            # the historical bounded pipeline.
+                            divisor = 4
+                        else:
+                            # The content detector is Python/GIL-bound for
+                            # small headers.  Once the pilot has enough
+                            # observations, one worker avoids context-switch
+                            # and thread hand-off overhead.  Slow detectors
+                            # (for example a blocked filesystem) still widen
+                            # to half of the live capacity.
+                            divisor = 2 if mean_ns >= 8_000_000 else 16
                         cache[0] = max(1, min(observed, observed // divisor or 1))
                         cache[1] = now
                     return max(1, cache[0])
@@ -346,36 +365,43 @@ class IdentifyActionsMixin:
 
                 def observe_batch(
                     batch: tuple[tuple[int, FileSnapshot], ...],
+                    resource_gate_value=gate,
+                    cancel_token=cancellation,
                 ) -> tuple[tuple[int, ContentObservation], ...]:
-                    return tuple(
-                        (
-                            index,
-                            observe(planned),
-                        )
-                        for index, planned in batch
-                    )
+                    device = str(batch[0][1].volume_id) if batch else None
+                    if resource_gate_value is None:
+                        result = tuple((index, observe(planned)) for index, planned in batch)
+                    else:
+                        with resource_gate_value.admit(
+                            CONTENT_PREFIX_BYTES * 2 * 32,
+                            native_threads=1,
+                            io_slots=1,
+                            io_device=device,
+                            phase="actions.identify",
+                            cancellation=cancel_token,
+                        ) as grant:
+                            with resource_grant_scope(grant):
+                                result = tuple(
+                                    (index, observe(planned)) for index, planned in batch
+                                )
+                    return result
 
-                with elastic_map(
-                    observe_batch,
-                    observation_batches,
-                    gate=gate,
-                    capacity=direct_capacity if coordinator is None else None,
-                    # The detector reads at most CONTENT_PREFIX_BYTES and
-                    # the worker retains one bounded before/after snapshot.
-                    # Use a fixed upper bound so ElasticMap can re-sample
-                    # live capacity once per in-flight window rather than
-                    # probing cgroup files for every submitted item.
-                    estimated_bytes=CONTENT_PREFIX_BYTES * 2 * 32,
-                    native_threads=1,
-                    io_slots=1,
-                    io_device=lambda batch: (
-                        str(batch[0][1].volume_id) if batch else None
-                    ),
-                    phase="actions.identify",
-                    cancellation=cancellation,
-                ) as results:
-                    for batch_result in results:
-                        for index, observation in batch_result:
+                if coordinator is None:
+                    worker_count = direct_capacity()
+                else:
+                    assert gate is not None
+                    worker_count = gate.worker_capacity(
+                        max_workers=None,
+                        estimated_bytes=CONTENT_PREFIX_BYTES * 2 * 32,
+                        native_threads=1,
+                    )
+                with ThreadPoolExecutor(
+                    max_workers=max(1, int(worker_count)),
+                    thread_name_prefix="neocortex-identify",
+                ) as executor:
+                    futures = [executor.submit(observe_batch, batch) for batch in observation_batches]
+                    for future in futures:
+                        for index, observation in future.result():
                             observations[index] = observation
 
             for index, planned in enumerate(admitted):

@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-# mypy: disable-error-code=attr-defined
-
 import json
 import time
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 from neocortex.persistence.framework_state_common import finish_file_actions
+from neocortex.persistence.framework_state_types import _FrameworkStateOwner
 from neocortex.runtime.orchestration.run_manifest import (
     RUN_BUDGET_SCHEMA,
     RUN_RECOVERY_SCHEMA,
     RUN_STAGE_SCHEMA,
 )
 
-class FrameworkStateRoutesMixin:
+class FrameworkStateRoutesMixin(_FrameworkStateOwner):
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
 
     def begin_route_runs(

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-# mypy: disable-error-code=attr-defined
-
 import hashlib
 import json
 import os
@@ -19,6 +17,7 @@ from neocortex.persistence.framework_state_types import (
     DurableInventoryBinding,
     InventoryRunEvidence,
     RunBudgetExceeded,
+    _FrameworkStateOwner,
     bounded_lifecycle_name as _bounded_lifecycle_name,
 )
 from neocortex.persistence.framework_connection import connect_existing_framework
@@ -35,7 +34,7 @@ from neocortex.platform.policy import sqlite_path_collation
 
 _PATH_COLLATION = sqlite_path_collation()
 
-class FrameworkStateRunsMixin:
+class FrameworkStateRunsMixin(_FrameworkStateOwner):
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
 
     def begin_initial_run(
