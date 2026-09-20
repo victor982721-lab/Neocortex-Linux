@@ -44,6 +44,14 @@ from neocortex.workflow.actions.file_action_recovery import expected_identity_js
 from neocortex.workflow.mutations import BackendOutcome
 from neocortex.safety.kio_trash import metadata_binding
 
+
+def _files_equal_exact(*args, **kwargs):
+    """Resolve the historical facade seam for injected safety tests."""
+
+    from neocortex.workflow.actions import actions as facade
+
+    return facade.files_equal_exact(*args, **kwargs)
+
 class EffectsActionsMixin:
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
 
@@ -376,7 +384,7 @@ class EffectsActionsMixin:
                     else f"{FULL_ALGORITHM}:" + self._full_fingerprint(planned).hex()
                 )
                 if reference is not None:
-                    if not files_equal_exact(planned, reference):
+                    if not _files_equal_exact(planned, reference):
                         raise RuntimeError("keeper changed during exact duplicate comparison")
                 expected_json = expected_identity_json(
                     planned,
@@ -560,7 +568,7 @@ class EffectsActionsMixin:
                     if action_type == "trash_redlist"
                     else f"{FULL_ALGORITHM}:" + self._full_fingerprint(planned).hex()
                 )
-                if reference is not None and not files_equal_exact(planned, reference):
+                if reference is not None and not _files_equal_exact(planned, reference):
                     raise RuntimeError("keeper changed during exact duplicate comparison")
                 expected_json = expected_identity_json(
                     planned,
@@ -1371,7 +1379,7 @@ class EffectsActionsMixin:
                         if not _same_snapshot(redundant, redundant_now):
                             raise RuntimeError("metadata changed after exact duplicate planning")
                         assert _keep_now is not None
-                        if self._verify_bytes_before_trash and not files_equal_exact(
+                        if self._verify_bytes_before_trash and not _files_equal_exact(
                             _keep_now, redundant_now
                         ):
                             raise RuntimeError("content changed after exact duplicate planning")

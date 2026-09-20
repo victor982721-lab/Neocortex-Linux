@@ -18,6 +18,7 @@ from neocortex.deduplication import (
     DedupIndex,
     DedupPlan,
     FileSnapshot,
+    files_equal_exact,  # noqa: F401 - historical test/injection seam
     full_fingerprint,
     snapshot_path,
 )
@@ -219,6 +220,11 @@ def _is_legal_metadata_name(path: str | Path) -> bool:
 from neocortex.workflow.actions.action_identify import IdentifyActionsMixin  # noqa: E402
 from neocortex.workflow.actions.action_redlist_stage import RedlistActionsMixin  # noqa: E402
 from neocortex.workflow.actions.action_effects import EffectsActionsMixin  # noqa: E402
+from neocortex.workflow.actions.action_contracts import (  # noqa: E402
+    RedlistPrepassError as _RedlistPrepassError,
+)
+
+RedlistPrepassError = _RedlistPrepassError
 
 class FrameworkActions(IdentifyActionsMixin, RedlistActionsMixin, EffectsActionsMixin):
     """Apply bounded action batches with durable before/after records."""
