@@ -763,7 +763,7 @@ def run_semantic_index(
     from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
     from neocortex.persistence.framework_state_writer import RunBudgetExceeded
 
-    text_model = _semantic_text_model(getattr(args, "semantic_text_profile", None))
+    text_model = _semantic_text_model(str(getattr(args, "semantic_text_profile", "") or ""))
     selected_sources = _selected_semantic_text_sources(args)
     # Resolve the durable Framework-owned policy once per Semantic stage.  The
     # source callbacks then apply it before model work, while direct callers
