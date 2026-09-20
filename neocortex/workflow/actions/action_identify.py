@@ -14,6 +14,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 from neocortex.deduplication import DedupPlan, FileChangedError, FileSnapshot, snapshot_path
 from neocortex.platform.content_types import DetectedType
@@ -43,6 +44,17 @@ from neocortex.deduplication.inventory.index import validate_inventory_root
 
 class IdentifyActionsMixin:
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
+
+    if TYPE_CHECKING:
+        _max_file_bytes: int | None
+
+        def _size_is_admitted(self, snapshot: FileSnapshot) -> bool: ...
+
+        def _record_size_skip(
+            self, summary: ActionSummary, snapshot: FileSnapshot
+        ) -> ActionSummary: ...
+
+        def _with_size_limit(self, summary: ActionSummary) -> ActionSummary: ...
 
     def _content_type_total(self) -> int:
         """Count non-empty snapshots admitted by this run's size ceiling.

@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 from neocortex.deduplication import (
     DedupPlan,
@@ -55,6 +56,11 @@ def _files_equal_exact(*args, **kwargs):
 
 class EffectsActionsMixin:
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
+
+    if TYPE_CHECKING:
+        _max_file_bytes: int | None
+
+        def _size_is_admitted(self, snapshot: FileSnapshot) -> bool: ...
 
     def _effect_preservation_reason(self, snapshot: FileSnapshot) -> str | None:
         """Return a small generic protection veto for physical cleanup."""

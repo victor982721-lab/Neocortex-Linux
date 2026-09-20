@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.persistence.framework_state_writer import RunBudgetExceeded
@@ -23,6 +24,9 @@ from neocortex.workflow.actions.action_contracts import (
 
 class RedlistActionsMixin:
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
+
+    if TYPE_CHECKING:
+        def _size_is_admitted(self, snapshot: FileSnapshot) -> bool: ...
 
     def _reset_redlist_diagnostics(self, *, clear_exclusions: bool = False) -> None:
         if clear_exclusions:
