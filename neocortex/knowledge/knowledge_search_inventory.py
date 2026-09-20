@@ -242,7 +242,7 @@ def physical_identity_tuple(
     identity = resource.physical_identity
     if (
         identity is None
-        or identity.scheme not in platform_policy.PHYSICAL_IDENTITY_SCHEMES
+        or identity.scheme != platform_policy.POSIX_PHYSICAL_IDENTITY_SCHEME
         or identity.identity_version != 1
         or resource.resource_id != f"resource:file:{identity.value}"
     ):
@@ -255,11 +255,7 @@ def physical_identity_tuple(
         file_identity_type(volume_id, file_id)
     except file_identity_errors:
         return None
-    valid_birthtime = (
-        birthtime_ns >= 0
-        if identity.scheme == platform_policy.WINDOWS_PHYSICAL_IDENTITY_SCHEME
-        else birthtime_ns == platform_policy.UNAVAILABLE_BIRTHTIME_NS
-    )
+    valid_birthtime = birthtime_ns >= platform_policy.UNAVAILABLE_BIRTHTIME_NS
     if not valid_birthtime or any(
         component != str(value)
         for component, value in zip(

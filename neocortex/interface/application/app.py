@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import ctypes
 import multiprocessing
-import os
 import sys
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from neocortex import __version__
 from .arguments import parse_arguments as _parse_arguments
@@ -27,12 +25,6 @@ def create_window(arguments: Sequence[str] = ()) -> MainWindow:
         initial_root=parsed.root,
         state_directory=parsed.state_directory,
     )
-
-
-def _set_windows_application_identity() -> None:
-    if os.name == "nt":
-        windll = cast(Any, ctypes).windll
-        windll.shell32.SetCurrentProcessExplicitAppUserModelID("Neocortex.Desktop")
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
@@ -57,7 +49,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
         application = instance
     else:
         raise RuntimeError("A non-GUI Qt application already exists")
-    _set_windows_application_identity()
     application.setApplicationDisplayName("NeoCortex")
     application.setAttribute(
         Qt.ApplicationAttribute.AA_DontShowIconsInMenus,

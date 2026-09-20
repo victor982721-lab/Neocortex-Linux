@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-ReadOperation = Literal["status", "search", "ask", "review"]
+ReadOperation = Literal["status", "search", "ask"]
 ReadVisualState = Literal["completed", "warning", "failed"]
 
 MAX_QUERY_CHARACTERS = 4_096
@@ -13,7 +13,7 @@ MAX_RESULTS_PER_SCOPE = 100
 MAX_PRESENTATION_CHARACTERS = 128_000
 MAX_PRESENTATION_ROWS = 200
 
-_OPERATIONS = frozenset({"status", "search", "ask", "review"})
+_OPERATIONS = frozenset({"status", "search", "ask"})
 _SCOPES = frozenset({"personal", "framework", "all"})
 
 
@@ -51,7 +51,7 @@ class ReadRequest:
 
     def _validate_choices(self) -> None:
         if self.operation not in _OPERATIONS:
-            raise ValueError("operation must be status, search, ask or review")
+            raise ValueError("operation must be status, search or ask")
         if self.scope not in _SCOPES:
             raise ValueError("scope must be personal, framework or all")
 

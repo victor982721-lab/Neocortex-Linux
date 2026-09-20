@@ -9,11 +9,6 @@ from pathlib import Path
 import pytest
 
 import neocortex.deduplication.persistence.lifecycle as inventory_lifecycle_module
-from neocortex.enumeration.path_index.repository import SqlitePathIndex
-from neocortex.enumeration.path_index.schema import (
-    initialize_path_index_schema,
-    validate_path_index_schema,
-)
 from neocortex.deduplication import DedupIndex, InventoryError
 from neocortex.deduplication.persistence import (
     SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION,
@@ -42,70 +37,7 @@ def _columns(database: Path, table: str) -> set[str]:
         return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
 
 
-# region [01] Path-index v1 lifecycle
-
-
-def test_path_index_fresh_schema_is_exact_and_readonly_idempotent(
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "paths.sqlite3"
-    initialize_path_index_schema(database)
-    with sqlite3.connect(database) as connection:
-        validate_path_index_schema(connection)
-    before = database.read_bytes()
-
-    initialize_path_index_schema(database)
-
-    assert database.read_bytes() == before
-    with SqlitePathIndex(database) as index:
-        assert index.journal_cursor is None
-
-
-@pytest.mark.parametrize("raw_version", ("2", "01", "future"))
-def test_path_index_rejects_unsupported_or_noncanonical_version_without_mutation(
-    tmp_path: Path,
-    raw_version: str,
-) -> None:
-    database = tmp_path / f"paths-{raw_version}.sqlite3"
-    initialize_path_index_schema(database)
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "UPDATE metadata SET value=? WHERE key='schema_version'",
-            (raw_version,),
-        )
-        connection.commit()
-    before = database.read_bytes()
-
-    with pytest.raises(RuntimeError):
-        SqlitePathIndex(database)
-
-    assert database.read_bytes() == before
-
-
-def test_path_index_rejects_false_current_index_without_mutation(
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "paths-malformed.sqlite3"
-    initialize_path_index_schema(database)
-    _execute(
-        database,
-        """
-        DROP INDEX nodes_parent_idx;
-        CREATE INDEX nodes_parent_idx ON nodes(parent_frn, name);
-        """,
-    )
-    before = database.read_bytes()
-
-    with pytest.raises(SQLiteSchemaContractError, match="nodes_parent_idx"):
-        SqlitePathIndex(database)
-
-    assert database.read_bytes() == before
-
-
-# endregion [01]
-
-
-# region [02] Historical dedup fixtures
+# region [01] Historical dedup fixtures
 
 
 _METADATA_FIXTURE = """

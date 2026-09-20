@@ -125,27 +125,6 @@ _DIRECT_LEAF_OPTIONS = frozenset(
         "retention_inventory_after",
         "retention_framework_after",
         "retention_json",
-        "review_status",
-        "review_recommendation",
-        "review_route",
-        "review_reason",
-        "review_volume_id",
-        "review_file_id",
-        "review_generation",
-        "review_decision_status",
-        "review_actor",
-        "review_note",
-        "review_evidence_batch_size",
-        "review_evidence_route",
-        "review_evidence_reason",
-        "review_evidence_recommendation",
-        "review_evidence_detector",
-        "review_evidence_actor",
-        "review_evidence_status",
-        "review_evidence_completeness",
-        "review_json",
-        "review_json_lines",
-        "review_after",
         "curation_json",
         "catalog_kind",
         "catalog_authority",
@@ -772,7 +751,7 @@ def _validate_direct_operation_selection(args: argparse.Namespace) -> None:
     direct_operations = selected_direct_operations(args)
     if len(direct_operations) > 1:
         raise SystemExit(
-            "direct status/recovery/review/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/"
+            "direct status/recovery/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/"
             "Knowledge "
             "operations are mutually exclusive"
         )
@@ -1005,169 +984,6 @@ def _validate_watcher_operation(
         raise SystemExit("--watch cannot be combined with --candidate-run")
 
 
-def _validate_review_record(args: argparse.Namespace) -> None:
-    if args.review_record is None:
-        return
-
-    required = {
-        "--review-route": args.review_route,
-        "--review-reason": args.review_reason,
-        "--review-volume-id": args.review_volume_id,
-        "--review-file-id": args.review_file_id,
-        "--review-generation": args.review_generation,
-        "--review-actor": args.review_actor,
-    }
-    missing = [name for name, value in required.items() if value is None]
-    if missing:
-        raise SystemExit("--review-record requires " + ", ".join(missing))
-    if not args.review_actor or args.review_actor.strip() != args.review_actor:
-        raise SystemExit("--review-actor must be non-empty and trimmed")
-    if len(args.review_actor) > 256:
-        raise SystemExit("--review-actor cannot exceed 256 characters")
-    if args.review_note is not None and (
-        not args.review_note or args.review_note.strip() != args.review_note
-    ):
-        raise SystemExit("--review-note must be non-empty and trimmed")
-    if args.review_note is not None and len(args.review_note.encode("utf-8")) > 8 * 1024:
-        raise SystemExit("--review-note cannot exceed 8192 UTF-8 bytes")
-
-
-def _validate_review_limits(args: argparse.Namespace) -> None:
-    if args.review_candidates is not None and not 1 <= args.review_candidates <= 10_000:
-        raise SystemExit("--review-candidates must be between 1 and 10000")
-    if args.review_decisions is not None and not 1 <= args.review_decisions <= 10_000:
-        raise SystemExit("--review-decisions must be between 1 and 10000")
-
-
-def _validate_review_evidence_operations(
-    args: argparse.Namespace,
-    explicit: set[str],
-) -> None:
-    evidence_operation = bool(
-        args.review_evidence_sync
-        or args.review_evidence_metrics
-        or args.review_evidence_list is not None
-    )
-    if not 1 <= args.review_evidence_batch_size <= 256:
-        raise SystemExit("--review-evidence-batch-size must be between 1 and 256")
-    if "review_evidence_batch_size" in explicit and not args.review_evidence_sync:
-        raise SystemExit("--review-evidence-batch-size requires --review-evidence-sync")
-    if args.review_evidence_list is not None and not (1 <= args.review_evidence_list <= 1000):
-        raise SystemExit("--review-evidence-list must be between 1 and 1000")
-    common_filter_requested = any(
-        (
-            args.review_evidence_route,
-            args.review_evidence_reason,
-            args.review_evidence_recommendation,
-            args.review_evidence_detector,
-            args.review_evidence_actor,
-        )
-    )
-    if common_filter_requested and not (
-        args.review_evidence_metrics or args.review_evidence_list is not None
-    ):
-        raise SystemExit(
-            "review evidence filters require --review-evidence-metrics or --review-evidence-list"
-        )
-    list_filter_requested = bool(args.review_evidence_status or args.review_evidence_completeness)
-    if list_filter_requested and args.review_evidence_list is None:
-        raise SystemExit(
-            "review evidence status/completeness filters require --review-evidence-list"
-        )
-    review_operation = bool(selected_direct_operations(args, family=DirectOperationFamily.REVIEW))
-    if getattr(args, "review_json_lines", False) and not (
-        args.review_json and args.review_candidates is not None
-    ):
-        raise SystemExit("--review-json-lines requires --review-candidates and --review-json")
-    if getattr(args, "review_after", None) is not None and args.review_candidates is None:
-        raise SystemExit("--review-after requires --review-candidates")
-    if getattr(args, "review_after", None) is not None and getattr(args, "review_json_lines", False):
-        raise SystemExit("--review-after is unavailable in legacy JSON Lines")
-    if args.review_json and not review_operation:
-        raise SystemExit("--review-json requires a review command")
-    if evidence_operation and args.apply:
-        raise SystemExit("review evidence commands cannot be combined with --apply")
-
-
-def _validate_review_operations(
-    args: argparse.Namespace,
-    explicit: set[str],
-) -> None:
-    _validate_review_limits(args)
-    _validate_review_evidence_operations(args, explicit)
-    review_operation = any(
-        operation.destination in {"review_candidates", "review_decisions", "review_record"}
-        for operation in selected_direct_operations(
-            args,
-            family=DirectOperationFamily.REVIEW,
-        )
-    )
-    candidate_filter_requested = bool(
-        args.review_recommendation is not None
-        or args.review_status != "open"
-        or "review_status" in explicit
-    )
-    if args.review_candidates is None and candidate_filter_requested:
-        raise SystemExit(
-            "review filters require --review-candidates (--review-recommendation/--review-status)"
-        )
-    shared_review_filter_requested = any(
-        (
-            args.review_route is not None,
-            args.review_reason is not None,
-            args.review_volume_id is not None,
-            args.review_file_id is not None,
-            args.review_generation is not None,
-            args.review_decision_status is not None,
-            args.review_actor is not None,
-            args.review_note is not None,
-        )
-    )
-    if not review_operation and shared_review_filter_requested:
-        raise SystemExit("review options require a review command")
-    if args.review_reason is not None:
-        if not args.review_reason or args.review_reason.strip() != args.review_reason:
-            raise SystemExit("--review-reason must be non-empty and trimmed")
-        if len(args.review_reason) > 256:
-            raise SystemExit("--review-reason cannot exceed 256 characters")
-    if args.review_generation is not None and args.review_generation < 0:
-        raise SystemExit("--review-generation cannot be negative")
-    if (args.review_volume_id is None) != (args.review_file_id is None):
-        raise SystemExit("--review-volume-id and --review-file-id must be supplied together")
-    if args.review_decision_status is not None and args.review_decisions is None:
-        raise SystemExit("--review-decision-status requires --review-decisions")
-
-    decision_target_filter = any(
-        (
-            args.review_reason is not None,
-            args.review_volume_id is not None,
-            args.review_generation is not None,
-        )
-    )
-    if (
-        args.review_candidates is not None
-        and args.review_decisions is None
-        and args.review_record is None
-        and decision_target_filter
-    ):
-        raise SystemExit("decision identity filters require --review-decisions or --review-record")
-    if args.review_actor is not None and args.review_record is None:
-        raise SystemExit("--review-actor requires --review-record")
-    if args.review_note is not None and args.review_record is None:
-        raise SystemExit("--review-note requires --review-record")
-
-    _validate_review_record(args)
-
-    if args.review_candidates is not None and args.apply:
-        raise SystemExit("--review-candidates is read-only and cannot be combined with --apply")
-    if args.review_decisions is not None and args.apply:
-        raise SystemExit("--review-decisions is read-only and cannot be combined with --apply")
-    if args.review_record is not None and args.apply:
-        raise SystemExit("--review-record cannot be combined with --apply")
-    if selected_direct_operations(args, family=DirectOperationFamily.REVIEW) and args.route != "none":
-        raise SystemExit("review operations cannot be combined with --route")
-
-
 def _validate_organization_operations(
     args: argparse.Namespace,
     explicit: set[str],
@@ -1256,7 +1072,6 @@ def _validate_direct_operations(args: argparse.Namespace) -> None:
     _validate_action_recovery_operation(args)
     _validate_retention_operation(args, explicit)
     _validate_watcher_operation(args, explicit)
-    _validate_review_operations(args, explicit)
     validate_office_direct_operation(args, explicit)
     validate_docx_direct_operation(args)
     _validate_pdf_direct_operation(args)

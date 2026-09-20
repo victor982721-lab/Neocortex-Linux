@@ -14,19 +14,19 @@ from typing import Literal, Mapping
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.persistence.framework_connection import connect_existing_framework
+from neocortex.workflow.findings import (
+    FINDING_RECOMMENDATIONS,
+    MAX_EVIDENCE_BYTES,
+    MAX_IDENTIFIER_CHARS,
+    ReviewCandidate,
+    ReviewRecommendation,
+    serialized_evidence,
+)
 
-ReviewRecommendation = Literal[
-    "retry",
-    "keep_protected",
-    "manual_review",
-    "deletion_candidate",
-]
 ReviewStatus = Literal["open", "resolved"]
 ReviewDecisionStatus = Literal["confirmed", "dismissed", "deferred"]
 
-REVIEW_RECOMMENDATIONS = frozenset(
-    {"retry", "keep_protected", "manual_review", "deletion_candidate"}
-)
+REVIEW_RECOMMENDATIONS = FINDING_RECOMMENDATIONS
 REVIEW_STATUSES = frozenset({"open", "resolved"})
 REVIEW_DECISION_STATUSES = frozenset({"confirmed", "dismissed", "deferred"})
 MAX_EVIDENCE_BYTES = 32 * 1024
@@ -34,35 +34,6 @@ MAX_PROVENANCE_BYTES = 32 * 1024
 MAX_NOTE_BYTES = 8 * 1024
 MAX_IDENTIFIER_CHARS = 256
 MAX_RECONCILIATION_REASONS = 256
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewCandidate:
-    """One evidence-backed recommendation; it never authorizes an action."""
-
-    route_name: str
-    snapshot: FileSnapshot
-    reason_code: str
-    source_status: str
-    recommendation: ReviewRecommendation
-    retryable: bool
-    confidence: float
-    evidence: Mapping[str, object]
-    detector_version: str
-
-    def __post_init__(self) -> None:
-        for field_name, value in (
-            ("route_name", self.route_name),
-            ("reason_code", self.reason_code),
-            ("source_status", self.source_status),
-            ("detector_version", self.detector_version),
-        ):
-            _validated_identifier(value, field_name=field_name)
-        if self.recommendation not in REVIEW_RECOMMENDATIONS:
-            raise ValueError(f"invalid review recommendation: {self.recommendation}")
-        if not math.isfinite(self.confidence) or not 0.0 <= self.confidence <= 1.0:
-            raise ValueError("review confidence must be finite and between zero and one")
-        serialized_evidence(self.evidence)
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,16 +185,6 @@ def _serialized_mapping(
     if len(payload.encode("utf-8")) > maximum_bytes:
         raise ValueError(f"review {field_name} exceeds the {maximum_bytes}-byte limit")
     return payload
-
-
-def serialized_evidence(evidence: Mapping[str, object]) -> str:
-    """Serialize compact evidence without NaN or silent truncation."""
-
-    return _serialized_mapping(
-        evidence,
-        field_name="evidence",
-        maximum_bytes=MAX_EVIDENCE_BYTES,
-    )
 
 
 def serialized_provenance(provenance: Mapping[str, object]) -> str:

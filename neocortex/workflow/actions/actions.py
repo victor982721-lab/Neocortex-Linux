@@ -52,7 +52,7 @@ from neocortex.safety.protected_content import ProtectedContentError
 from neocortex.persistence.framework_state_writer import FrameworkState, RunBudgetExceeded
 from neocortex.runtime.control.cancellation import CancellationRequested
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
-from neocortex.curation.application import (
+from neocortex.workflow.mutations import (
     ApplyCandidate,
     BackendOutcome,
     KioTrashBackend,
@@ -67,6 +67,67 @@ from neocortex.safety.kio_trash import metadata_binding
 TRASH_BATCH_SIZE = 256
 ReserveWork = Callable[[str, int, int], None]
 CONTENT_PREFIX_BYTES = 64 * 1024
+REDLIST_REASON_EXAMPLE_LIMIT = 24
+REDLIST_REASON_CODE_LIMIT = 64
+
+
+def _redlist_reason_code(value: object) -> str:
+    """Map an untrusted action diagnostic to one bounded reason code.
+
+    Redlist diagnostics are persisted in the Framework owner.  Do not copy
+    backend messages (which may contain paths, helper output, or arbitrary
+    bytes) into the durable counters.  The detailed message remains owned by
+    the file-action row when that row crossed a real frontier.
+    """
+
+    text = str(value or "").casefold()
+    known = (
+        "destination_exists",
+        "outside_root",
+        "protected_content",
+        "internal_path",
+        "symbolic_link",
+        "reparse",
+        "source_disappeared",
+        "metadata_changed",
+        "identity_drift",
+        "backend_unavailable",
+        "preflight_failed",
+        "effect_ambiguous",
+        "receipt_invalid",
+        "receipt_missing",
+        "source_changed",
+        "cancelled",
+        "budget_exhausted",
+    )
+    aliases = {
+        "destination exists": "destination_exists",
+        "outside": "outside_root",
+        "escapes root": "outside_root",
+        "protected content": "protected_content",
+        "internal framework path": "internal_path",
+        "symbolic link": "symbolic_link",
+        "symlink": "symbolic_link",
+        "reparse": "reparse",
+        "source disappeared": "source_disappeared",
+        "metadata changed": "metadata_changed",
+        "source changed": "source_changed",
+        "identity": "identity_drift",
+        "backend": "backend_unavailable",
+        "preflight": "preflight_failed",
+        "ambiguous": "effect_ambiguous",
+        "recovery": "effect_ambiguous",
+        "receipt": "receipt_invalid",
+        "cancel": "cancelled",
+        "budget": "budget_exhausted",
+    }
+    for token in known:
+        if token in text:
+            return token
+    for token, code in aliases.items():
+        if token in text:
+            return code
+    return "unspecified"
 
 
 class RedlistPrepassError(RuntimeError):
@@ -79,14 +140,26 @@ class RedlistPrepassError(RuntimeError):
         applied: int,
         failed: int,
         protected: int,
+        blocked: int = 0,
+        failed_pre_effect: int = 0,
+        recovery_required: int = 0,
+        reason_codes: dict[str, int] | None = None,
+        examples: tuple[dict[str, object], ...] = (),
     ) -> None:
         self.matched = matched
         self.applied = applied
         self.failed = failed
         self.protected = protected
+        self.blocked = blocked
+        self.failed_pre_effect = failed_pre_effect
+        self.recovery_required = recovery_required
+        self.reason_codes = {} if reason_codes is None else dict(reason_codes)
+        self.examples = tuple(examples)
         super().__init__(
             "redlist prepass incomplete: "
-            f"matched={matched} applied={applied} failed={failed} protected={protected}"
+            f"matched={matched} applied={applied} failed={failed} "
+            f"blocked={blocked} protected={protected} "
+            f"failed_pre_effect={failed_pre_effect} recovery_required={recovery_required}"
         )
 _LEGAL_METADATA_NAMES = frozenset(
     {
@@ -210,6 +283,173 @@ class FrameworkActions:
         # visible while the corresponding trash batch is applied so the
         # generic batch helper does not charge the same page a second time.
         self._redlist_page_reserved = False
+        # Paths admitted by the explicit redlist must not become route inputs
+        # merely because a hard boundary prevented the physical effect.  Keep
+        # this as a bounded in-memory set; the policy matcher is also checked
+        # lazily so a second FrameworkActions instance (the integrated runner
+        # creates one after the prepass) observes the same decision.
+        self._redlist_excluded_paths: set[str] = set()
+        self._normalized_paths: dict[str, str] = {}
+        self._redlist_prepass_active = False
+        self._redlist_policy_active = False
+        # Integrated --all sets this while running the explicit prepass after
+        # Identify/Normalize.  Direct FrameworkActions callers retain the
+        # legacy late-redlist compatibility path until they opt into the
+        # ordered pipeline through ``identify_and_normalize``.
+        self._redlist_suppress_late_mutation = False
+        self._normalize_without_full_hash = False
+        self._redlist_diagnostics: dict[str, object] = {
+            "blocked": 0,
+            "protected": 0,
+            "failed_pre_effect": 0,
+            "recovery_required": 0,
+            "reason_codes": {},
+            "examples": [],
+        }
+        self._redlist_batch_diagnostics: dict[str, object] = {}
+
+    def _reset_redlist_diagnostics(self, *, clear_exclusions: bool = False) -> None:
+        if clear_exclusions:
+            self._redlist_excluded_paths.clear()
+        self._redlist_diagnostics = {
+            "blocked": 0,
+            "protected": 0,
+            "failed_pre_effect": 0,
+            "recovery_required": 0,
+            "reason_codes": {},
+            "examples": [],
+        }
+        self._redlist_batch_diagnostics = {}
+
+    @staticmethod
+    def _redlist_path_digest(path: str | Path) -> str:
+        """Return a bounded path example without persisting the path itself."""
+
+        return hashlib.sha256(os.fsencode(str(path))).hexdigest()
+
+    def _record_redlist_diagnostic(
+        self,
+        category: str,
+        reason: object,
+        path: str | Path | None = None,
+    ) -> None:
+        if category not in {"blocked", "protected", "failed_pre_effect", "recovery_required"}:
+            return
+        details = self._redlist_diagnostics
+        details[category] = int(details.get(category, 0)) + 1
+        code = _redlist_reason_code(reason)
+        reason_codes = details.get("reason_codes")
+        if not isinstance(reason_codes, dict):
+            reason_codes = {}
+            details["reason_codes"] = reason_codes
+        if len(reason_codes) < REDLIST_REASON_CODE_LIMIT or code in reason_codes:
+            reason_codes[code] = int(reason_codes.get(code, 0)) + 1
+        examples = details.get("examples")
+        if not isinstance(examples, list):
+            examples = []
+            details["examples"] = examples
+        if path is not None and len(examples) < REDLIST_REASON_EXAMPLE_LIMIT:
+            examples.append(
+                {
+                    "category": category,
+                    "reason_code": code,
+                    "path_digest": self._redlist_path_digest(path),
+                }
+            )
+
+    def _begin_redlist_batch_diagnostics(self) -> None:
+        self._redlist_batch_diagnostics = {
+            "blocked": 0,
+            "protected": 0,
+            "failed_pre_effect": 0,
+            "recovery_required": 0,
+            "reason_codes": {},
+            "examples": [],
+        }
+
+    def _record_redlist_batch_diagnostic(
+        self,
+        category: str,
+        reason: object,
+        path: str | Path | None = None,
+    ) -> None:
+        previous = self._redlist_diagnostics
+        self._redlist_diagnostics = self._redlist_batch_diagnostics
+        try:
+            self._record_redlist_diagnostic(category, reason, path)
+        finally:
+            self._redlist_diagnostics = previous
+
+    def _consume_redlist_batch_diagnostics(self) -> dict[str, object]:
+        batch = self._redlist_batch_diagnostics
+        self._redlist_batch_diagnostics = {}
+        return batch
+
+    def _merge_redlist_batch_diagnostics(self, batch: dict[str, object]) -> None:
+        for category in ("blocked", "protected", "failed_pre_effect", "recovery_required"):
+            count = self._redlist_counter(batch, category)
+            if count:
+                self._redlist_diagnostics[category] = (
+                    self._redlist_counter(self._redlist_diagnostics, category) + count
+                )
+        source_codes = batch.get("reason_codes")
+        target_codes = self._redlist_diagnostics.get("reason_codes")
+        if isinstance(source_codes, dict) and isinstance(target_codes, dict):
+            for raw_code, raw_count in source_codes.items():
+                code = _redlist_reason_code(raw_code)
+                if type(raw_count) is not int or raw_count < 1:
+                    continue
+                if len(target_codes) >= REDLIST_REASON_CODE_LIMIT and code not in target_codes:
+                    continue
+                target_codes[code] = int(target_codes.get(code, 0)) + raw_count
+        source_examples = batch.get("examples")
+        target_examples = self._redlist_diagnostics.get("examples")
+        if isinstance(source_examples, list) and isinstance(target_examples, list):
+            target_examples.extend(source_examples[: max(0, REDLIST_REASON_EXAMPLE_LIMIT - len(target_examples))])
+
+    @staticmethod
+    def _redlist_counter(details: dict[str, object], name: str) -> int:
+        value = details.get(name, 0)
+        return value if type(value) is int and value >= 0 else 0
+
+    def _redlist_is_excluded(self, path: str | Path) -> bool:
+        candidate = str(path)
+        if candidate in self._redlist_excluded_paths:
+            return True
+        if not self._redlist_policy_active:
+            return False
+        # The prepass and the action runner are separate instances in the
+        # integrated flow.  Re-evaluating the explicit metadata-only policy is
+        # safe, bounded, and keeps a protected redlisted source out of route
+        # publication without opening payload bytes.
+        from neocortex.workflow.actions.redlist import redlist_match
+
+        policy_path = self._normalized_paths.get(candidate, candidate)
+        return redlist_match(policy_path) is not None
+
+    def identify_and_normalize(self) -> ActionSummary:
+        """Run bounded Identify/Normalize before any duplicate planning.
+
+        The phase intentionally does not publish route candidates.  It only
+        reads bounded detector input, records the detector cache, and applies
+        identity-bound extension corrections when ``--apply`` is enabled.
+        Policy/redlist and Dedupe are subsequent phases in the orchestrator.
+        """
+
+        self._validate_apply_root()
+        previous_suppress = self._redlist_suppress_late_mutation
+        previous_no_hash = self._normalize_without_full_hash
+        self._redlist_suppress_late_mutation = True
+        self._normalize_without_full_hash = True
+        try:
+            return self._validate_extensions(
+                None,
+                ActionSummary(apply_actions=self._apply),
+                publish_routes=False,
+            )
+        finally:
+            self._redlist_suppress_late_mutation = previous_suppress
+            self._normalize_without_full_hash = previous_no_hash
 
     def execute(self, plan: DedupPlan, *, cleanup_empty_directories: bool = True) -> ActionSummary:
         self._validate_apply_root()
@@ -246,8 +486,13 @@ class FrameworkActions:
         applied: int,
         failed: int,
         protected: int,
+        blocked: int = 0,
+        failed_pre_effect: int = 0,
+        recovery_required: int = 0,
         planned: int = 0,
         skipped: int = 0,
+        reason_codes: dict[str, int] | None = None,
+        examples: list[dict[str, object]] | tuple[dict[str, object], ...] = (),
         error: BaseException | None = None,
     ) -> None:
         """Publish bounded redlist counters through the Framework lifecycle.
@@ -267,8 +512,13 @@ class FrameworkActions:
             "applied": max(0, int(applied)),
             "failed": max(0, int(failed)),
             "protected": max(0, int(protected)),
+            "blocked": max(0, int(blocked)),
+            "failed_pre_effect": max(0, int(failed_pre_effect)),
+            "recovery_required": max(0, int(recovery_required)),
             "planned": max(0, int(planned)),
             "skipped": max(0, int(skipped)),
+            "reason_codes": dict(reason_codes or {}),
+            "examples": list(examples)[:REDLIST_REASON_EXAMPLE_LIMIT],
         }
         if error is not None:
             details.update(
@@ -296,13 +546,17 @@ class FrameworkActions:
         # their diagnostic evidence without pretending it is a lifecycle stage.
         self._state.record_event(
             self._run_id,
-            "error" if status == "failed" else "warning" if status == "interrupted" else "info",
+            "error"
+            if status == "failed"
+            else "warning"
+            if status in {"interrupted", "partial"}
+            else "info",
             "redlist",
             f"Redlist stage {status}",
             details,
         )
 
-    def apply_redlist_prepass(self, *, policy_digest: str) -> dict[str, int | str]:
+    def apply_redlist_prepass(self, *, policy_digest: str) -> dict[str, object]:
         """Trash configured redlist matches before content planning.
 
         The inventory has already captured metadata, but no content bytes have
@@ -319,7 +573,12 @@ class FrameworkActions:
         )
 
         matched = applied = failed = protected = 0
+        blocked = failed_pre_effect = recovery_required = 0
         planned = skipped = 0
+        self._reset_redlist_diagnostics(clear_exclusions=True)
+        self._redlist_prepass_active = True
+        self._redlist_policy_active = True
+        self._redlist_suppress_late_mutation = True
         pending: list[tuple[str, str, FileSnapshot]] = []
         after_path = ""
         self._publish_redlist_stage(
@@ -329,6 +588,9 @@ class FrameworkActions:
             applied=applied,
             failed=failed,
             protected=protected,
+            blocked=blocked,
+            failed_pre_effect=failed_pre_effect,
+            recovery_required=recovery_required,
         )
         try:
             while True:
@@ -351,15 +613,18 @@ class FrameworkActions:
                     bytes_override=0,
                 )
                 for snapshot in page:
-                    token = redlist_match(snapshot.path)
+                    policy_path = self._normalized_paths.get(snapshot.path, snapshot.path)
+                    token = redlist_match(policy_path)
                     if token is None:
                         continue
                     matched += 1
+                    self._redlist_excluded_paths.add(str(snapshot.path))
                     evidence = json.dumps(
                         {
                             "schema": REDLIST_POLICY_SCHEMA,
                             "policy_digest": policy_digest,
                             "redlist_entry": token,
+                            "policy_path": policy_path,
                             "match": "basename_or_suffix_casefold_v1",
                             "snapshot": {
                                 "volume_id": snapshot.volume_id,
@@ -375,6 +640,7 @@ class FrameworkActions:
                     )
                     pending.append((snapshot.path, evidence, snapshot))
                     if len(pending) >= TRASH_BATCH_SIZE:
+                        self._begin_redlist_batch_diagnostics()
                         a, f, p = self._apply_trash_batch(
                             "trash_redlist",
                             tuple((path, evidence) for path, evidence, _ in pending),
@@ -383,7 +649,22 @@ class FrameworkActions:
                         )
                         applied += a
                         failed += f
-                        protected += p
+                        batch = self._consume_redlist_batch_diagnostics()
+                        blocked += self._redlist_counter(batch, "blocked")
+                        failed_pre_effect += self._redlist_counter(
+                            batch, "failed_pre_effect"
+                        )
+                        recovery_required += self._redlist_counter(
+                            batch, "recovery_required"
+                        )
+                        protected += max(
+                            0,
+                            p
+                            - self._redlist_counter(batch, "blocked")
+                            - self._redlist_counter(batch, "failed_pre_effect")
+                            - self._redlist_counter(batch, "recovery_required"),
+                        )
+                        self._merge_redlist_batch_diagnostics(batch)
                         pending.clear()
                 self._redlist_page_reserved = False
                 after_path = page[-1].path
@@ -407,6 +688,7 @@ class FrameworkActions:
                 # second reservation for this final partial batch.
                 self._redlist_page_reserved = self._reserve_work is not None
                 try:
+                    self._begin_redlist_batch_diagnostics()
                     a, f, p = self._apply_trash_batch(
                         "trash_redlist",
                         tuple((path, evidence) for path, evidence, _ in pending),
@@ -417,18 +699,39 @@ class FrameworkActions:
                     self._redlist_page_reserved = False
                 applied += a
                 failed += f
-                protected += p
-            planned = max(0, matched - applied - failed - protected) if not self._apply else 0
-            skipped = failed + protected
-            if self._apply and (failed or protected):
-                # Do not publish a successor generation after a partial or
-                # ambiguous redlist effect.  The file-action ledger remains
-                # the recovery source and the caller aborts before hashing.
+                batch = self._consume_redlist_batch_diagnostics()
+                blocked += self._redlist_counter(batch, "blocked")
+                failed_pre_effect += self._redlist_counter(batch, "failed_pre_effect")
+                recovery_required += self._redlist_counter(batch, "recovery_required")
+                protected += max(
+                    0,
+                    p
+                    - self._redlist_counter(batch, "blocked")
+                    - self._redlist_counter(batch, "failed_pre_effect")
+                    - self._redlist_counter(batch, "recovery_required"),
+                )
+                self._merge_redlist_batch_diagnostics(batch)
+            planned = (
+                max(0, matched - applied - failed - protected - blocked)
+                if not self._apply
+                else 0
+            )
+            skipped = failed_pre_effect + blocked + protected
+            if self._apply and recovery_required:
+                # Protected/blocked/pre-effect denials never cross a physical
+                # frontier and therefore do not justify a recovery abort.  An
+                # actual ambiguity remains fail-closed and is the sole fatal
+                # redlist outcome.
                 raise RedlistPrepassError(
                     matched=matched,
                     applied=applied,
                     failed=failed,
                     protected=protected,
+                    blocked=blocked,
+                    failed_pre_effect=failed_pre_effect,
+                    recovery_required=recovery_required,
+                    reason_codes=dict(self._redlist_diagnostics["reason_codes"]),
+                    examples=tuple(self._redlist_diagnostics["examples"]),
                 )
             if applied:
                 self._flush_deferred_reconciliation()
@@ -437,6 +740,7 @@ class FrameworkActions:
                 )
         except (KeyboardInterrupt, CancellationRequested, RunBudgetExceeded) as exc:
             self._redlist_page_reserved = False
+            self._redlist_prepass_active = False
             self._publish_redlist_stage(
                 status="interrupted",
                 policy_digest=policy_digest,
@@ -444,11 +748,17 @@ class FrameworkActions:
                 applied=applied,
                 failed=failed,
                 protected=protected,
+                blocked=blocked,
+                failed_pre_effect=failed_pre_effect,
+                recovery_required=recovery_required,
+                reason_codes=dict(self._redlist_diagnostics["reason_codes"]),
+                examples=list(self._redlist_diagnostics["examples"]),
                 error=exc,
             )
             raise
         except BaseException as exc:
             self._redlist_page_reserved = False
+            self._redlist_prepass_active = False
             self._publish_redlist_stage(
                 status="failed",
                 policy_digest=policy_digest,
@@ -456,18 +766,34 @@ class FrameworkActions:
                 applied=applied,
                 failed=failed,
                 protected=protected,
+                blocked=blocked,
+                failed_pre_effect=failed_pre_effect,
+                recovery_required=recovery_required,
+                reason_codes=dict(self._redlist_diagnostics["reason_codes"]),
+                examples=list(self._redlist_diagnostics["examples"]),
                 error=exc,
             )
             raise
+        self._redlist_prepass_active = False
+        stage_status = (
+            "partial"
+            if blocked or protected or failed_pre_effect
+            else "completed"
+        )
         self._publish_redlist_stage(
-            status="completed",
+            status=stage_status,
             policy_digest=policy_digest,
             matched=matched,
             applied=applied,
             failed=failed,
             protected=protected,
+            blocked=blocked,
+            failed_pre_effect=failed_pre_effect,
+            recovery_required=recovery_required,
             planned=planned,
             skipped=skipped,
+            reason_codes=dict(self._redlist_diagnostics["reason_codes"]),
+            examples=list(self._redlist_diagnostics["examples"]),
         )
         self._state.record_event(
             self._run_id,
@@ -481,8 +807,13 @@ class FrameworkActions:
                 "applied": applied,
                 "failed": failed,
                 "protected": protected,
+                "blocked": blocked,
+                "failed_pre_effect": failed_pre_effect,
+                "recovery_required": recovery_required,
                 "planned": planned,
                 "skipped": skipped,
+                "reason_codes": dict(self._redlist_diagnostics["reason_codes"]),
+                "examples": list(self._redlist_diagnostics["examples"]),
             },
         )
         emit_progress(
@@ -497,7 +828,9 @@ class FrameworkActions:
                 True,
                 (
                     ProgressMetric("applied", applied),
-                    ProgressMetric("errors", failed),
+                    ProgressMetric("errors", failed_pre_effect + recovery_required),
+                    ProgressMetric("blocked", blocked),
+                    ProgressMetric("protected", protected),
                     ProgressMetric("planned", planned),
                     ProgressMetric("skipped", skipped),
                 ),
@@ -510,8 +843,13 @@ class FrameworkActions:
             "applied": applied,
             "failed": failed,
             "protected": protected,
+            "blocked": blocked,
+            "failed_pre_effect": failed_pre_effect,
+            "recovery_required": recovery_required,
             "planned": planned,
             "skipped": skipped,
+            "reason_codes": dict(self._redlist_diagnostics["reason_codes"]),
+            "examples": list(self._redlist_diagnostics["examples"]),
         }
 
     def _checkpoint(self) -> None:
@@ -904,6 +1242,11 @@ class FrameworkActions:
                 "skipped",
                 detail,
             )
+            if action_type == "trash_redlist":
+                for _action_id, path, _planned, _reference, _stat in ready:
+                    self._record_redlist_batch_diagnostic(
+                        "protected", "backend_unavailable", path
+                    )
             return 0, preflight_failures, protected + len(ready)
 
         batch_apply = self._optional_trash_batch_backend()
@@ -929,6 +1272,10 @@ class FrameworkActions:
                     "trash candidate has no expected snapshot",
                 )
                 failed += 1
+                if action_type == "trash_redlist":
+                    self._record_redlist_batch_diagnostic(
+                        "failed_pre_effect", "missing_snapshot", path
+                    )
                 continue
             try:
                 source_digest = (
@@ -978,15 +1325,54 @@ class FrameworkActions:
                     applied += 1
                     applied_paths.append(path)
                     continue
+                if outcome.status == "applied":
+                    detail = "trash backend reported applied without a receipt"
+                    self._state.require_file_action_recovery((action_id,), detail)
+                    failed += 1
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "recovery_required", detail, path
+                        )
+                    continue
                 detail = outcome.detail or outcome.reason
                 if outcome.status == "recovery_required":
                     self._state.require_file_action_recovery((action_id,), detail)
                     failed += 1
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "recovery_required", detail, path
+                        )
+                elif outcome.status == "blocked":
+                    # A backend block is a pre-effect policy result, not an
+                    # uncertain syscall.  Keep it out of recovery.  The
+                    # persistence owner may reject this transition on older
+                    # schemas; in that case retain the bounded diagnostic and
+                    # let the owner repair the terminal-state contract rather
+                    # than manufacturing a false recovery claim.
+                    try:
+                        self._state.finish_file_action(action_id, "skipped", detail)
+                    except BaseException as exc:
+                        if action_type == "trash_redlist":
+                            self._record_redlist_batch_diagnostic(
+                                "failed_pre_effect", exc, path
+                            )
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic("blocked", detail, path)
+                    else:
+                        protected += 1
                 else:
                     self._state.finish_file_action(action_id, "failed", detail)
                     failed += 1
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "failed_pre_effect", detail, path
+                        )
             except (CancellationRequested, RunBudgetExceeded, KeyboardInterrupt) as exc:
                 self._best_effort_require_recovery((action_id,), str(exc), exc)
+                if action_type == "trash_redlist":
+                    self._record_redlist_batch_diagnostic(
+                        "recovery_required", exc, path
+                    )
                 raise
             except (OSError, RuntimeError, FileChangedError, ValueError) as exc:
                 # A failure for one member must not suppress independent
@@ -998,8 +1384,16 @@ class FrameworkActions:
                     ).fetchone()
                     if row is not None and str(row[0]) == "applying":
                         self._state.require_file_action_recovery((action_id,), str(exc))
+                        if action_type == "trash_redlist":
+                            self._record_redlist_batch_diagnostic(
+                                "recovery_required", exc, path
+                            )
                     elif row is not None and str(row[0]) == "started":
                         self._state.finish_file_action(action_id, "failed", str(exc))
+                        if action_type == "trash_redlist":
+                            self._record_redlist_batch_diagnostic(
+                                "failed_pre_effect", exc, path
+                            )
                 except BaseException as persistence_error:
                     exc.add_note(f"file action transition failed: {persistence_error}")
                 failed += 1
@@ -1114,16 +1508,24 @@ class FrameworkActions:
                     "trash backend returned an outcome count different from the batch"
                 )
         except RunBudgetExceeded as exc:
-            for action_id, _path, _snapshot, _digest, _expected in prepared:
+            for action_id, path, _snapshot, _digest, _expected in prepared:
                 self._best_effort_require_recovery((action_id,), str(exc), exc)
+                if action_type == "trash_redlist":
+                    self._record_redlist_batch_diagnostic(
+                        "recovery_required", exc, path
+                    )
             raise
         except (OSError, RuntimeError, FileChangedError, ValueError, TypeError) as exc:
             # A batch process may have crossed its physical frontier before an
             # exception reached this owner.  Never retry it as individual work;
             # preserve one recovery row for every member instead.
             detail = str(exc) or "trash backend batch outcome is unavailable"
-            for action_id, _path, _snapshot, _digest, _expected in prepared:
+            for action_id, path, _snapshot, _digest, _expected in prepared:
                 self._best_effort_require_recovery((action_id,), detail, exc)
+                if action_type == "trash_redlist":
+                    self._record_redlist_batch_diagnostic(
+                        "recovery_required", detail, path
+                    )
             return 0, failed + len(prepared), protected
         except BaseException as exc:
             # KeyboardInterrupt/SystemExit or an unexpected backend failure
@@ -1131,8 +1533,12 @@ class FrameworkActions:
             # applying row before re-raising the control-flow interruption;
             # never retry the batch as individual operations.
             detail = str(exc) or "trash backend batch operation was interrupted"
-            for action_id, _path, _snapshot, _digest, _expected in prepared:
+            for action_id, path, _snapshot, _digest, _expected in prepared:
                 self._best_effort_require_recovery((action_id,), detail, exc)
+                if action_type == "trash_redlist":
+                    self._record_redlist_batch_diagnostic(
+                        "recovery_required", detail, path
+                    )
             raise
 
         applied_paths: list[str] = []
@@ -1148,6 +1554,10 @@ class FrameworkActions:
             if not isinstance(outcome, BackendOutcome):
                 detail = "trash backend returned an unsupported batch outcome"
                 self._best_effort_require_recovery((action_id,), detail, RuntimeError(detail))
+                if action_type == "trash_redlist":
+                    self._record_redlist_batch_diagnostic(
+                        "recovery_required", detail, path
+                    )
                 failed += 1
                 continue
             if outcome.status == "applied":
@@ -1156,12 +1566,20 @@ class FrameworkActions:
                     self._best_effort_require_recovery(
                         (action_id,), detail, RuntimeError(detail)
                     )
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "recovery_required", detail, path
+                        )
                     failed += 1
                     continue
                 try:
                     receipt_value = json.loads(outcome.receipt_json)
                 except (TypeError, ValueError, json.JSONDecodeError) as exc:
                     self._best_effort_require_recovery((action_id,), str(exc), exc)
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "recovery_required", exc, path
+                        )
                     failed += 1
                     continue
                 if not isinstance(receipt_value, dict):
@@ -1169,20 +1587,40 @@ class FrameworkActions:
                     self._best_effort_require_recovery(
                         (action_id,), detail, RuntimeError(detail)
                     )
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "recovery_required", detail, path
+                        )
                     failed += 1
                     continue
                 confirmations.append((action_id, outcome.receipt_json, path))
                 continue
 
             detail = outcome.detail or outcome.reason
-            # All members entered ``applying`` before the shared call.  The
-            # state contract therefore cannot safely transition one member
-            # back to ``failed`` after the frontier; retain recovery even when
-            # the backend reports a per-item block, because the batch may have
-            # crossed the physical frontier for another member.
+            if outcome.status == "blocked":
+                # The backend explicitly says no physical effect was started.
+                # Do not turn a policy/preflight block into recovery.  Older
+                # state owners may reject applying->skipped; keep the bounded
+                # diagnostic and leave reconciliation to the owner contract.
+                try:
+                    self._state.finish_file_action(action_id, "skipped", detail)
+                except BaseException as exc:
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "failed_pre_effect", exc, path
+                        )
+                if action_type == "trash_redlist":
+                    self._record_redlist_batch_diagnostic("blocked", detail, path)
+                else:
+                    protected += 1
+                continue
             self._best_effort_require_recovery(
                 (action_id,), detail, RuntimeError(detail)
             )
+            if action_type == "trash_redlist":
+                self._record_redlist_batch_diagnostic(
+                    "recovery_required", detail, path
+                )
             failed += 1
 
         if confirmations:
@@ -1194,8 +1632,12 @@ class FrameworkActions:
                 # The physical results were classified as applied, but an
                 # atomic ledger confirmation failed.  Preserve recovery for
                 # every member and do not reconcile an unconfirmed path.
-                for action_id, _receipt, _path in confirmations:
+                for action_id, _receipt, path in confirmations:
                     self._best_effort_require_recovery((action_id,), str(exc), exc)
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "recovery_required", exc, path
+                        )
                 failed += len(confirmations)
             else:
                 applied = len(confirmations)
@@ -1281,6 +1723,10 @@ class FrameworkActions:
                 Path(path).absolute().relative_to(mutation_guard.policy.root)
             except ValueError:
                 filtered_protected += 1
+                if action_type == "trash_redlist":
+                    self._record_redlist_batch_diagnostic(
+                        "protected", "outside_root", path
+                    )
                 continue
             retention_reason = (
                 None
@@ -1290,6 +1736,10 @@ class FrameworkActions:
             if reason is None:
                 if guard_reason is not None:
                     filtered_protected += 1
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "protected", guard_reason, path
+                        )
                     continue
             else:
                 # Legacy action-policy denials keep their existing skipped
@@ -1329,6 +1779,13 @@ class FrameworkActions:
                 protected_by_reason.setdefault(reason, []).append(action_id)
         for reason, protected_ids in protected_by_reason.items():
             self._state.finish_file_actions(protected_ids, "skipped", reason)
+            if action_type == "trash_redlist":
+                # These rows are terminal before any physical frontier.  The
+                # paths are recovered from the bounded input below only for
+                # diagnostics; no payload bytes are read.
+                for (path, _evidence), _planned, _reference, _reason in evaluated:
+                    if _reason == reason:
+                        self._record_redlist_batch_diagnostic("protected", reason, path)
         protected = filtered_protected + sum(
             len(action_ids) for action_ids in protected_by_reason.values()
         )
@@ -1379,9 +1836,15 @@ class FrameworkActions:
                 if self._is_preservation_frontier_failure(action_type, exc):
                     self._state.finish_file_action(action_id, "skipped", str(exc))
                     protected += 1
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic("protected", exc, path)
                 else:
                     self._state.finish_file_action(action_id, "failed", str(exc))
                     failures += 1
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "failed_pre_effect", exc, path
+                        )
                 continue
             active.append((action_id, path, planned, reference, current_stat))
         return active, failures, protected
@@ -1443,9 +1906,15 @@ class FrameworkActions:
                 if self._is_preservation_frontier_failure(action_type, exc):
                     self._state.finish_file_action(action_id, "skipped", str(exc))
                     protected += 1
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic("protected", exc, path)
                 else:
                     self._state.finish_file_action(action_id, "failed", str(exc))
                     failures += 1
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "failed_pre_effect", exc, path
+                        )
                 continue
             ready.append((action_id, path, planned, reference, current_stat))
         return ready, failures, protected
@@ -1854,7 +2323,13 @@ class FrameworkActions:
             return None, str(exc)
         return current, None
 
-    def _validate_extensions(self, plan: DedupPlan, summary: ActionSummary) -> ActionSummary:
+    def _validate_extensions(
+        self,
+        plan: DedupPlan | None,
+        summary: ActionSummary,
+        *,
+        publish_routes: bool = True,
+    ) -> ActionSummary:
         # Keep direct phase callers safe as well as the normal ``execute``
         # route, whose duplicate phase normally flushes this queue first.
         self._flush_deferred_reconciliation()
@@ -1890,7 +2365,7 @@ class FrameworkActions:
         cache_updates: list[tuple[FileSnapshot, DetectedType | None]] = []
 
         def flush_route_candidates() -> None:
-            if route_candidates:
+            if publish_routes and route_candidates:
                 self._state.store_route_candidates(self._run_id, route_candidates)
                 route_candidates.clear()
 
@@ -1950,7 +2425,7 @@ class FrameworkActions:
                     cache_updates.append(cache_update)
                     if len(cache_updates) >= 1000:
                         flush_cache_updates()
-                if route_candidate is not None:
+                if publish_routes and route_candidate is not None:
                     route_candidates.append(route_candidate)
                     if len(route_candidates) >= 1000:
                         flush_route_candidates()
@@ -2024,6 +2499,13 @@ class FrameworkActions:
         planned: FileSnapshot,
         summary: ActionSummary,
     ) -> tuple[ActionSummary, bool]:
+        if self._redlist_is_excluded(planned.path):
+            # A redlisted source that remains physically present because a
+            # hard boundary or a pre-effect block refused Trash is still a
+            # policy exclusion.  Never let it reach route candidates, even in
+            # preview mode or when the integrated runner was reconstructed
+            # after the prepass.
+            return summary, False
         if _protected_path_reason(planned.path, check_attributes=True) is not None:
             return summary, False
         try:
@@ -2119,7 +2601,7 @@ class FrameworkActions:
         from neocortex.workflow.actions.redlist import redlist_match
 
         redlist_entry = redlist_match(target)
-        if redlist_entry is not None:
+        if redlist_entry is not None and not self._redlist_suppress_late_mutation:
             summary = self._trash_detected_redlist(
                 planned,
                 detected,
@@ -2169,18 +2651,28 @@ class FrameworkActions:
             sort_keys=True,
             separators=(",", ":"),
         )
+        self._begin_redlist_batch_diagnostics()
         applied, failed, protected = self._apply_trash_batch(
             "trash_redlist",
             ((planned.path, evidence),),
             expected_snapshots=(planned,),
             defer_reconciliation=True,
         )
-        if self._apply and (failed or protected):
+        batch = self._consume_redlist_batch_diagnostics()
+        self._merge_redlist_batch_diagnostics(batch)
+        recovery_required = self._redlist_counter(batch, "recovery_required")
+        self._redlist_excluded_paths.add(str(planned.path))
+        if self._apply and recovery_required:
             raise RedlistPrepassError(
                 matched=1,
                 applied=applied,
                 failed=failed,
                 protected=protected,
+                blocked=self._redlist_counter(batch, "blocked"),
+                failed_pre_effect=self._redlist_counter(batch, "failed_pre_effect"),
+                recovery_required=recovery_required,
+                reason_codes=dict(self._redlist_diagnostics["reason_codes"]),
+                examples=tuple(self._redlist_diagnostics["examples"]),
             )
         return summary
 
@@ -2248,6 +2740,10 @@ class FrameworkActions:
 
         source = Path(planned.path)
         target = _corrected_path(source, detected.canonical_extension)
+        # Keep the policy view deterministic even in dry-run mode.  The
+        # physical source remains untouched until ``--apply`` but Redlist must
+        # evaluate the normalized successor rather than the stale suffix.
+        self._normalized_paths[str(source)] = str(target)
         summary = replace(summary, rename_candidates=summary.rename_candidates + 1)
         if self._rename_protected_reason(source, target) is not None:
             return replace(summary, rename_skips=summary.rename_skips + 1)
@@ -2278,10 +2774,11 @@ class FrameworkActions:
                 errors=summary.errors + 1,
             )
         try:
-            # The receipt verifier in PosixRenameBackend binds the target to a
-            # full digest. Reserve the complete source read before hashing it.
-            self._reserve_snapshot_work("extension-rename", (planned,))
-            source_digest = f"{FULL_ALGORITHM}:" + full_fingerprint(planned).hex()
+            # Normalization is an identity-bound metadata operation.  The
+            # source is already revalidated by the POSIX backend immediately
+            # before ``renameat2``; reading the whole payload here would move
+            # Identify/Normalize after the full-hash/Dedupe frontier.
+            source_digest = metadata_binding(planned)
             effect = SimpleNamespace(
                 action="rename",
                 source=planned,

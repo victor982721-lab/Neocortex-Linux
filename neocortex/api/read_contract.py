@@ -18,7 +18,6 @@ from uuid import uuid4
 
 
 READ_CONTRACT_SCHEMA = "neocortex.read-api/v1"
-VALUE_REVIEW_SCHEMA = "neocortex.value-review/v1"
 _ANSI_ESCAPE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 # Result payloads are ultimately rendered by a terminal, Qt widget or MCP
@@ -32,7 +31,6 @@ _SANITIZED_PAYLOAD_TRUNCATION_KEY = "__neocortex_sanitization_truncated__"
 
 ReadScopeName = Literal["personal", "framework", "all"]
 ReadApiSchema = Literal["neocortex.read-api/v1"]
-ValueReviewSchema = Literal["neocortex.value-review/v1"]
 ReadExitCodeValue = Literal[0, 1, 2, 3, 4, 5, 6, 7, 130]
 
 
@@ -68,7 +66,6 @@ class ReadOperation(StrEnum):
     SEARCH = "search"
     CONTEXT = "context"
     EVIDENCE = "evidence"
-    REVIEW = "review"
     LINEAGE = "lineage"
     ASSET_HEALTH = "asset_health"
     OPERATIONAL_QUERY = "operational_query"
@@ -116,12 +113,6 @@ READ_OPERATION_DESCRIPTORS: dict[ReadOperation, ReadOperationDescriptor] = {
         READ_CONTRACT_SCHEMA,
         "neocortex_evidence",
         query=True,
-        limit=True,
-    ),
-    ReadOperation.REVIEW: ReadOperationDescriptor(
-        ReadOperation.REVIEW,
-        VALUE_REVIEW_SCHEMA,
-        "neocortex_scoped_value_review",
         limit=True,
     ),
     ReadOperation.LINEAGE: ReadOperationDescriptor(
@@ -216,10 +207,6 @@ class ContextOutput(ReadEnvelopePayload, total=False):
 
 class EvidenceOutput(ReadEnvelopePayload, total=False):
     """Compatibility alias for the evidence envelope."""
-
-
-class ReviewOutput(ReadEnvelopePayload, total=False):
-    """Compatibility alias for the advisory review envelope."""
 
 
 class LineageOutput(ReadEnvelopePayload, total=False):
@@ -546,8 +533,6 @@ def validate_read_payload(
         raise ReadContractError("read payload scope alias differs from scope_requested")
     operation_value = _valid_text(payload.get("operation"), label="operation")
     valid_operations = {descriptor.operation.value}
-    if descriptor.operation is ReadOperation.REVIEW:
-        valid_operations.add("value-preview")
     if operation_value not in valid_operations:
         raise ReadContractError("read payload operation differs from requested operation")
     _valid_text(payload.get("request_id"), label="request_id")
@@ -608,13 +593,6 @@ def validate_read_payload(
             response_limit = _valid_limit(response_limit_value)
         if limit is not None and response_limit != limit:
             raise ReadContractError("read payload limit differs from request")
-    if descriptor.operation is ReadOperation.REVIEW:
-        if payload.get("operation") not in {"review", "value-preview"}:
-            raise ReadContractError("review payload operation is incompatible")
-        if payload.get("advisory_only") is not True:
-            raise ReadContractError("review payload is not consultivo/advisory")
-        if payload.get("mutation_authorized") is not False:
-            raise ReadContractError("review payload is not consultivo: authorizes mutation")
     if code in {int(ReadExitCode.SUCCESS), int(ReadExitCode.NO_RESULTS)}:
         if payload.get("error") is not None:
             raise ReadContractError("read payload error is incompatible with a successful or empty outcome")
@@ -646,7 +624,7 @@ def make_error_payload(
     payload: dict[str, object] = {
         "schema": descriptor.schema,
         "kind": descriptor.kind,
-        "operation": "value-preview" if descriptor.operation is ReadOperation.REVIEW else descriptor.operation.value,
+        "operation": descriptor.operation.value,
         "request_id": f"read-{uuid4().hex}",
         "scope": normalized_scope,
         "scope_requested": normalized_scope,
@@ -658,8 +636,6 @@ def make_error_payload(
         "result": {"scopes": []},
         "scopes": [],
     }
-    if descriptor.operation is ReadOperation.REVIEW:
-        payload.update(advisory_only=True, mutation_authorized=False)
     return payload
 
 
@@ -669,7 +645,6 @@ __all__ = [
     "MAX_SANITIZED_PAYLOAD_STRING",
     "READ_CONTRACT_SCHEMA",
     "READ_OPERATION_DESCRIPTORS",
-    "VALUE_REVIEW_SCHEMA",
     "AssetHealthOutput",
     "ContextOutput",
     "EvidenceOutput",
@@ -684,7 +659,6 @@ __all__ = [
     "ReadOperationDescriptor",
     "ReadScopeName",
     "ReadScopePayload",
-    "ReviewOutput",
     "SearchOutput",
     "StatusOutput",
     "expected_read_outcome",

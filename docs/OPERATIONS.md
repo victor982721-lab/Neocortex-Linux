@@ -326,9 +326,10 @@ ocultar las rutas independientes.
 Después de validar un foco, amplía sólo sobre la raíz temporal. `--all` es una
 operación amplia, no el primer smoke: selecciona las ocho rutas de contenido
 registradas.
-El flujo `--all --apply` aplica primero la redlist explícita del Corpus, sólo por
-metadata/ruta y de forma case-insensitive, antes de dedupe, hashing, validación
-de tipos o extracción. Las coincidencias se envían a Papelera con
+El flujo `--all --apply` sigue `inventory → identify → normalize → policy/redlist
+→ dedupe → routes → organize → semantic`. La redlist explícita se evalúa después
+de normalizar, sólo por metadata/ruta y de forma case-insensitive, antes de
+dedupe, hashing o extracción. Las coincidencias se envían a Papelera con
 la frontera KIO receipt-bound y una entrada de auditoría por token; fuera del
 root efectivo la política se abstiene fail-closed. Sin `--apply` no se cruza la
 frontera física.
@@ -337,11 +338,12 @@ La fuente de verdad de esa política vive en
 `neocortex.workflow.actions.redlist`: cada entrada se compara contra el
 basename exacto o el sufijo final de `Path.suffix` (los puntos intermedios de
 versiones no cuentan), sin leer payload ni invocar clasificadores heurísticos.
-Los archivos sin extensión se inspeccionan sólo con el detector bounded de
-firmas: evidencia fuerte permite restaurar una extensión canónica y evidencia
-insuficiente conserva el nombre. El pre-filtro conserva `policy_digest`, token de
-redlist, identidad y receipt en `file_actions`; un fallo parcial o
-`recovery_required` aborta antes de dedupe y no reintenta la acción.
+Los archivos sin extensión pasan por Identify; evidencia fuerte permite
+restaurar una extensión canónica y evidencia insuficiente conserva el nombre.
+El pre-filtro conserva `policy_digest`, token de redlist, identidad y receipt en
+`file_actions`; `blocked/protected` conserva el archivo, publica warning y lo
+excluye de rutas posteriores. Sólo `recovery_required` (efecto físico ambiguo)
+aborta antes de dedupe y no reintenta la acción.
 
 Para reproducir o regresionar el lifecycle 0.14, ejecuta la ampliación sólo
 sobre el piloto temporal y prueba las rutas de contenido (`pdf`, `docx`, `office`,
@@ -360,12 +362,14 @@ de estado y efecto sobre corpus.
 ### Redlist y restauración de extensión
 
 La redlist es la única política de descarte temprano: sus entradas explícitas se
-comparan por metadata/ruta, de forma case-insensitive, antes de hashing y rutas.
+comparan por metadata/ruta normalizada, de forma case-insensitive, antes de
+hashing y rutas.
 Un archivo redlisted cruza la frontera KIO sólo con `--apply`; sin esa bandera se
 publica como plan y no se modifica. Los archivos físicos fuera del root efectivo,
 los cambios de identidad y los destinos ambiguos se conservan fail-closed.
 
-La restauración de extensión usa `detect_content_type()` con límites bounded.
+La identificación usa `identify()`/`detect_content_type()` con límites bounded y
+no depende del sufijo observado.
 Sólo una firma fuerte permite proponer un sufijo canónico; no se adivina `.bin`,
 no se interpreta texto débil como formato y un destino existente no se reemplaza.
 El rename seguro usa el backend POSIX no-replace, revalida identidad y registra

@@ -13,14 +13,14 @@ from neocortex.api.cli.cli_direct import run_operational_status
 from neocortex.interface.read.status import StatusRepository
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.orchestration.run_status import list_run_status
-from neocortex.enumeration import JournalCursor
+from tests.portable_inventory import PortableInventoryCursor
 from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
 
 
 def _clean_framework_copy(tmp_path: Path) -> Path:
     source = tmp_path / "source.sqlite3"
     with FrameworkState(source) as state:
-        state.begin_initial_run(tmp_path, JournalCursor("C:", 1, 1))
+        state.begin_initial_run(tmp_path, PortableInventoryCursor("C:", 1, 1))
     with sqlite3.connect(source) as connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 

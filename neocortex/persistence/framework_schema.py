@@ -29,7 +29,7 @@ from neocortex.persistence.framework_content_admission import (
 )
 
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -725,7 +725,7 @@ _TABLE_STATEMENTS = (
     ) WITHOUT ROWID
     """,
     """
-    CREATE TABLE IF NOT EXISTS review_candidates (
+    CREATE TABLE IF NOT EXISTS findings (
         route_name TEXT NOT NULL,
         volume_id TEXT NOT NULL,
         file_id TEXT NOT NULL,
@@ -797,6 +797,26 @@ _TABLE_STATEMENTS = (
     _REVIEW_TASK_SOURCE_PUBLICATIONS_TABLE_STATEMENT,
 )
 
+# Human ReviewTask/decision/evidence and grant tables were intentionally
+# removed from the personal Linux product.  Keep the historical DDL strings
+# available only to legacy-contract readers; new owners and the exact current
+# contract must never create them.
+_RETIRED_HUMAN_REVIEW_MARKERS = (
+    "review_decisions",
+    "review_evidence_",
+    "review_task_",
+    "review_tasks",
+    "curation_authorization_grants",
+)
+
+
+def _retained_ddl(statements: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        statement
+        for statement in statements
+        if not any(marker in statement.casefold() for marker in _RETIRED_HUMAN_REVIEW_MARKERS)
+    )
+
 _INDEX_STATEMENTS = (
     """
     CREATE INDEX IF NOT EXISTS run_events_run_idx
@@ -836,12 +856,12 @@ _INDEX_STATEMENTS = (
     """,
     _ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT,
     """
-    CREATE INDEX IF NOT EXISTS review_candidates_status_idx
-        ON review_candidates(status, recommendation, route_name, path)
+    CREATE INDEX IF NOT EXISTS findings_status_idx
+        ON findings(status, recommendation, route_name, path)
     """,
     """
-    CREATE INDEX IF NOT EXISTS review_candidates_path_idx
-        ON review_candidates(path, route_name, status)
+    CREATE INDEX IF NOT EXISTS findings_path_idx
+        ON findings(path, route_name, status)
     """,
     """
     CREATE INDEX IF NOT EXISTS review_decisions_identity_idx
@@ -1632,7 +1652,7 @@ _TABLE_NAMES = (
     "file_action_reconciliation_events",
     "route_candidates",
     "content_type_cache",
-    "review_candidates",
+    "findings",
     "review_decisions",
     "review_evidence_examples",
     "review_evidence_progress",
@@ -1655,8 +1675,8 @@ _NAMED_INDEXES = {
     "file_action_reconciliation_events_action_idx": ("file_action_reconciliation_events"),
     "route_candidates_mime_idx": "route_candidates",
     "route_candidates_identity_idx": "route_candidates",
-    "review_candidates_status_idx": "review_candidates",
-    "review_candidates_path_idx": "review_candidates",
+    "findings_status_idx": "findings",
+    "findings_path_idx": "findings",
     "review_decisions_identity_idx": "review_decisions",
     "review_decisions_status_idx": "review_decisions",
     "review_evidence_outcome_idx": "review_evidence_examples",
@@ -2320,6 +2340,16 @@ def _migrate_23_to_24(connection: sqlite3.Connection) -> None:
     connection.execute(_ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT)
 
 
+def _migrate_24_to_25(connection: sqlite3.Connection) -> None:
+    """Retired human-review state requires an explicit factory reset."""
+
+    del connection
+    raise _FrameworkSchemaMigrationError(
+        "framework schema contains retired Review/Authorization state; "
+        "factory_reset_required"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
@@ -2344,6 +2374,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     21: _migrate_21_to_22,
     22: _migrate_22_to_23,
     23: _migrate_23_to_24,
+    24: _migrate_24_to_25,
 }
 
 
@@ -2393,23 +2424,23 @@ def _index_columns(connection: sqlite3.Connection, index: str) -> tuple[str, ...
 
 
 def _build_exact_schema(connection: sqlite3.Connection) -> None:
-    for statement in _TABLE_STATEMENTS:
+    for statement in _retained_ddl(_TABLE_STATEMENTS):
         connection.execute(statement)
-    for statement in _INDEX_STATEMENTS:
+    for statement in _retained_ddl(_INDEX_STATEMENTS):
         connection.execute(statement)
-    for statement in _TRIGGER_STATEMENTS:
+    for statement in _retained_ddl(_TRIGGER_STATEMENTS):
         connection.execute(statement)
 
 
 def _build_v23_exact_schema(connection: sqlite3.Connection) -> None:
     """Retain the deployed v22/v23 DDL before the identity index existed."""
 
-    for statement in _TABLE_STATEMENTS:
+    for statement in _retained_ddl(_TABLE_STATEMENTS):
         connection.execute(statement)
-    for statement in _INDEX_STATEMENTS:
+    for statement in _retained_ddl(_INDEX_STATEMENTS):
         if statement != _ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT:
             connection.execute(statement)
-    for statement in _TRIGGER_STATEMENTS:
+    for statement in _retained_ddl(_TRIGGER_STATEMENTS):
         connection.execute(statement)
 
 
@@ -2421,16 +2452,16 @@ def _build_v21_exact_schema(connection: sqlite3.Connection) -> None:
     which deployed v21 databases are accepted for migration.
     """
 
-    for statement in _TABLE_STATEMENTS:
+    for statement in _retained_ddl(_TABLE_STATEMENTS):
         connection.execute(
             _V21_ROUTE_CANDIDATES_TABLE_STATEMENT
             if statement == _ROUTE_CANDIDATES_TABLE_STATEMENT
             else statement
         )
-    for statement in _INDEX_STATEMENTS:
+    for statement in _retained_ddl(_INDEX_STATEMENTS):
         if statement != _ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT:
             connection.execute(statement)
-    for statement in _TRIGGER_STATEMENTS:
+    for statement in _retained_ddl(_TRIGGER_STATEMENTS):
         if statement in {
             _REVIEW_TASKS_VALIDATE_INSERT_TRIGGER_STATEMENT,
             _REVIEW_TASK_EVENTS_VALIDATE_INSERT_TRIGGER_STATEMENT,
@@ -2621,15 +2652,17 @@ def _validate_framework_exact_contract(
 def _canonical_contract() -> _SchemaContract:
     connection = sqlite3.connect(":memory:")
     try:
-        for statement in _TABLE_STATEMENTS:
+        for statement in _retained_ddl(_TABLE_STATEMENTS):
             connection.execute(statement)
-        for statement in _INDEX_STATEMENTS:
+        for statement in _retained_ddl(_INDEX_STATEMENTS):
             connection.execute(statement)
 
         table_options = _table_options(connection)
         tables: dict[str, _TableContract] = {}
         unique_keys: set[tuple[str, tuple[str, ...]]] = set()
         for table in _TABLE_NAMES:
+            if any(marker in table.casefold() for marker in _RETIRED_HUMAN_REVIEW_MARKERS):
+                continue
             columns = {
                 str(row[1]): _ColumnContract(
                     declared_type=str(row[2]).upper(),
@@ -2647,6 +2680,12 @@ def _canonical_contract() -> _SchemaContract:
 
         indexes: dict[str, tuple[str, tuple[str, ...], bool]] = {}
         for index, table in _NAMED_INDEXES.items():
+            table_name = table if isinstance(table, str) else ""
+            if any(
+                marker in index.casefold() or marker in table_name.casefold()
+                for marker in _RETIRED_HUMAN_REVIEW_MARKERS
+            ):
+                continue
             row = next(
                 (
                     item
@@ -2822,17 +2861,17 @@ def _configure_connection(connection: sqlite3.Connection) -> None:
 
 
 def _create_tables(connection: sqlite3.Connection) -> None:
-    for statement in _TABLE_STATEMENTS:
+    for statement in _retained_ddl(_TABLE_STATEMENTS):
         connection.execute(statement)
 
 
 def _create_indexes(connection: sqlite3.Connection) -> None:
-    for statement in _INDEX_STATEMENTS:
+    for statement in _retained_ddl(_INDEX_STATEMENTS):
         connection.execute(statement)
 
 
 def _create_triggers(connection: sqlite3.Connection) -> None:
-    for statement in _TRIGGER_STATEMENTS:
+    for statement in _retained_ddl(_TRIGGER_STATEMENTS):
         connection.execute(statement)
 
 
@@ -2859,6 +2898,14 @@ def initialize_framework_schema(
 
     initial_version = _read_schema_version(connection)
     _require_supported_version(initial_version)
+    if initial_version is not None and initial_version != SCHEMA_VERSION:
+        # The current Framework contract intentionally removes the human
+        # Review/Authorization state.  Reinterpreting an older owner would
+        # silently preserve a deleted capability; factory reset is explicit.
+        raise RuntimeError(
+            f"framework schema {initial_version} is incompatible with the current "
+            f"contract; factory_reset_required (expected {SCHEMA_VERSION})"
+        )
     if initial_version == SCHEMA_VERSION:
         # Reject a falsely current database without repairing or otherwise mutating it.
         _validate_schema(connection)

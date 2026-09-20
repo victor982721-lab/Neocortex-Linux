@@ -12,7 +12,7 @@ LIFECYCLE_POLICY_VERSION = 1
 # Every table appears once. FTS shadows inherit an explicitly declared role.
 _DECLARATIONS: dict[str, dict[TableLifecycleRole, tuple[str, ...]]] = {
     'framework': {
-        'authoritative': ('curation_authorization_grants', 'file_action_events', 'file_action_reconciliation_events', 'file_actions', 'review_candidates', 'review_decisions', 'review_evidence_examples', 'review_evidence_progress', 'review_task_batch_memberships', 'review_task_batches', 'review_task_events', 'review_task_scan_progress', 'review_task_source_publications', 'review_tasks', 'semantic_content_admission_events', 'semantic_content_admission_policies'),
+        'authoritative': ('file_action_events', 'file_action_reconciliation_events', 'file_actions', 'findings', 'semantic_content_admission_events', 'semantic_content_admission_policies'),
         'operational': ('initial_runs', 'route_candidates', 'route_phase_runs', 'route_runs', 'run_actions', 'run_events'),
         'schema_metadata': ('metadata',),
         'derived': ('content_type_cache',),

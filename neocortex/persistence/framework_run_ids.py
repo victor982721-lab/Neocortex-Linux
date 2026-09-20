@@ -25,8 +25,8 @@ _MAX_SQLITE_INT: Final = 9223372036854775807
 _REFERENCE_SPECS: Final[tuple[tuple[str, str], ...]] = (
     ("file_actions", "run_id"),
     ("content_type_cache", "last_seen_run_id"),
-    ("review_candidates", "last_seen_run_id"),
-    ("review_candidates", "resolved_run_id"),
+    ("findings", "last_seen_run_id"),
+    ("findings", "resolved_run_id"),
     ("initial_runs", "source_run_id"),
     ("route_runs", "source_run_id"),
     ("route_phase_runs", "source_run_id"),

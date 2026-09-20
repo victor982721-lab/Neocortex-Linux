@@ -303,7 +303,6 @@ def _print_global_resource_report(result) -> None:
 
 def _print_dedup_report(result) -> None:
     plan = result.dedup_plan
-    journal_span = result.journal_usn_span
     print(
         f"duplicate_groups={plan.group_count} "
         f"reclaimable_bytes={plan.reclaimable_bytes} "
@@ -311,7 +310,7 @@ def _print_dedup_report(result) -> None:
         f"physical_reclaimable_bytes=not_verified "
         f"requested_policy={getattr(plan, 'requested_policy', 'legacy_unknown')} "
         f"dedup_coverage={getattr(plan, 'coverage', 'legacy_unknown')} "
-        f"journal_usn_span={journal_span if journal_span is not None else 'unavailable'} "
+        "inventory_observation=portable_metadata_only "
         f"reconciliation_records={result.reconciliation_records} "
         f"inventory_attempts={result.inventory_attempts} "
         f"inventory_mode={result.inventory_mode}"

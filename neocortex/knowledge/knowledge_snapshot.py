@@ -643,62 +643,8 @@ def _framework_observation(connection: sqlite3.Connection) -> _LogicalObservatio
         LogicalWatermark("latest_event_id", str(int(row["event_id"]))),
         LogicalWatermark("latest_action_id", str(int(row["action_id"]))),
     ]
-    review_tasks_available = connection.execute(
-        """SELECT 1 FROM sqlite_master
-        WHERE type='table' AND name='review_task_batches'"""
-    ).fetchone()
-    review_heads: tuple[PublicationHead, ...] = ()
-    if review_tasks_available is not None:
-        from neocortex.workflow.review.review_task_repository import (
-            _audit_latest_review_task_source_publications_from_prevalidated_connection,
-        )
-
-        publications = _audit_latest_review_task_source_publications_from_prevalidated_connection(
-            connection,
-            limit=MAX_SNAPSHOT_HEADS,
-        ).publications
-        review_heads = tuple(
-            PublicationHead(
-                scope=f"review-task-source:{publication.publication_id}",
-                publication_id=publication.publication_id,
-                generation=publication.revision,
-                model_signature=publication.fence.source_snapshot_fingerprint,
-            )
-            for publication in publications
-        )
-        review = connection.execute(
-            """SELECT
-            (SELECT COUNT(*) FROM review_task_batches) AS batch_count,
-            (SELECT COALESCE(MAX(confirmed_ns),0)
-             FROM review_task_batches) AS batch_confirmed_ns,
-            (SELECT COUNT(*) FROM review_task_events) AS event_count,
-            (SELECT COALESCE(MAX(recorded_ns),0)
-             FROM review_task_events) AS event_recorded_ns,
-            (SELECT COUNT(*) FROM review_task_source_publications)
-             AS source_publication_count,
-            (SELECT COALESCE(MAX(confirmed_ns),0)
-             FROM review_task_source_publications)
-             AS source_publication_confirmed_ns"""
-        ).fetchone()
-        watermarks.extend(
-            (
-                LogicalWatermark(
-                    "review_task_batches",
-                    f"{int(review['batch_count'])}:{int(review['batch_confirmed_ns'])}",
-                ),
-                LogicalWatermark(
-                    "review_task_events",
-                    f"{int(review['event_count'])}:{int(review['event_recorded_ns'])}",
-                ),
-                LogicalWatermark(
-                    "review_task_source_publications",
-                    f"{int(review['source_publication_count'])}:"
-                    f"{int(review['source_publication_confirmed_ns'])}",
-                ),
-            )
-        )
     watermarks.append(LogicalWatermark("visibility", "best_effort_non_generational"))
-    return _LogicalObservation(review_heads, tuple(watermarks), ())
+    return _LogicalObservation((), tuple(watermarks), ())
 
 
 def _logical_observation(

@@ -17,13 +17,9 @@ APPLICATION_DIRECTORY_NAME = "Neocortex"
 LINUX_MUTATION_REASON = "linux_mutation_backend_unavailable"
 UNAVAILABLE_BIRTHTIME_NS = -1
 POSIX_PHYSICAL_IDENTITY_SCHEME = "posix_device_inode_birthtime"
-WINDOWS_PHYSICAL_IDENTITY_SCHEME = "windows_file_id_birthtime"
-PHYSICAL_IDENTITY_SCHEMES = frozenset(
-    {POSIX_PHYSICAL_IDENTITY_SCHEME, WINDOWS_PHYSICAL_IDENTITY_SCHEME}
-)
-WINDOWS_PATH_COLLATION = "NOCASE"
+PHYSICAL_IDENTITY_SCHEMES = frozenset({POSIX_PHYSICAL_IDENTITY_SCHEME})
 POSIX_PATH_COLLATION = "BINARY"
-SQLITE_PATH_COLLATIONS = frozenset({WINDOWS_PATH_COLLATION, POSIX_PATH_COLLATION})
+SQLITE_PATH_COLLATIONS = frozenset({POSIX_PATH_COLLATION})
 
 _USER_DIR_PATTERN = re.compile(r'^XDG_DOCUMENTS_DIR=(?P<quote>["\'])(?P<value>.*)(?P=quote)$')
 
@@ -134,34 +130,8 @@ def current_platform_policy(*, platform_name: str | None = None) -> PlatformPoli
     """Return the current policy without creating or modifying any path."""
 
     effective_platform = os.name if platform_name is None else platform_name
-    if effective_platform == "nt":
-        local_base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        if not local_base.is_absolute():
-            raise ValueError(f"LOCALAPPDATA must name an absolute path: {local_base}")
-        app_data = local_base / APPLICATION_DIRECTORY_NAME
-        program_root = local_base / "Programs" / APPLICATION_DIRECTORY_NAME
-        return PlatformPolicy(
-            system="windows",
-            corpus_root=Path.home(),
-            state_directory=app_data / "state",
-            config_directory=app_data,
-            data_directory=program_root,
-            releases_directory=program_root / "releases",
-            current_release=program_root / "current",
-            models_directory=app_data / "models",
-            runtimes_directory=program_root / "releases",
-            stable_launcher=program_root / "bin" / "Neocortex.exe",
-            user_alias=program_root / "bin" / "Neocortex.exe",
-            desktop_file=program_root / "Neocortex.lnk",
-            inventory_backend="ntfs-usn",
-            identity_backend="windows-volume-file-id",
-            path_collation=WINDOWS_PATH_COLLATION,
-            containment_backend="windows-job-object",
-            elevation="windows-administrator",
-            mutation_backend="windows-handle-bound-ntfs",
-            mutation_available=True,
-            compatible=True,
-        )
+    if effective_platform not in {"posix", "linux"}:
+        raise ValueError("NeoCortex supports Linux/Kubuntu only")
 
     config_root = linux_config_home() / APPLICATION_DIRECTORY_NAME
     state_root = linux_state_home() / APPLICATION_DIRECTORY_NAME / "state"
@@ -192,7 +162,7 @@ def current_platform_policy(*, platform_name: str | None = None) -> PlatformPoli
 
 def default_corpus_root() -> Path:
     configured = os.environ.get("NEOCORTEX_CORPUS_ROOT")
-    if configured and os.name != "nt":
+    if configured:
         candidate = Path(configured).expanduser()
         if not candidate.is_absolute():
             raise ValueError(f"NEOCORTEX_CORPUS_ROOT must name an absolute path: {candidate}")
@@ -221,55 +191,47 @@ def stat_birthtime_ns(
 ) -> int:
     """Return real birth time or the explicit portable unavailable sentinel.
 
-    Windows retains its historical ``ctime`` fallback for compatibility with
-    existing NTFS state. POSIX never misrepresents inode-change time as birth.
+    POSIX never misrepresents inode-change time as birth.
     """
 
     birthtime = getattr(metadata, "st_birthtime_ns", None)
     if birthtime is not None:
         return int(birthtime)
-    effective_platform = os.name if platform_name is None else platform_name
-    if effective_platform == "nt":
-        return int(metadata.st_ctime_ns)
+    del platform_name
     return UNAVAILABLE_BIRTHTIME_NS
 
 
 def physical_identity_scheme_for_birthtime(birthtime_ns: int) -> str:
     """Name the identity scheme represented by a stored birth-time value.
 
-    Existing Windows publications carry a non-negative NTFS creation time.
     Linux persists the explicit ``-1`` sentinel alongside ``st_dev`` and
-    ``st_ino``; that tuple is still a resolved physical identity rather than a
+    ``st_ino``; that tuple is a resolved physical identity rather than a
     path-derived fallback.
     """
 
-    if birthtime_ns == UNAVAILABLE_BIRTHTIME_NS:
+    if birthtime_ns >= UNAVAILABLE_BIRTHTIME_NS:
         return POSIX_PHYSICAL_IDENTITY_SCHEME
-    if birthtime_ns >= 0:
-        return WINDOWS_PHYSICAL_IDENTITY_SCHEME
     raise ValueError("birthtime must be -1 or a non-negative integer")
 
 
 def linux_mutation_requested(*, apply: bool, organization_apply: bool) -> bool:
-    return os.name != "nt" and (apply or organization_apply)
+    return apply or organization_apply
 
 
 def default_whisper_device() -> Literal["auto", "cpu", "cuda"]:
-    return "cpu" if os.name != "nt" else "auto"
+    return "cpu"
 
 
 def default_whisper_compute_type() -> str:
-    return "int8" if os.name != "nt" else "auto"
+    return "int8"
 
 
 def default_whisper_model_cache() -> Path | None:
-    if os.name == "nt":
-        return None
     return current_platform_policy().models_directory / "whisper"
 
 
 def default_local_models_only() -> bool:
-    return os.name != "nt"
+    return True
 
 
 __all__ = [
@@ -280,8 +242,6 @@ __all__ = [
     "POSIX_PHYSICAL_IDENTITY_SCHEME",
     "SQLITE_PATH_COLLATIONS",
     "UNAVAILABLE_BIRTHTIME_NS",
-    "WINDOWS_PATH_COLLATION",
-    "WINDOWS_PHYSICAL_IDENTITY_SCHEME",
     "PlatformPolicy",
     "current_platform_policy",
     "default_corpus_root",

@@ -224,7 +224,7 @@ def _restricted_traversal_directory_keys(
 
 @dataclass(frozen=True, slots=True)
 class InventoryExclusionPolicy:
-    """Compiled, deterministic exclusion policy shared by scan and USN."""
+    """Compiled, deterministic exclusion policy for portable inventory scans."""
 
     signature_version: ClassVar[str] = INVENTORY_EXCLUSION_SIGNATURE_VERSION
 

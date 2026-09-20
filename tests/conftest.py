@@ -86,10 +86,6 @@ def pytest_configure(config: Any) -> None:
     config._neocortex_audit_lab_identities = _guarded_directory_identities(root)
 
 
-def _windows_audit_lab_required() -> bool:
-    return os.name == "nt" and not os.environ.get(AUDIT_LAB_ENVIRONMENT)
-
-
 def _exclude_module(config: Any, path: Path) -> bool:
     if path.suffix != ".py" or not path.name.startswith("test_"):
         return False
@@ -154,18 +150,6 @@ def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
     if deselected:
         config.hook.pytest_deselected(items=deselected)
         config._neocortex_deselected_test_count += len(deselected)
-    _mark_windows_audit_tests(items)
-
-
-def _mark_windows_audit_tests(items: list[Any]) -> None:
-    if not _windows_audit_lab_required():
-        return
-    marker = pytest.mark.skip(reason="Windows NTFS contract requires an activated audit laboratory")
-    for item in items:
-        if Path(str(item.path)).name == "test_release_windows_ntfs.py":
-            item.add_marker(marker)
-
-
 def pytest_terminal_summary(terminalreporter: Any, config: Any) -> None:
     excluded = len(config._neocortex_excluded_capability_modules)
     foreign = len(config._neocortex_excluded_platform_modules)

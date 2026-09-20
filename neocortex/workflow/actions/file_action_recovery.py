@@ -23,7 +23,11 @@ from neocortex.deduplication import (
 )
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
-from neocortex.safety.kio_trash import verify_trash_receipt_evidence
+from neocortex.safety.kio_trash import (
+    is_metadata_binding,
+    metadata_binding,
+    verify_trash_receipt_evidence,
+)
 # endregion [01]
 
 # region [02] Implementación
@@ -375,11 +379,15 @@ def _observe_path(path: str, expected: _ExpectedIdentity) -> tuple[str, str | No
         )
     if expected.source_digest is not None:
         try:
-            digest = f"{FULL_ALGORITHM}:" + full_fingerprint(current).hex()
+            digest = (
+                metadata_binding(current)
+                if is_metadata_binding(expected.source_digest)
+                else f"{FULL_ALGORITHM}:" + full_fingerprint(current).hex()
+            )
         except (OSError, FileChangedError) as exc:
-            return "error", f"full digest observation failed: {type(exc).__name__}: {exc}"
+            return "error", f"binding observation failed: {type(exc).__name__}: {exc}"
         if digest != expected.source_digest:
-            return "different", "observed full digest differs from the mutation evidence"
+            return "different", "observed identity binding differs from the mutation evidence"
     return "expected", None
 
 

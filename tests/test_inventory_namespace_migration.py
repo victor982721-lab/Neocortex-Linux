@@ -9,7 +9,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INVENTORY_ROOT = PROJECT_ROOT / "neocortex" / "integrations" / "inventory"
-MODULES = ("inventory_boundary", "inventory_coordinator", "reconcile")
+MODULES = ("inventory_boundary", "inventory_coordinator")
 
 
 def test_inventory_modules_are_owned_by_the_canonical_tree() -> None:
@@ -28,7 +28,6 @@ importlib.import_module("neocortex.integrations.inventory")
 forbidden = {
     "neocortex.integrations.inventory.inventory_boundary",
     "neocortex.integrations.inventory.inventory_coordinator",
-    "neocortex.integrations.inventory.reconcile",
 }
 loaded = sorted(forbidden.intersection(sys.modules))
 if loaded:

@@ -324,7 +324,7 @@ def test_archive_versions_schema_and_store_contract_remain_stable() -> None:
     assert route.ARCHIVE_MIME == "application/zip"
     assert route.ARCHIVE_ROUTE_VERSION == "archive-route-v3"
     assert state.ARCHIVE_SCHEMA_VERSION == 2
-    assert content_types.DETECTOR_VERSION == "content-types-v3"
+    assert content_types.DETECTOR_VERSION == "content-types-v4"
     assert route.ArchiveRouteConfig(Path("state") / "archive.sqlite3").state_path.name == (
         "archive.sqlite3"
     )

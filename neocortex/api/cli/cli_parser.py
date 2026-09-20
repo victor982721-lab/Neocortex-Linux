@@ -474,38 +474,40 @@ def build_parser() -> argparse.ArgumentParser:
             metavar="ID",
         )
     retention.add_argument("--retention-json", action="store_true")
-    watcher = parser.add_argument_group("Foreground incremental watcher")
+    watcher = parser.add_argument_group("Foreground portable inventory watcher")
     watcher.add_argument(
         "--watch",
         action="store_true",
         help=(
-            "observe durable filesystem changes with USN when available and "
-            "portable polling otherwise"
+            "schedule bounded portable inventory passes without a platform journal"
         ),
     )
     watcher.add_argument(
         "--watch-bootstrap",
         choices=("always", "if-needed", "never"),
         default="if-needed",
-        help="run an initial reconciliation always, only when needed, or never",
+        help="run an initial portable inventory always, only when needed, or never",
     )
     watcher.add_argument(
         "--watch-poll-timeout-seconds",
         type=int,
         default=1,
         metavar="SECONDS",
+        help=argparse.SUPPRESS,
     )
     watcher.add_argument(
         "--watch-debounce-seconds",
         type=float,
         default=2.0,
         metavar="SECONDS",
+        help=argparse.SUPPRESS,
     )
     watcher.add_argument(
         "--watch-max-debounce-seconds",
         type=float,
         default=30.0,
         metavar="SECONDS",
+        help=argparse.SUPPRESS,
     )
     watcher.add_argument(
         "--watch-error-backoff-initial-seconds",
@@ -530,7 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=300.0,
         metavar="SECONDS",
-        help="interval between portable inventory passes when USN is unavailable",
+        help="interval between portable inventory passes",
     )
     selection = parser.add_argument_group("Explicit route selection")
     selection.add_argument(
@@ -771,140 +773,6 @@ def build_parser() -> argparse.ArgumentParser:
             "non-zero without this option"
         ),
     )
-    review = parser.add_argument_group("Content review")
-    review.add_argument(
-        "--review-candidates",
-        type=int,
-        metavar="N",
-        help=(
-            "list up to N non-destructive content review candidates and exit; "
-            "this command never deletes or moves files"
-        ),
-    )
-    review.add_argument(
-        "--review-route",
-        choices=("pdf", "docx", "office", "audio", "video", "image"),
-        help="content route for review queries and decisions",
-    )
-    review.add_argument(
-        "--review-recommendation",
-        choices=(
-            "retry",
-            "keep_protected",
-            "manual_review",
-            "deletion_candidate",
-        ),
-        help="filter --review-candidates by its advisory recommendation",
-    )
-    review.add_argument(
-        "--review-status",
-        choices=("open", "resolved"),
-        default="open",
-        help="show open findings by default, or previously resolved findings",
-    )
-    review.add_argument(
-        "--review-decisions",
-        type=int,
-        metavar="N",
-        help="list up to N append-only human review decisions and exit",
-    )
-    review.add_argument(
-        "--review-record",
-        choices=("confirmed", "dismissed", "deferred"),
-        help="record one human decision about an exact finding generation",
-    )
-    review.add_argument(
-        "--review-decision-status",
-        choices=("confirmed", "dismissed", "deferred"),
-        help="filter --review-decisions by human decision status",
-    )
-    review.add_argument(
-        "--review-reason",
-        metavar="REASON_CODE",
-        help="finding reason for a decision query or exact decision target",
-    )
-    review.add_argument(
-        "--review-volume-id",
-        type=hexadecimal_identifier,
-        metavar="HEX",
-        help="durable hexadecimal volume identity shown by review output",
-    )
-    review.add_argument(
-        "--review-file-id",
-        type=hexadecimal_identifier,
-        metavar="HEX",
-        help="durable hexadecimal file identity shown by review output",
-    )
-    review.add_argument(
-        "--review-generation",
-        type=int,
-        metavar="RUN_ID",
-        help="exact finding generation to list or decide",
-    )
-    review.add_argument(
-        "--review-actor",
-        metavar="ACTOR",
-        help="human or system identity recording --review-record",
-    )
-    review.add_argument(
-        "--review-note",
-        metavar="TEXT",
-        help="optional bounded note stored with --review-record",
-    )
-    review.add_argument(
-        "--review-evidence-sync",
-        action="store_true",
-        help="materialize one bounded resumable batch of human-review evidence",
-    )
-    review.add_argument(
-        "--review-evidence-batch-size",
-        type=int,
-        default=128,
-        metavar="N",
-        help="decisions scanned by one --review-evidence-sync call (1 to 256)",
-    )
-    review.add_argument(
-        "--review-evidence-metrics",
-        action="store_true",
-        help="show descriptive review outcomes without claiming calibration",
-    )
-    review.add_argument(
-        "--review-evidence-list",
-        type=int,
-        metavar="N",
-        help="list up to N materialized review-evidence examples",
-    )
-    review.add_argument(
-        "--review-evidence-route",
-        choices=("pdf", "docx", "office", "audio", "video", "image"),
-    )
-    review.add_argument("--review-evidence-reason", metavar="REASON_CODE")
-    review.add_argument(
-        "--review-evidence-recommendation",
-        choices=("retry", "keep_protected", "manual_review", "deletion_candidate"),
-    )
-    review.add_argument("--review-evidence-detector", metavar="VERSION")
-    review.add_argument("--review-evidence-actor", metavar="ACTOR")
-    review.add_argument(
-        "--review-evidence-status",
-        choices=("confirmed", "dismissed", "deferred"),
-        help="filter --review-evidence-list by human decision status",
-    )
-    review.add_argument(
-        "--review-evidence-completeness",
-        choices=("complete", "incomplete"),
-        help="filter listed examples by availability of the candidate evidence snapshot",
-    )
-    review.add_argument(
-        "--review-json",
-        action="store_true",
-        help="emit candidate pages as structured JSON; other review commands retain JSON Lines",
-    )
-    review.add_argument(
-        "--review-json-lines", action="store_true",
-        help="preserve legacy candidate JSON Lines; requires --review-candidates and --review-json",
-    )
-    review.add_argument("--review-after", metavar="CURSOR", help="resume a fenced candidate page")
     parser.add_argument(
         "--dedup-policy",
         choices=("fast", "exact"),

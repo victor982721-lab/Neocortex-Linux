@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
-
 import pytest
 
 from neocortex.api import read_api
@@ -64,34 +62,6 @@ def test_read_value_error_emits_typed_json_and_exit_two(
     assert payload["error"]["message"] == "entrada inválida"
     assert "\x1b" not in captured.out
     assert "Traceback" not in captured.out
-
-
-def test_review_value_error_emits_the_review_contract(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    original_import = human.importlib.import_module
-
-    def fake_import(name: str) -> object:
-        if name == "neocortex.api.cli.value_review":
-            return SimpleNamespace(
-                run_value_review=lambda **_kwargs: (_ for _ in ()).throw(
-                    ValueError("limit inválido\n")
-                )
-            )
-        return original_import(name)
-
-    monkeypatch.setattr(human.importlib, "import_module", fake_import)
-
-    assert human.run_human_command(("review", "value", "--limit", "7", "--json")) == 2
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    payload = json.loads(captured.out)
-    validate_read_payload(payload, ReadOperation.REVIEW, scope="personal", limit=7)
-    assert payload["exit_code"] == 2
-    assert payload["status"] == "usage_error"
-    assert payload["error"]["code"] == "usage_error"
-    assert payload["error"]["message"] == "limit inválido"
 
 
 @pytest.mark.parametrize(

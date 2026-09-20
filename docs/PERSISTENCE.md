@@ -32,7 +32,8 @@ La raíz predeterminada es:
 ${XDG_STATE_HOME:-~/.local/state}/Neocortex/state
 ```
 
-No se copian bases de Windows ni se reinterpretan identidades NTFS en Linux.
+El owner de inventario sólo publica observaciones portables Linux; no crea ni
+consume cursores de journal de plataforma.
 
 ## Registro de owners
 

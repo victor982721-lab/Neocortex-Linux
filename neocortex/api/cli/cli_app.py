@@ -830,7 +830,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                         if isinstance(exc, RouteExecutionError)
                         else max(
                             1,
-                            exc.failed + exc.protected
+                            exc.recovery_required
                             if isinstance(exc, RedlistPrepassError)
                             else 1,
                         )

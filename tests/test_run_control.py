@@ -13,7 +13,7 @@ from typing import cast
 
 import pytest
 
-from neocortex.enumeration import JournalCursor
+from tests.portable_inventory import PortableInventoryCursor
 from neocortex.deduplication import (
     DedupIndex,
     FileSnapshot,
@@ -95,7 +95,7 @@ def _source_run(
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(
             root,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
             inventory_policy_signature=(effective_signature if persist_policy else None),
         )
         if persist_policy:
@@ -129,7 +129,7 @@ def _source_run(
             state.complete_initial_run(
                 run_id,
                 scan.scan_id,
-                JournalCursor("C:", 1, 11),
+                PortableInventoryCursor("C:", 1, 11),
                 0,
                 0,
                 "incremental",
@@ -545,7 +545,7 @@ def test_routing_snapshot_accepts_zero_incremental_attempts(tmp_path: Path) -> N
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(
             tmp_path,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
         )
 
         assert state.publish_initial_routing_snapshot(
@@ -559,7 +559,7 @@ def test_routing_snapshot_accepts_zero_incremental_attempts(tmp_path: Path) -> N
         state.complete_initial_run(
             run_id,
             7,
-            JournalCursor("C:", 1, 11),
+            PortableInventoryCursor("C:", 1, 11),
             0,
             0,
             "incremental",
@@ -588,7 +588,7 @@ def test_route_runs_cannot_start_before_snapshot_publication(tmp_path: Path) -> 
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(
             tmp_path,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
         )
 
         with pytest.raises(
@@ -608,7 +608,7 @@ def test_candidate_count_mismatch_does_not_publish_partial_snapshot(
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(
             tmp_path,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
         )
         state.store_route_candidates(
             run_id,
@@ -681,7 +681,7 @@ def test_malformed_inventory_events_are_not_recovery_evidence(
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(
             tmp_path,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
         )
         with state._connection:
             state._connection.execute(
@@ -702,7 +702,7 @@ def test_conflicting_inventory_events_are_not_recovery_evidence(
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(
             tmp_path,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
         )
         first = {
             "schema": "neocortex.inventory-prepared/v1",
@@ -738,7 +738,7 @@ def test_routing_snapshot_publication_is_idempotent_and_rejects_conflicts(
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(
             tmp_path,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
         )
         published = (7, 2, 0, "incremental", 0)
 
@@ -868,7 +868,7 @@ def test_framework_selection_streams_path_and_review_intersection(tmp_path) -> N
     first = FileSnapshot(str(tmp_path / "first.pdf"), 1, 1, 1, 1, 1)
     second = FileSnapshot(str(tmp_path / "second.pdf"), 1, 2, 1, 1, 1)
     with FrameworkState(database) as state:
-        run_id = state.begin_initial_run(tmp_path, JournalCursor("C:", 1, 1))
+        run_id = state.begin_initial_run(tmp_path, PortableInventoryCursor("C:", 1, 1))
         state.store_route_candidates(
             run_id,
             (

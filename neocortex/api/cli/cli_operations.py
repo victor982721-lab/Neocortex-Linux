@@ -39,7 +39,6 @@ class DirectOperationFamily(Enum):
     STATUS = auto()
     RECOVERY = auto()
     WATCH = auto()
-    REVIEW = auto()
     SEMANTIC = auto()
     ORGANIZATION = auto()
     PDF = auto()
@@ -93,7 +92,6 @@ _MODELS = DirectOperationFamily.MODELS
 _STATUS = DirectOperationFamily.STATUS
 _RECOVERY = DirectOperationFamily.RECOVERY
 _WATCH = DirectOperationFamily.WATCH
-_REVIEW = DirectOperationFamily.REVIEW
 _SEMANTIC = DirectOperationFamily.SEMANTIC
 _ORGANIZATION = DirectOperationFamily.ORGANIZATION
 _PDF = DirectOperationFamily.PDF
@@ -180,28 +178,6 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
         "run_incremental_watcher",
         _WATCH,
         module_name=".cli_watcher",
-    ),
-    DirectOperation("review_candidates", "run_review_candidates", _REVIEW, _VALUE),
-    DirectOperation("review_decisions", "run_review_decisions", _REVIEW, _VALUE),
-    DirectOperation("review_record", "run_review_record", _REVIEW, _VALUE),
-    DirectOperation(
-        "review_evidence_sync",
-        "run_review_evidence_sync",
-        _REVIEW,
-        module_name=".cli_review_evidence",
-    ),
-    DirectOperation(
-        "review_evidence_metrics",
-        "run_review_evidence_metrics",
-        _REVIEW,
-        module_name=".cli_review_evidence",
-    ),
-    DirectOperation(
-        "review_evidence_list",
-        "run_review_evidence_list",
-        _REVIEW,
-        _VALUE,
-        module_name=".cli_review_evidence",
     ),
     DirectOperation(
         "semantic_status",

@@ -852,10 +852,12 @@ class ActionTests(unittest.TestCase):
             self.assertEqual(len(backend.asserted_items), 3)
             self.assertEqual(summary.duplicates_trashed, 1)
             self.assertEqual(summary.duplicate_skips, 2)
-            self.assertEqual(summary.errors, 2)
+            # The blocked backend outcome is a confirmed pre-effect skip;
+            # only the genuinely ambiguous member contributes an error.
+            self.assertEqual(summary.errors, 1)
             self.assertEqual(
                 {row[1] for row in rows},
-                {"applied", "recovery_required"},
+                {"applied", "skipped", "recovery_required"},
             )
             self.assertIn("inspect fixture", " ".join(str(row[2]) for row in rows))
             self.assertIn("fixture refused", " ".join(str(row[2]) for row in rows))

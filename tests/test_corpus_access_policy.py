@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import neocortex.safety.corpus_access as corpus_access_module
-from neocortex.enumeration import JournalCursor
+from tests.portable_inventory import PortableInventoryCursor
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
@@ -288,7 +288,7 @@ def test_normal_actions_remain_compatible_and_policy_columns_are_immutable(
         boundary = build_normal_inventory_boundary(root, database.parent)
         run_id = state.begin_initial_run(
             root,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
             inventory_policy_signature=boundary.effective_signature,
         )
         action_id = state.begin_file_action(

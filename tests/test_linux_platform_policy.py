@@ -97,32 +97,13 @@ def test_linux_policy_uses_xdg_roots_and_safe_documents_file(tmp_path: Path) -> 
     assert policy.mutation_available is True
 
 
-def test_windows_policy_preserves_profile_and_localappdata_contract(tmp_path: Path) -> None:
-    profile = tmp_path / "profile"
-    local = tmp_path / "local"
-    with (
-        patch.object(Path, "home", return_value=profile),
-        patch.dict(os.environ, {"LOCALAPPDATA": str(local)}, clear=False),
-    ):
-        policy = current_platform_policy(platform_name="nt")
-
-    assert policy.corpus_root == profile
-    assert policy.state_directory == local / "Neocortex" / "state"
-    assert policy.stable_launcher == local / "Programs" / "Neocortex" / "bin" / "Neocortex.exe"
-    assert policy.inventory_backend == "ntfs-usn"
-    assert policy.path_collation == "NOCASE"
-    assert policy.mutation_available is True
-
-
 def test_filesystem_path_collation_is_allowlisted_by_platform() -> None:
     assert sqlite_path_collation(platform_name="posix") == "BINARY"
-    assert sqlite_path_collation(platform_name="nt") == "NOCASE"
 
 
-def test_posix_birthtime_is_explicitly_unavailable_and_windows_fallback_is_preserved() -> None:
+def test_posix_birthtime_is_explicitly_unavailable() -> None:
     metadata = SimpleNamespace(st_ctime_ns=987_654_321)
     assert stat_birthtime_ns(metadata, platform_name="posix") == -1
-    assert stat_birthtime_ns(metadata, platform_name="nt") == 987_654_321
 
 
 def test_posix_device_inode_with_unavailable_birthtime_is_resolved_identity() -> None:

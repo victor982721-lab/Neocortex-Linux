@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import sys
 from collections.abc import Mapping, Sequence
@@ -38,7 +37,6 @@ HUMAN_COMMANDS = frozenset(
         "ask",
         "curate",
         "inspect",
-        "review",
         "knowledge",
         "databases",
         "database",
@@ -418,68 +416,6 @@ def build_human_parser() -> argparse.ArgumentParser:
     inspect_lineage.add_argument("identifier", metavar="IDENTIFICADOR")
     _add_scope(inspect_lineage, default=ReadScope.PERSONAL)
     inspect_lineage.add_argument("--json", action="store_true")
-
-    review = commands.add_parser(
-        "review",
-        help="revisa propuestas conservadoras sin mutar archivos",
-        allow_abbrev=False,
-    )
-    review_commands = review.add_subparsers(dest="review_command", metavar="TIPO")
-    review_value = review_commands.add_parser(
-        "value",
-        help="explica candidatos de valor bajo, duplicados y desconocidos",
-        allow_abbrev=False,
-    )
-    _add_scope(review_value, default=ReadScope.PERSONAL)
-    review_value.add_argument("--limit", type=int, default=50, metavar="N")
-    review_value.add_argument(
-        "--refresh",
-        action="store_true",
-        help="publica una página acotada de tareas durables; no muta archivos",
-    )
-    review_value.add_argument("--json", action="store_true")
-    review_task = review_commands.add_parser(
-        "task",
-        help="inspecciona o decide una tarea durable mediante CAS",
-        allow_abbrev=False,
-    )
-    review_task_commands = review_task.add_subparsers(dest="review_task_command", metavar="ACCIÓN")
-    review_task_show = review_task_commands.add_parser(
-        "show", help="muestra una tarea durable exacta", allow_abbrev=False
-    )
-    review_task_show.add_argument("task_id", metavar="TASK_ID")
-    _add_scope(review_task_show, default=ReadScope.PERSONAL)
-    review_task_show.add_argument("--json", action="store_true")
-    review_task_history = review_task_commands.add_parser(
-        "history", help="muestra el historial append-only de una tarea", allow_abbrev=False
-    )
-    review_task_history.add_argument("task_id", metavar="TASK_ID")
-    _add_scope(review_task_history, default=ReadScope.PERSONAL)
-    review_task_history.add_argument("--json", action="store_true")
-    review_task_claim = review_task_commands.add_parser(
-        "claim", help="reclama una tarea abierta mediante CAS", allow_abbrev=False
-    )
-    review_task_claim.add_argument("task_id", metavar="TASK_ID")
-    _add_scope(review_task_claim, default=ReadScope.PERSONAL)
-    review_task_claim.add_argument("--expected-event-id", required=True, metavar="EVENT_ID")
-    review_task_claim.add_argument("--actor", required=True, metavar="ACTOR")
-    review_task_claim.add_argument("--note", metavar="NOTA")
-    review_task_claim.add_argument("--json", action="store_true")
-    review_task_decide = review_task_commands.add_parser(
-        "decide", help="resuelve o descarta una tarea durable", allow_abbrev=False
-    )
-    review_task_decide.add_argument("task_id", metavar="TASK_ID")
-    _add_scope(review_task_decide, default=ReadScope.PERSONAL)
-    review_task_decide.add_argument("--expected-event-id", required=True, metavar="EVENT_ID")
-    review_task_decide.add_argument("--decision", required=True, choices=("resolved", "dismissed"))
-    review_task_decide.add_argument(
-        "--decision-scope",
-        required=True,
-        choices=("until-source-change", "until-policy-change", "permanent"),
-    )
-    review_task_decide.add_argument("--actor", required=True, metavar="ACTOR")
-    review_task_decide.add_argument("--note", metavar="NOTA")
-    review_task_decide.add_argument("--json", action="store_true")
 
     knowledge = commands.add_parser(
         "knowledge",
@@ -1101,40 +1037,6 @@ def _run_inspect_lineage(args: argparse.Namespace) -> int:
     return _exit_code(payload)
 
 
-def _run_review_value(args: argparse.Namespace) -> int:
-    if args.refresh and args.scope == ReadScope.ALL.value:
-        _print(
-            "review value --refresh requiere --scope personal o framework; no se modificó estado.",
-            file=sys.stderr,
-        )
-        return 2
-    try:
-        adapter = importlib.import_module("neocortex.api.cli.value_review")
-        run_value_review = adapter.run_value_review
-    except (AttributeError, ImportError):
-        _print(
-            "La revisión de valor aún no está disponible en este árbol; "
-            "no se modificó ningún archivo.",
-            file=sys.stderr,
-        )
-        return 2
-    try:
-        return run_value_review(
-            scope=args.scope,
-            limit=args.limit,
-            json_output=args.json,
-            refresh=args.refresh,
-        )
-    except ValueError as exc:
-        return _run_usage_error(
-            "review value",
-            ReadOperation.REVIEW,
-            args,
-            exc,
-            limit=args.limit,
-        )
-
-
 def _run_curation_plan(args: argparse.Namespace) -> int:
     """Render one fixed-root, read-only page from the published curation plan."""
 
@@ -1494,53 +1396,6 @@ def _run_curation_restore(args: argparse.Namespace) -> int:
     return _exit_code(payload)
 
 
-def _run_review_task(args: argparse.Namespace) -> int:
-    if args.scope == ReadScope.ALL.value:
-        _print(
-            "review task requiere --scope personal o framework; no se modificó estado.",
-            file=sys.stderr,
-        )
-        return 2
-    try:
-        adapter = importlib.import_module("neocortex.api.cli.review_task")
-    except (AttributeError, ImportError):
-        _print("La revisión durable no está disponible; no se modificó estado.", file=sys.stderr)
-        return 2
-    if args.review_task_command == "show":
-        return adapter.run_review_task_show(
-            task_id=args.task_id,
-            scope=args.scope,
-            json_output=args.json,
-        )
-    if args.review_task_command == "history":
-        return adapter.run_review_task_history(
-            task_id=args.task_id,
-            scope=args.scope,
-            json_output=args.json,
-        )
-    if args.review_task_command == "claim":
-        return adapter.run_review_task_claim(
-            task_id=args.task_id,
-            scope=args.scope,
-            expected_event_id=args.expected_event_id,
-            actor=args.actor,
-            note=args.note,
-            json_output=args.json,
-        )
-    if args.review_task_command == "decide":
-        return adapter.run_review_task_decide(
-            task_id=args.task_id,
-            scope=args.scope,
-            expected_event_id=args.expected_event_id,
-            decision=args.decision,
-            decision_scope=args.decision_scope,
-            actor=args.actor,
-            note=args.note,
-            json_output=args.json,
-        )
-    raise ValueError("review task requires show or decide")
-
-
 def _run_knowledge_health(args: argparse.Namespace) -> int:
     try:
         payload = asset_health_payload(args.resource_id, args.scope)
@@ -1656,10 +1511,6 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_curation_restore(args)
     if args.command == "inspect" and args.inspect_command == "lineage":
         return _run_inspect_lineage(args)
-    if args.command == "review" and args.review_command == "value":
-        return _run_review_value(args)
-    if args.command == "review" and args.review_command == "task":
-        return _run_review_task(args)
     if args.command == "knowledge" and args.knowledge_command == "health":
         return _run_knowledge_health(args)
     if args.command in {"databases", "database"}:

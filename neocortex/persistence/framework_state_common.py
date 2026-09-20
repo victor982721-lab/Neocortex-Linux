@@ -40,7 +40,10 @@ FileActionSpec = tuple[str, str, str | None, str | None, str | None, bool]
 _TERMINAL_FILE_ACTION_STATUSES = frozenset({"planned", "applied", "skipped", "failed"})
 _FILE_ACTION_TRANSITIONS = {
     "started": frozenset({"planned", "skipped", "failed", "applying", "recovery_required"}),
-    "applying": frozenset({"applied", "recovery_required"}),
+    # A backend may prove a blocked/pre-effect outcome after the owner marks
+    # the row applying but before any physical frontier is crossed.  Persist
+    # that proof as a terminal skip rather than manufacturing recovery.
+    "applying": frozenset({"applied", "skipped", "recovery_required"}),
 }
 
 

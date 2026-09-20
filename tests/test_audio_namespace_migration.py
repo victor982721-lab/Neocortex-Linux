@@ -54,7 +54,6 @@ def test_audio_implementation_lives_under_the_product_namespace() -> None:
         "neocortex/runtime/orchestration/route_registry.py",
         "neocortex/semantic/semantic_plan_owners.py",
         "neocortex/safety/state_topology_contracts.py",
-        "neocortex/workflow/review/value_review_repository.py",
     ):
         source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         assert PRODUCT_ROOT in source

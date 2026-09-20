@@ -53,7 +53,7 @@ from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
 from neocortex.foundation.processing_provenance import ProcessingProvenance
 from neocortex.runtime.control.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
-from neocortex.workflow.review.review import ReviewCandidate
+from neocortex.workflow.findings import ReviewCandidate
 from neocortex.persistence.framework_route_state import (
     FrameworkRouteState,
     ReviewCandidateReconciliation,
@@ -199,7 +199,7 @@ class _AudioReviewBuffer:
         snapshot: FileSnapshot,
         failure: AudioProcessingError,
     ) -> None:
-        self.framework_state.store_review_candidates(
+        self.framework_state.store_findings(
             self.run_id,
             (_review_candidate(snapshot, failure),),
         )
@@ -207,7 +207,7 @@ class _AudioReviewBuffer:
     def flush(self) -> None:
         if not self.reconciliations:
             return
-        self.framework_state.reconcile_review_candidates_batch(
+        self.framework_state.reconcile_findings_batch(
             self.run_id,
             "audio",
             tuple(self.reconciliations),

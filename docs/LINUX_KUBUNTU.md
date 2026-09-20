@@ -32,8 +32,8 @@ aceptan rutas absolutas o expansiones literales seguras de HOME.
 - límites de memoria impuestos o abstención;
 - cancelación mediante SIGTERM y escalamiento acotado a SIGKILL.
 
-Windows/NTFS se conserva sólo como legado de lectura o compatibilidad interna y
-no se prueba ni expone como plataforma soportada.
+Windows/NTFS no es una plataforma soportada ni una ruta de ejecución del
+producto Linux.
 
 ## Prerrequisitos
 

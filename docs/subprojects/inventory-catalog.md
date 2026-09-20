@@ -4,8 +4,9 @@
 
 `neocortex/deduplication` controla inventario, grupos, fingerprints y planes;
 `neocortex/documents` controla catálogo, bindings, taxonomía y organización.
-`enumeration` e `integrations/inventory` son superficies compartidas regidas
-por el AGENTS raíz, no nuevos repositorios. Consulta
+`integrations/inventory` es una superficie compartida regida por el AGENTS raíz,
+no un nuevo repositorio; su backend activo es la observación portable Linux.
+Consulta
 [Architecture](../ARCHITECTURE.md#inventario-y-deduplicación) y [Persistence](../PERSISTENCE.md).
 
 ## Fronteras

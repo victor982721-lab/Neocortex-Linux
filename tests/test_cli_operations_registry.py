@@ -60,24 +60,6 @@ DIRECT_ARGUMENT_CASES = (
         ("--action-recovery-record", "1"),
     ),
     ("watch", "run_incremental_watcher", ("--watch",)),
-    ("review_candidates", "run_review_candidates", ("--review-candidates", "1")),
-    ("review_decisions", "run_review_decisions", ("--review-decisions", "1")),
-    ("review_record", "run_review_record", ("--review-record", "confirmed")),
-    (
-        "review_evidence_sync",
-        "run_review_evidence_sync",
-        ("--review-evidence-sync",),
-    ),
-    (
-        "review_evidence_metrics",
-        "run_review_evidence_metrics",
-        ("--review-evidence-metrics",),
-    ),
-    (
-        "review_evidence_list",
-        "run_review_evidence_list",
-        ("--review-evidence-list", "1"),
-    ),
     ("semantic_status", "run_semantic_status", ("--semantic-status",)),
     ("semantic_plan", "run_semantic_plan", ("--semantic-plan", "text")),
     (
@@ -187,11 +169,9 @@ def test_importing_dispatch_keeps_direct_handler_module_lazy() -> None:
                 handler_modules = {
                     "neocortex.api.cli.cli_capabilities",
                     "neocortex.api.cli.cli_direct",
-                    "neocortex.api.cli.cli_review_evidence",
                     "neocortex.api.cli.cli_watcher",
                     "neocortex.api.cli.cli_knowledge",
                     "neocortex.api.cli.cli_video",
-                    "neocortex.workflow.review.review_evidence",
                     "neocortex.runtime.control.watcher",
                 }
                 loaded = handler_modules.intersection(sys.modules)
@@ -271,7 +251,7 @@ def test_direct_operations_remain_mutually_exclusive_across_domains() -> None:
         validate_arguments(args)
 
     assert str(raised.value) == (
-            "direct status/recovery/review/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/"
+            "direct status/recovery/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/"
         "Knowledge "
         "operations are mutually exclusive"
     )

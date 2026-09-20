@@ -374,7 +374,7 @@ def build_consultation_page(window: Any) -> QWidget:
     heading_row.addWidget(
         window._section_heading(
             "Consulta tu información",
-            "Estado, búsqueda, contexto citado y revisión consultiva",
+            "Estado, búsqueda y contexto citado",
         ),
         1,
     )
@@ -396,7 +396,6 @@ def build_consultation_page(window: Any) -> QWidget:
     window.consult_operation.addItem("Buscar evidencia", "search")
     window.consult_operation.addItem("Preparar respuesta citada", "ask")
     window.consult_operation.addItem("Estado publicado", "status")
-    window.consult_operation.addItem("Revisar valor", "review")
     controls.addWidget(window.consult_operation, 1, 0)
 
     window.consult_scope = QComboBox()

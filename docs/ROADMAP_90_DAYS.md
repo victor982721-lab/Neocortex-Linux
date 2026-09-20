@@ -409,7 +409,7 @@ no habilita limpieza, KIO real, reindexación global ni modelos nuevos.
 - No usar GitHub Actions ni proveedores remotos implícitos.
 - No abrir el corpus real durante desarrollo o validación sin autorización.
 - No reintroducir el antiguo subsistema de autoanálisis.
-- Windows/NTFS no forma parte de estas entregas.
+- La plataforma activa es Linux/Kubuntu; Windows/NTFS no se publica ni valida.
 - Semantic pesado no se activa por `--all`; modelos y herramientas se preparan
   sólo mediante una operación explícita y autorizada.
 - Los informes de auditoría y evidencia bruta viven fuera de `docs/`.

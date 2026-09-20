@@ -16,7 +16,7 @@ import pytest
 
 from unittest.mock import patch
 
-from neocortex.enumeration import JournalCursor
+from tests.portable_inventory import PortableInventoryCursor
 from neocortex.deduplication import (
     DedupIndex,
     DedupPlanner,
@@ -141,7 +141,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                 with self.assertRaisesRegex(ValueError, "cannot be a symlink or reparse point"):
                     state.begin_initial_run(
                         root,
-                        JournalCursor(root.drive, 1, 0),
+                        PortableInventoryCursor(root.drive, 1, 0),
                     )
 
     def test_apply_rejects_root_replaced_by_an_ordinary_directory(self) -> None:

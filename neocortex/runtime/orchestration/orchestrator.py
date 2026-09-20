@@ -21,8 +21,6 @@ from pathlib import Path
 from neocortex.platform.policy import stat_birthtime_ns
 from typing import TYPE_CHECKING, cast
 
-from neocortex.enumeration.errors import NtfsUsnError
-from neocortex.enumeration.models import JournalCursor
 from neocortex.deduplication import (
     DedupIndex,
     DedupPlan,
@@ -43,10 +41,6 @@ from neocortex.runtime.control.global_resources import (
     GlobalResourceSummary,
     resource_gate,
     resource_scope,
-)
-from neocortex.runtime.control.incremental_gate import (
-    IncrementalGateRequest,
-    evaluate_incremental_gate,
 )
 from neocortex.integrations.inventory.inventory_coordinator import (
     PreparedInventory,
@@ -80,14 +74,6 @@ from neocortex.persistence.framework_state_writer import (
     FrameworkState,
     RunBudgetExceeded,
 )
-
-
-def query_journal_cursor(volume: str) -> JournalCursor:
-    """Lazy compatibility seam for the optional NTFS/USN provider."""
-
-    from neocortex.enumeration.ntfs.enumeration import query_journal_cursor as reader
-
-    return reader(volume)
 
 
 def _complete_root_identity(policy: CorpusAccessPolicy) -> tuple[int, int, int]:
@@ -139,7 +125,7 @@ class _InitialWork:
 @dataclass(frozen=True, slots=True)
 class _InitialExecution:
     work: _InitialWork
-    journal_after: JournalCursor | None
+    journal_after: None
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,7 +435,7 @@ class FrameworkOrchestrator:
         return root
 
     def _effective_excluded_paths(self, root: Path) -> tuple[Path, ...]:
-        """Return one exclusion policy shared by scan, USN and actions."""
+        """Return one exclusion policy shared by portable scan and actions."""
 
         boundary = build_normal_inventory_boundary(
             root,
@@ -457,29 +443,6 @@ class FrameworkOrchestrator:
             observe_regenerable_artifacts=bool(self.selected_routes),
         )
         return tuple(Path(path) for path in boundary.exclusion_policy.explicit_roots)
-
-    def _normal_incremental_gate(
-        self,
-        *,
-        state: FrameworkState,
-        dedup_index: DedupIndex,
-        boundary: NormalInventoryBoundary,
-        journal_before: JournalCursor,
-    ) -> tuple[bool, str, int | None]:
-        """Authorize normal incremental reuse only from one exact durable owner."""
-
-        request = IncrementalGateRequest.from_access_policy(
-            boundary.access_policy,
-            framework_policy_signature=boundary.effective_signature,
-            inventory_policy_signature=boundary.exclusion_policy.signature,
-            journal_before=journal_before,
-            verify_final=boundary.verify,
-        )
-        return evaluate_incremental_gate(
-            request,
-            state=state,
-            inventory=dedup_index,
-        ).as_tuple()
 
     def _resource_coordinator(self) -> GlobalResourceCoordinator:
         if self._active_coordinator is not None:
@@ -1013,22 +976,17 @@ class FrameworkOrchestrator:
     def _prepare_initial_run(
         self,
         boundary: NormalInventoryBoundary,
-    ) -> tuple[JournalCursor | None, str | None]:
+    ) -> tuple[None, str | None]:
         boundary.verify()
         emit_progress(
             self.progress,
             ProgressEvent("framework", "prepare", "Preparando ejecución", 0, 1, "fase"),
         )
-        journal_error: str | None = None
-        if os.name != "nt":
-            journal_before = None
-            journal_error = "portable_inventory_backend"
-        else:
-            try:
-                journal_before = query_journal_cursor(boundary.access_policy.root.drive)
-            except (NtfsUsnError, OSError) as exc:
-                journal_before = None
-                journal_error = f"{type(exc).__name__}: {exc}"
+        # NeoCortex is a Linux/Kubuntu product.  Inventory is deliberately
+        # portable and metadata-first; there is no optional NTFS/USN branch to
+        # probe or to represent as a partially available acceleration path.
+        journal_before = None
+        journal_error = "portable_inventory_backend"
         boundary.verify()
         emit_progress(
             self.progress,
@@ -1215,7 +1173,7 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         run_id: int,
         boundary: NormalInventoryBoundary,
-        journal_before: JournalCursor | None,
+        journal_before: None,
         journal_error: str | None,
         excluded_paths: tuple[Path, ...],
     ) -> None:
@@ -1311,23 +1269,15 @@ class FrameworkOrchestrator:
         run_id: int,
         boundary: NormalInventoryBoundary,
         dedup_index: DedupIndex,
-        journal_before: JournalCursor | None,
+        journal_before: None,
     ) -> PreparedInventory:
         state.set_run_phase(run_id, "inventory")
         read_budget = getattr(state, "read_run_budget", None)
         if callable(read_budget) and read_budget(run_id) is not None:
             state.check_run_budget(run_id)
-        if journal_before is None:
-            allow_incremental = False
-            gate_reason = "journal_unavailable_portable_full_scan"
-            source_run_id = None
-        else:
-            allow_incremental, gate_reason, source_run_id = self._normal_incremental_gate(
-                state=state,
-                dedup_index=dedup_index,
-                boundary=boundary,
-                journal_before=journal_before,
-            )
+        allow_incremental = False
+        gate_reason = "portable_inventory_full_scan"
+        source_run_id = None
         state.record_event(
             run_id,
             "info" if allow_incremental else "warning",
@@ -1457,17 +1407,16 @@ class FrameworkOrchestrator:
         )
         return plan
 
-    def _execute_initial_actions(
+    def _build_initial_action_runner(
         self,
         *,
         state: FrameworkState,
         run_id: int,
         dedup_index: DedupIndex,
         scan_id: int,
-        plan: DedupPlan,
         excluded_paths: tuple[Path, ...],
         inventory_policy: InventoryExclusionPolicy,
-    ) -> tuple[FrameworkActions, ActionSummary]:
+    ) -> FrameworkActions:
 
         read_budget = getattr(state, "read_run_budget", None)
         budgeted = callable(read_budget) and read_budget(run_id) is not None
@@ -1493,10 +1442,10 @@ class FrameworkOrchestrator:
             # The CLI capability gate has already checked the active Linux
             # policy.  Keep construction lazy so read-only runs never resolve
             # KIO, create a bus, or touch Trash configuration.
-            from neocortex.curation.application import KioTrashBackend
+            from neocortex.workflow.mutations import KioTrashBackend
 
             trash_backend = KioTrashBackend()
-        runner = FrameworkActions(
+        return FrameworkActions(
             dedup_index,
             state,
             run_id,
@@ -1509,6 +1458,27 @@ class FrameworkOrchestrator:
             trash_backend=trash_backend,
             cancellation_check=action_checkpoint,
             reserve_work=reserve_action_work if budgeted else None,
+        )
+
+    def _execute_initial_actions(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        dedup_index: DedupIndex,
+        scan_id: int,
+        plan: DedupPlan,
+        excluded_paths: tuple[Path, ...],
+        inventory_policy: InventoryExclusionPolicy,
+        runner: FrameworkActions | None = None,
+    ) -> tuple[FrameworkActions, ActionSummary]:
+        runner = runner or self._build_initial_action_runner(
+            state=state,
+            run_id=run_id,
+            dedup_index=dedup_index,
+            scan_id=scan_id,
+            excluded_paths=excluded_paths,
+            inventory_policy=inventory_policy,
         )
         state.set_run_phase(run_id, "actions")
         actions = runner.execute(
@@ -1575,7 +1545,7 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         run_id: int,
         boundary: NormalInventoryBoundary,
-        journal_before: JournalCursor | None,
+        journal_before: None,
         excluded_paths: tuple[Path, ...],
     ) -> _InitialWork:
         with DedupIndex(self.config.dedup_database) as dedup_index:
@@ -1586,58 +1556,32 @@ class FrameworkOrchestrator:
                 dedup_index=dedup_index,
                 journal_before=journal_before,
             )
-            # Evaluate the explicit Corpus redlist before duplicate planning
-            # or any content-type/route work. Apply mode crosses the Trash
-            # boundary; preview mode publishes the same matches without it.
+            # Identify/normalize is the first content-aware phase after the
+            # metadata-only inventory.  The same action owner then evaluates
+            # the explicit redlist against the normalized successor paths,
+            # before duplicate planning can read a full fingerprint.
+            action_runner = self._build_initial_action_runner(
+                state=state,
+                run_id=run_id,
+                dedup_index=dedup_index,
+                scan_id=inventory.scan.scan_id,
+                excluded_paths=excluded_paths,
+                inventory_policy=boundary.exclusion_policy,
+            )
+            state.set_run_phase(run_id, "identify")
+            action_runner.identify_and_normalize()
+            if self.config.apply_actions:
+                successor_scan_id = dedup_index.current_scan_id(inventory.scan.scan_id)
+                if successor_scan_id != inventory.scan.scan_id:
+                    inventory = replace(
+                        inventory,
+                        scan=dedup_index.scan_summary(successor_scan_id),
+                    )
             if self.config.route.casefold() == "all" and not self.config.route_only:
                 from neocortex.workflow.actions.redlist import redlist_policy_digest
 
-                redlist_trash_backend = None
-                if self.config.apply_actions:
-                    from neocortex.curation.application import KioTrashBackend
-
-                    redlist_trash_backend = KioTrashBackend()
-
-                read_budget = getattr(state, "read_run_budget", None)
-                budgeted = callable(read_budget) and read_budget(run_id) is not None
-                last_budget_check = time.monotonic()
-
-                def redlist_checkpoint() -> None:
-                    nonlocal last_budget_check
-                    self._cancellation.checkpoint()
-                    if budgeted and time.monotonic() - last_budget_check >= 0.1:
-                        state.check_run_budget(run_id)
-                        last_budget_check = time.monotonic()
-
-                def reserve_redlist_work(
-                    reservation_id: str,
-                    items: int,
-                    bytes_count: int,
-                ) -> None:
-                    redlist_checkpoint()
-                    self._reserve_lifecycle_stage_work(
-                        state,
-                        run_id,
-                        "redlist",
-                        reservation_id,
-                        items=items,
-                        bytes_count=bytes_count,
-                        worker="redlist",
-                    )
-
-                redlist_runner = FrameworkActions(
-                    dedup_index,
-                    state,
-                    run_id,
-                    inventory.scan.scan_id,
-                    apply=self.config.apply_actions,
-                    exclusion_policy=boundary.exclusion_policy,
-                    progress=self.progress,
-                    trash_backend=redlist_trash_backend,
-                    cancellation_check=redlist_checkpoint,
-                    reserve_work=reserve_redlist_work if budgeted else None,
-                )
-                redlist_runner.apply_redlist_prepass(
+                state.set_run_phase(run_id, "redlist")
+                action_runner.apply_redlist_prepass(
                     policy_digest=redlist_policy_digest(),
                 )
                 if self.config.apply_actions:
@@ -1661,6 +1605,7 @@ class FrameworkOrchestrator:
                 plan=plan,
                 excluded_paths=excluded_paths,
                 inventory_policy=boundary.exclusion_policy,
+                runner=action_runner,
             )
             candidate_rows = state.route_candidate_run_count(run_id)
             state.publish_initial_routing_snapshot(
@@ -1700,19 +1645,11 @@ class FrameworkOrchestrator:
         )
 
     @staticmethod
-    def _initial_journal_after(inventory: PreparedInventory) -> JournalCursor | None:
-        reconciliation = inventory.reconciliation
-        journal_after = None if reconciliation is None else reconciliation.cursor
-        journal_before = inventory.journal_before
-        if (journal_after is None) != (journal_before is None):
-            raise RuntimeError("normal inventory returned partial journal evidence")
-        if (
-            journal_after is not None
-            and journal_before is not None
-            and journal_after.journal_id != journal_before.journal_id
-        ):
-            raise RuntimeError("the USN journal changed during the initial framework run")
-        return journal_after
+    def _initial_journal_after(inventory: PreparedInventory) -> None:
+        """Portable Linux inventory has no journal successor cursor."""
+
+        del inventory
+        return None
 
     @classmethod
     def _scratch_plan_value(
@@ -2054,7 +1991,7 @@ class FrameworkOrchestrator:
         run_id: int,
         boundary: NormalInventoryBoundary,
         work: _InitialWork,
-        journal_after: JournalCursor | None,
+        journal_after: None,
     ) -> None:
         boundary.verify()
         state.set_run_phase(run_id, "finalize")
@@ -2094,7 +2031,7 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         run_id: int,
         boundary: NormalInventoryBoundary,
-        journal_before: JournalCursor | None,
+        journal_before: None,
         journal_error: str | None,
         excluded_paths: tuple[Path, ...],
         finalize: bool = True,
@@ -2172,7 +2109,7 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         run_id: int,
         boundary: NormalInventoryBoundary,
-        journal_before: JournalCursor | None,
+        journal_before: None,
         journal_error: str | None,
         excluded_paths: tuple[Path, ...],
         finalize: bool = True,
@@ -2211,7 +2148,7 @@ class FrameworkOrchestrator:
         run_id: int,
         boundary: NormalInventoryBoundary,
         work: _InitialWork,
-        journal_after: JournalCursor | None,
+        journal_after: None,
     ) -> None:
         """Run the dependent lifecycle stage before finalizing Framework.
 

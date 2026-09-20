@@ -16,7 +16,7 @@ import neocortex.persistence.framework_state_common as state_common_module
 import neocortex.integrations.inventory.inventory_boundary as boundary_module
 import neocortex.runtime.orchestration.orchestrator as orchestrator_module
 import neocortex.runtime.control.watcher as watcher_module
-from neocortex.enumeration import JournalCursor
+from tests.portable_inventory import PortableInventoryCursor
 from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.integrations.inventory.inventory_boundary import (
     NormalInventoryBoundary,
@@ -45,7 +45,7 @@ def _normal_run(
     effective = boundary or build_normal_inventory_boundary(root, state_directory)
     run_id = state.begin_initial_run(
         root,
-        JournalCursor(root.drive, 1, 0),
+        PortableInventoryCursor(root.drive, 1, 0),
         inventory_policy_signature=(
             effective.effective_signature if signature is None else signature
         ),
@@ -122,7 +122,7 @@ def test_normal_null_or_mismatched_signature_fails_closed(
 
     with FrameworkState(state_directory / "framework.sqlite3") as state:
         if signature is None:
-            run_id = state.begin_initial_run(root, JournalCursor(root.drive, 1, 0))
+            run_id = state.begin_initial_run(root, PortableInventoryCursor(root.drive, 1, 0))
         else:
             run_id, _ = _normal_run(
                 state,
@@ -498,7 +498,7 @@ def test_in_memory_main_database_is_never_a_durable_owner(tmp_path: Path) -> Non
         boundary = build_normal_inventory_boundary(root, state_directory)
         run_id = state.begin_initial_run(
             root,
-            JournalCursor(root.drive, 1, 0),
+            PortableInventoryCursor(root.drive, 1, 0),
             inventory_policy_signature=boundary.effective_signature,
         )
         with pytest.raises(

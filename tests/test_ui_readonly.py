@@ -154,32 +154,7 @@ class _FixtureReadClient:
                     }
                 ],
             }
-        return {
-            **common,
-            "schema": "neocortex.value-review/v1",
-            "kind": "neocortex_scoped_value_review",
-            "operation": "value-preview",
-            "advisory_only": True,
-            "mutation_authorized": False,
-            "scopes": [
-                {
-                    "scope": "personal",
-                    "status": "ready",
-                    "report": {
-                        "matched_count": 1,
-                        "items": [
-                            {
-                                "state": "review_low_value",
-                                "path": "/Corpus/Temporal/copia_antigua.txt",
-                                "size_bytes": 2048,
-                                "reasons": ["old_repeated_extracted_text_in_disposable_path"],
-                                "uncertainties": ["usage_history_unavailable"],
-                            }
-                        ],
-                    },
-                }
-            ],
-        }
+        raise AssertionError(f"unsupported fixture read operation: {request.operation}")
 
 
 class _BlockingReadClient(_FixtureReadClient):
@@ -278,19 +253,10 @@ def test_consultation_exposes_all_read_operations_without_mutation_controls(
         _wait_for_read(application, window)
         assert "personal-published-17" in window.consult_result.toPlainText()
 
-        window.consult_operation.setCurrentIndex(3)
-        assert not window.consult_query.isEnabled()
-        assert window.consult_button.text() == "Revisar sin cambios"
-        window._run_read_request()
-        _wait_for_read(application, window)
-        assert client.calls[-1].limit == 50
-        assert "0 acciones aplicadas" in window.consult_result_summary.text()
-        assert "no autoriza mover, archivar o borrar" in window.consult_result.toPlainText()
         assert [call.operation for call in client.calls] == [
             "search",
             "ask",
             "status",
-            "review",
         ]
         window.consult_copy_button.click()
         assert QApplication.clipboard().text() == window.consult_result.toPlainText()

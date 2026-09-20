@@ -297,8 +297,7 @@ class ScanCheckpointRepositoryMixin:
     ) -> int:
         """Create a successor within the caller's publication transaction.
 
-        Incremental reconciliation copies its source by default. A portable
-        caller with a complete observation may populate all successor rows
+        A caller with a complete observation may populate all successor rows
         itself before committing, avoiding copies of removed/replaced rows.
         """
 
@@ -319,7 +318,7 @@ class ScanCheckpointRepositoryMixin:
             (source_id,),
         ).fetchone()
         if source is None or str(source[12]) != "complete" or source[5] is None:
-            raise InventoryError("incremental reconciliation requires a complete inventory scan")
+            raise InventoryError("reconciliation requires a complete inventory scan")
         # Ensure the source has an identity before any successor can become
         # visible.  The original rows remain untouched and are available for
         # historical audit until the normal retention owner prunes them.
@@ -424,25 +423,17 @@ class ScanCheckpointRepositoryMixin:
 
         root_path = os.path.abspath(os.fspath(root))
         row = self._connection.execute(
-            "SELECT c.scan_id,c.volume,c.journal_id,c.next_usn,c.valid,"
+            "SELECT c.scan_id,c.valid,"
             "s.inventory_policy_signature FROM inventory_checkpoints c "
             "JOIN scans s ON s.scan_id=c.scan_id WHERE c.root=?",
             (root_path,),
         ).fetchone()
         if row is None:
             return None
-        scan_id, volume, journal_id, next_usn, valid, policy_signature = row
-        journal_values = (volume, journal_id, next_usn)
-        if any(value is None for value in journal_values) and not all(
-            value is None for value in journal_values
-        ):
-            raise InventoryError("inventory publication has a partial USN cursor")
+        scan_id, valid, policy_signature = row
         return InventoryCheckpoint(
             root_path,
             resolve_scan_id(self._connection, int(scan_id)),
-            None if volume is None else str(volume),
-            None if journal_id is None else int(journal_id),
-            None if next_usn is None else int(next_usn),
             bool(valid),
             (
                 None
@@ -452,7 +443,7 @@ class ScanCheckpointRepositoryMixin:
         )
 
     def bind_inventory_checkpoint(self, checkpoint: InventoryCheckpoint) -> None:
-        """Publish a completed inventory and its exact USN boundary atomically."""
+        """Publish a completed portable inventory atomically."""
 
         require_operational_identity(self._connection, "inventory", checkpoint.scan_id)
         bound_checkpoint = self._policy_bound_checkpoint(checkpoint)
@@ -523,15 +514,6 @@ class ScanCheckpointRepositoryMixin:
         self,
         checkpoint: InventoryCheckpoint,
     ) -> InventoryCheckpoint:
-        journal_values = (
-            checkpoint.volume,
-            checkpoint.journal_id,
-            checkpoint.next_usn,
-        )
-        if any(value is None for value in journal_values) and not all(
-            value is None for value in journal_values
-        ):
-            raise InventoryError("inventory publication has a partial USN cursor")
         root_path = os.path.abspath(checkpoint.root)
         current_scan_id = resolve_scan_id(self._connection, checkpoint.scan_id)
         scan_root, scan_signature = self._require_publishable_scan(current_scan_id)
@@ -548,9 +530,6 @@ class ScanCheckpointRepositoryMixin:
         return InventoryCheckpoint(
             root_path,
             current_scan_id,
-            checkpoint.volume,
-            checkpoint.journal_id,
-            checkpoint.next_usn,
             checkpoint.valid,
             scan_signature,
         )
@@ -568,21 +547,15 @@ class ScanCheckpointRepositoryMixin:
             raise InventoryError("checkpoint inventory policy signature does not match its scan")
         self._connection.execute(
             """INSERT INTO inventory_checkpoints(
-                root,scan_id,volume,journal_id,next_usn,valid,updated_ns)
-                VALUES(?,?,?,?,?,?,?)
+                root,scan_id,valid,updated_ns)
+                VALUES(?,?,?,?)
                 ON CONFLICT(root) DO UPDATE SET
                     scan_id=excluded.scan_id,
-                    volume=excluded.volume,
-                    journal_id=excluded.journal_id,
-                    next_usn=excluded.next_usn,
                     valid=excluded.valid,
                     updated_ns=excluded.updated_ns""",
             (
                 os.path.abspath(checkpoint.root),
                 scan_id,
-                checkpoint.volume,
-                (None if checkpoint.journal_id is None else str(checkpoint.journal_id)),
-                checkpoint.next_usn,
                 int(checkpoint.valid),
                 time.time_ns(),
             ),
@@ -603,7 +576,7 @@ class ScanCheckpointRepositoryMixin:
         return ScanSummary(scan_id, str(row[0]), *(int(value) for value in row[1:]))
 
     def refresh_scan_aggregates(self, scan_id: int) -> None:
-        """Refresh mutable file totals after applying an incremental USN window."""
+        """Refresh mutable file totals after an inventory successor update."""
 
         scan_id = resolve_scan_id(self._connection, scan_id)
         with self._connection:

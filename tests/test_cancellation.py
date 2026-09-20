@@ -33,7 +33,6 @@ from neocortex.runtime.control.global_resources import (
 from neocortex.runtime.control.memory_runtime import MemorySnapshot
 from neocortex.runtime.control.isolated_process import isolated_spawn_process
 from neocortex.progress import RecordingProgress
-from tests.synthetic_usn import SyntheticUsnJournal
 
 
 TEST_CAPABILITIES = ("base", "documents")
@@ -216,41 +215,6 @@ class FrameworkCancellationTests(unittest.TestCase):
                 route_statuses,
                 {"waiting": "cancelled", "interrupt": "cancelled"},
             )
-
-    @unittest.skipUnless(os.name == "nt", "USN acceleration is Windows-only")
-    def test_incremental_run_reports_current_inventory_separately_from_usn_delta(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            corpus = base / "corpus"
-            state = base / "state"
-            corpus.mkdir()
-            journal = SyntheticUsnJournal(corpus).start()
-            self.addCleanup(journal.close)
-            (corpus / "one.bin").write_bytes(b"1")
-            FrameworkOrchestrator(FrameworkConfig(root=corpus, state_directory=state)).run_initial()
-
-            progress = RecordingProgress()
-            result = FrameworkOrchestrator(
-                FrameworkConfig(root=corpus, state_directory=state),
-                progress=progress,
-            ).run_initial()
-
-            self.assertEqual(result.inventory_mode, "incremental")
-            inventory = [
-                event
-                for event in progress.events
-                if event.description == "Inventario vigente confirmado"
-            ]
-            self.assertEqual(len(inventory), 1)
-            self.assertEqual(inventory[0].completed, result.scan.files_seen)
-            self.assertEqual(inventory[0].total, result.scan.files_seen)
-            self.assertIn(
-                "Cambios USN reconciliados",
-                {event.description for event in progress.events},
-            )
-
 
 # endregion [01]
 

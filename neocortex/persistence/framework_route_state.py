@@ -25,15 +25,12 @@ from neocortex.persistence.framework_state_common import (
     finish_file_actions,
     mark_file_actions_applying,
 )
-from neocortex.workflow.review.review import (
+from neocortex.workflow.findings import (
     MAX_RECONCILIATION_REASONS,
     ReviewCandidate,
-    ReviewDecision,
     serialized_evidence,
-    serialized_provenance,
     validated_reason_codes,
 )
-from neocortex.workflow.review.review_evidence import _materialize_review_decision
 from neocortex.safety.route_filters import CandidateSelection, framework_selection_predicate
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
@@ -571,7 +568,7 @@ class FrameworkRouteState:
         finally:
             connection.close()
 
-    def store_review_candidates(
+    def store_findings(
         self,
         run_id: int,
         candidates: Iterable[ReviewCandidate],
@@ -583,7 +580,7 @@ class FrameworkRouteState:
         try:
             with connection:
                 connection.executemany(
-                    """INSERT INTO review_candidates(
+                    """INSERT INTO findings(
                     route_name,volume_id,file_id,reason_code,path,size,mtime_ns,
                     birthtime_ns,source_status,recommendation,retryable,confidence,
                     evidence_json,detector_version,status,first_detected_ns,
@@ -627,7 +624,7 @@ class FrameworkRouteState:
         finally:
             connection.close()
 
-    def resolve_review_candidates(
+    def resolve_findings(
         self,
         run_id: int,
         route_name: str,
@@ -648,7 +645,7 @@ class FrameworkRouteState:
         try:
             with connection:
                 cursor = connection.execute(
-                    """UPDATE review_candidates SET status='resolved',resolved_ns=?,
+                    """UPDATE findings SET status='resolved',resolved_ns=?,
                     resolution_note=?,resolved_run_id=?,path=?,size=?,mtime_ns=?,
                     birthtime_ns=? WHERE route_name=? AND volume_id=? AND file_id=?
                     AND status='open' AND last_seen_run_id<?""",
@@ -670,7 +667,7 @@ class FrameworkRouteState:
         finally:
             connection.close()
 
-    def reconcile_review_candidates(
+    def reconcile_findings(
         self,
         run_id: int,
         route_name: str,
@@ -688,7 +685,7 @@ class FrameworkRouteState:
             evaluated_reason_codes=evaluated_reason_codes,
             active_reason_codes=active_reason_codes,
         )
-        return self.reconcile_review_candidates_batch(
+        return self.reconcile_findings_batch(
             run_id,
             route_name,
             (reconciliation,),
@@ -724,7 +721,7 @@ class FrameworkRouteState:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 cursor = connection.execute(
-                    """UPDATE review_candidates SET status='resolved',resolved_ns=?,
+                    """UPDATE findings SET status='resolved',resolved_ns=?,
                     resolution_note=?,resolved_run_id=?,path=?,size=?,mtime_ns=?,
                     birthtime_ns=? WHERE route_name=? AND volume_id=? AND file_id=?
                     AND reason_code=? AND status='open' AND last_seen_run_id=?""",
@@ -747,7 +744,7 @@ class FrameworkRouteState:
         finally:
             connection.close()
 
-    def reconcile_review_candidates_batch(
+    def reconcile_findings_batch(
         self,
         run_id: int,
         route_name: str,
@@ -792,7 +789,7 @@ class FrameworkRouteState:
                     placeholders = ",".join("?" for _ in stale)
                     snapshot = reconciliation.snapshot
                     cursor = connection.execute(
-                        f"""UPDATE review_candidates SET status='resolved',resolved_ns=?,
+                        f"""UPDATE findings SET status='resolved',resolved_ns=?,
                         resolution_note=?,resolved_run_id=?,path=?,size=?,mtime_ns=?,
                         birthtime_ns=? WHERE route_name=? AND volume_id=? AND file_id=?
                         AND status='open' AND last_seen_run_id<?
@@ -816,150 +813,5 @@ class FrameworkRouteState:
             return resolved
         finally:
             connection.close()
-
-    def record_review_decision(self, decision: ReviewDecision) -> int:
-        """Persist one human judgment with strong idempotency semantics."""
-
-        provenance_json = serialized_provenance(decision.provenance)
-        evidence_json = serialized_evidence(decision.evidence)
-        identity = (
-            decision.route_name,
-            f"{decision.snapshot.volume_id:x}",
-            f"{decision.snapshot.file_id:x}",
-            decision.reason_code,
-            decision.candidate_generation,
-            decision.snapshot.path,
-            decision.snapshot.size,
-            decision.snapshot.mtime_ns,
-            decision.snapshot.birthtime_ns,
-            decision.status,
-            decision.actor,
-            provenance_json,
-            decision.note,
-            decision.decided_ns,
-        )
-        expected_snapshot = (
-            decision.source_status,
-            decision.recommendation,
-            decision.retryable,
-            decision.confidence,
-            evidence_json,
-            decision.detector_version,
-        )
-        connection = self._connect(readonly=False)
-        try:
-            with connection:
-                connection.execute("BEGIN IMMEDIATE")
-                existing = connection.execute(
-                    """SELECT decision_id,route_name,volume_id,file_id,reason_code,
-                    candidate_generation,path,size,mtime_ns,birthtime_ns,status,actor,
-                    provenance_json,note,decided_ns,source_status,recommendation,
-                    retryable,confidence,evidence_json,detector_version
-                    FROM review_decisions WHERE idempotency_key=?""",
-                    (decision.idempotency_key,),
-                ).fetchone()
-                if existing is not None:
-                    if tuple(existing[1:15]) != identity:
-                        raise ValueError(
-                            "review idempotency_key already identifies a different decision"
-                        )
-                    stored_snapshot_values = tuple(existing[15:])
-                    if all(value is None for value in stored_snapshot_values):
-                        _materialize_review_decision(connection, int(existing[0]))
-                        return int(existing[0])
-                    if any(value is None for value in stored_snapshot_values):
-                        raise sqlite3.DatabaseError(
-                            "review decision candidate snapshot is incomplete"
-                        )
-                    stored_retryable = int(stored_snapshot_values[2])
-                    if stored_retryable not in (0, 1):
-                        raise sqlite3.DatabaseError("review decision candidate snapshot is invalid")
-                    stored_snapshot = (
-                        str(stored_snapshot_values[0]),
-                        str(stored_snapshot_values[1]),
-                        bool(stored_retryable),
-                        float(stored_snapshot_values[3]),
-                        str(stored_snapshot_values[4]),
-                        str(stored_snapshot_values[5]),
-                    )
-                    if stored_snapshot != expected_snapshot:
-                        raise ValueError(
-                            "review idempotency_key already identifies a different "
-                            "decision candidate snapshot"
-                        )
-                    _materialize_review_decision(connection, int(existing[0]))
-                    return int(existing[0])
-
-                candidate = connection.execute(
-                    """SELECT path,size,mtime_ns,birthtime_ns,last_seen_run_id,status,
-                    source_status,recommendation,retryable,confidence,evidence_json,
-                    detector_version FROM review_candidates WHERE route_name=?
-                    AND volume_id=? AND file_id=? AND reason_code=?""",
-                    identity[:4],
-                ).fetchone()
-                expected_candidate = (
-                    decision.snapshot.path,
-                    decision.snapshot.size,
-                    decision.snapshot.mtime_ns,
-                    decision.snapshot.birthtime_ns,
-                    decision.candidate_generation,
-                )
-                if candidate is None:
-                    raise ValueError("review decision does not identify a finding")
-                if tuple(candidate[:5]) != expected_candidate:
-                    raise ValueError("review decision is stale; refresh the finding generation")
-                if str(candidate[5]) != "open":
-                    raise ValueError("review decision finding is no longer open; refresh it")
-                retryable = int(candidate[8])
-                if retryable not in (0, 1):
-                    raise ValueError("review decision finding has invalid retryable state")
-                try:
-                    candidate_evidence = json.loads(str(candidate[10]))
-                except (TypeError, ValueError) as exc:
-                    raise ValueError("review decision finding has invalid evidence") from exc
-                if not isinstance(candidate_evidence, dict):
-                    raise ValueError("review decision finding evidence must be a JSON object")
-                candidate_snapshot = (
-                    str(candidate[6]),
-                    str(candidate[7]),
-                    bool(retryable),
-                    float(candidate[9]),
-                    serialized_evidence(candidate_evidence),
-                    str(candidate[11]),
-                )
-                if candidate_snapshot != expected_snapshot:
-                    raise ValueError(
-                        "review decision candidate snapshot changed; refresh the finding"
-                    )
-
-                recorded_ns = time.time_ns()
-                cursor = connection.execute(
-                    """INSERT INTO review_decisions(
-                    idempotency_key,route_name,volume_id,file_id,reason_code,
-                    candidate_generation,path,size,mtime_ns,birthtime_ns,
-                    source_status,recommendation,retryable,confidence,evidence_json,
-                    detector_version,status,actor,provenance_json,note,decided_ns,
-                    recorded_ns)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        decision.idempotency_key,
-                        *identity[:9],
-                        *expected_snapshot,
-                        *identity[9:],
-                        recorded_ns,
-                    ),
-                )
-                if cursor.lastrowid is None:
-                    raise RuntimeError("SQLite did not return a review-decision identifier")
-                decision_id = int(cursor.lastrowid)
-                _materialize_review_decision(
-                    connection,
-                    decision_id,
-                    materialized_ns=recorded_ns,
-                )
-                return decision_id
-        finally:
-            connection.close()
-
 
 # endregion [02]

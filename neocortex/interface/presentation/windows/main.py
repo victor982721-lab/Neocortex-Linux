@@ -393,13 +393,12 @@ class MainWindow(QMainWindow):
         self.consult_query.setEnabled(needs_query)
         self.consult_limit.setEnabled(operation != "status")
 
-        defaults = {"status": 1, "search": 10, "ask": 8, "review": 50}
+        defaults = {"status": 1, "search": 10, "ask": 8}
         self.consult_limit.setValue(defaults.get(operation, 10))
         placeholders = {
             "search": "Ejemplo: pruebas eléctricas del transformador U5",
             "ask": "Ejemplo: ¿qué evidencia existe sobre el tratamiento de aceite?",
             "status": "El estado publicado no requiere una consulta",
-            "review": "La revisión de valor no requiere una consulta",
         }
         notes = {
             "search": (
@@ -414,16 +413,11 @@ class MainWindow(QMainWindow):
                 "Resume disponibilidad, compatibilidad y snapshot de las fuentes "
                 "publicadas sin abrir productores."
             ),
-            "review": (
-                "Muestra candidatos conservadores y su incertidumbre. Es una vista "
-                "consultiva: no mueve, archiva ni elimina archivos."
-            ),
         }
         button_labels = {
             "search": "Buscar",
             "ask": "Preparar evidencia",
             "status": "Consultar estado",
-            "review": "Revisar sin cambios",
         }
         self.consult_query.setPlaceholderText(placeholders.get(operation, ""))
         self.consult_operation_note.setText(notes.get(operation, ""))

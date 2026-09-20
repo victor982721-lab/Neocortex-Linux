@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import FileSnapshot
 from neocortex.platform.policy import sqlite_path_collation
 
@@ -106,7 +105,7 @@ CREATE INDEX route_candidates_mime_idx
 """
 
 _ROUTE_REVIEW_PROJECTION_TABLE = """
-CREATE TABLE review_candidates (
+CREATE TABLE findings (
     route_name TEXT NOT NULL,
     volume_id TEXT NOT NULL,
     file_id TEXT NOT NULL,
@@ -116,13 +115,13 @@ CREATE TABLE review_candidates (
 """
 
 _ROUTE_REVIEW_PROJECTION_INDEX = """
-CREATE INDEX review_candidates_status_idx
-    ON review_candidates(status, recommendation, route_name)
+CREATE INDEX findings_status_idx
+    ON findings(status, recommendation, route_name)
 """
 
 _ROUTE_REVIEW_PROJECTION_IDENTITY_INDEX = """
-CREATE INDEX review_candidates_identity_idx
-    ON review_candidates(route_name, volume_id, file_id, status, recommendation)
+CREATE INDEX findings_identity_idx
+    ON findings(route_name, volume_id, file_id, status, recommendation)
 """
 
 _ROUTE_INITIAL_RUN_PROJECTION_SCHEMA = """
@@ -243,7 +242,7 @@ def _project_route_candidate_view(
         budget,
         select_sql="""
             SELECT r.route_name,r.volume_id,r.file_id,r.status,r.recommendation
-            FROM review_candidates r
+            FROM findings r
             WHERE r.status='open' AND EXISTS(
                 SELECT 1 FROM route_candidates c
                 WHERE c.run_id=?
@@ -254,7 +253,7 @@ def _project_route_candidate_view(
         """,
         select_parameters=(run_id,),
         insert_sql="""
-            INSERT INTO review_candidates(
+            INSERT INTO findings(
                 route_name,volume_id,file_id,status,recommendation
             ) VALUES(?,?,?,?,?)
         """,
@@ -409,13 +408,17 @@ class InventoryRunEvidence:
 
 @dataclass(frozen=True, slots=True)
 class DurableInventoryBinding:
-    """Newest completed inventory owner and its published USN boundary."""
+    """Newest completed portable inventory owner.
+
+    The legacy schema still exposes nullable journal columns for old databases,
+    but Linux publications never carry a journal cursor.
+    """
 
     run_id: int
     scan_id: int
     corpus_access_mode: str
     inventory_policy_signature: str | None
-    end_cursor: JournalCursor | None
+    end_cursor: None
 
 
 @dataclass(frozen=True, slots=True)
@@ -461,16 +464,13 @@ def read_latest_durable_inventory_owner(
             raise
     if row is None:
         return None
-    end_cursor = None
-    if all(value is not None for value in row[4:7]):
-        end_cursor = JournalCursor(str(row[4]), int(row[5]), int(row[6]))
     return DurableInventoryOwner(
         DurableInventoryBinding(
             run_id=int(row[0]),
             scan_id=int(row[1]),
             corpus_access_mode=str(row[2]),
             inventory_policy_signature=(None if row[3] is None else str(row[3])),
-            end_cursor=end_cursor,
+            end_cursor=None,
         ),
         CorpusAccessPolicy.from_storage(
             str(row[2]),
@@ -1102,7 +1102,7 @@ class FrameworkState:
     def begin_initial_run(
         self,
         root: Path,
-        cursor: JournalCursor | None,
+        cursor: object | None,
         *,
         inventory_policy_signature: str | None = None,
     ) -> int:
@@ -1113,11 +1113,8 @@ class FrameworkState:
         ):
             raise ValueError("inventory policy signature must be trimmed and bounded")
         now = time.time_ns()
-        journal_values = (
-            (None, None, None)
-            if cursor is None
-            else (cursor.volume, str(cursor.journal_id), cursor.next_usn)
-        )
+        del cursor
+        journal_values = (None, None, None)
         with self._connection:
             # State-reset may retain only an allocator floor while removing
             # the visible run ledger.  Allocate explicitly inside the same
@@ -1290,15 +1287,12 @@ class FrameworkState:
             return None
         if inventory_policy_signature is not None and row[3] != inventory_policy_signature:
             return None
-        end_cursor = None
-        if all(value is not None for value in row[4:7]):
-            end_cursor = JournalCursor(str(row[4]), int(row[5]), int(row[6]))
         return DurableInventoryBinding(
             run_id=int(row[0]),
             scan_id=int(row[1]),
             corpus_access_mode=str(row[2]),
             inventory_policy_signature=(None if row[3] is None else str(row[3])),
-            end_cursor=end_cursor,
+            end_cursor=None,
         )
 
     def latest_durable_inventory_run(
@@ -1330,15 +1324,12 @@ class FrameworkState:
     def update_run_start_cursor(
         self,
         run_id: int,
-        cursor: JournalCursor | None,
+        cursor: object | None,
     ) -> None:
-        """Persist the cursor that actually bounded inventory preparation."""
+        """Keep the legacy cursor columns explicitly empty on Linux."""
 
-        journal_values = (
-            (None, None, None)
-            if cursor is None
-            else (cursor.volume, str(cursor.journal_id), cursor.next_usn)
-        )
+        del cursor
+        journal_values = (None, None, None)
         with self._connection:
             updated = self._connection.execute(
                 "UPDATE initial_runs SET journal_volume=?,journal_id=?,start_usn=? "
@@ -3042,7 +3033,7 @@ class FrameworkState:
         self,
         run_id: int,
         scan_id: int,
-        cursor: JournalCursor | None,
+        cursor: object | None,
         reconciliation_records: int,
         inventory_attempts: int,
         inventory_mode: str,
@@ -3071,7 +3062,7 @@ class FrameworkState:
                 (
                     time.time_ns(),
                     time.time_ns(),
-                    None if cursor is None else cursor.next_usn,
+                    None,
                     run_id,
                     scan_id,
                     reconciliation_records,

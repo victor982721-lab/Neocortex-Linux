@@ -1,4 +1,4 @@
-"""Atomic incremental reconciliation for a published inventory generation."""
+"""Atomic path/identity reconciliation for a published inventory generation."""
 
 from __future__ import annotations
 
@@ -50,8 +50,8 @@ def _upsert_reconciled_snapshot(
 ) -> None:
     volume = _id_blob(snapshot.volume_id)
     file_id = _id_blob(snapshot.file_id)
-    # FileSnapshot intentionally has no portable change version. A journal
-    # update must not retain an older ctime observation as if it were fresh.
+    # FileSnapshot intentionally has no change version. An observed update
+    # must not retain an older ctime observation as if it were fresh.
     connection.execute(
         "DELETE FROM inventory_file_change_versions WHERE scan_id=? AND (path=? OR path IN ("
         "SELECT path FROM files WHERE scan_id=? AND volume_id=? AND file_id=?))",
@@ -109,7 +109,7 @@ def _refresh_reconciliation_aggregates(
 
 
 class ReconciliationRepositoryMixin(ScanCheckpointRepositoryMixin):
-    """Apply one bounded USN window and checkpoint it in one transaction."""
+    """Apply one bounded identity/path reconciliation in one transaction."""
 
     def apply_reconciliation(
         self,
@@ -120,7 +120,7 @@ class ReconciliationRepositoryMixin(ScanCheckpointRepositoryMixin):
         remove_identities: Iterable[tuple[int, int]] = (),
         checkpoint: InventoryCheckpoint | None = None,
     ) -> None:
-        """Apply one USN batch and optionally advance its checkpoint atomically."""
+        """Apply observed path/identity changes and optionally publish a checkpoint."""
 
         if checkpoint is not None and checkpoint.scan_id != scan_id:
             raise InventoryError("checkpoint scan_id does not match reconciliation scan")
@@ -135,7 +135,7 @@ class ReconciliationRepositoryMixin(ScanCheckpointRepositoryMixin):
             if upsert_rows or path_rows or identity_rows:
                 current_scan_id = self._create_inventory_successor(
                     current_scan_id,
-                    reason="incremental-reconciliation",
+                    reason="observed-reconciliation",
                 )
                 if checkpoint is not None:
                     checkpoint = replace(checkpoint, scan_id=current_scan_id)

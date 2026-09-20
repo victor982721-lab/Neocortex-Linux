@@ -69,8 +69,7 @@ tamaño ni se introducen capas sin consumidores.
 `neocortex.foundation` define identidad y procedencia compartidas.
 `neocortex.platform` contiene políticas Linux, tipos de contenido, manifests de
 capacidades y utilidades de seguridad de contenedores. La enumeración portable
-usa el filesystem; los módulos NTFS conservados son legado y no forman parte de
-la ruta Linux normal.
+observa el filesystem directamente y no depende de un journal de plataforma.
 
 ### Inventario federado read-only de máquina
 
@@ -277,15 +276,18 @@ una fuente al registry no amplía su ámbito ni habilita su `--apply`.
 
 ### Inventario y deduplicación
 
-La ruta integrada observa metadatos antes de decidir por archivo; conserva las
-raíces canónicas protegidas y los directorios VCS. La redlist explícita se aplica
-por metadata/ruta antes de hashing, dedupe o extracción; no clasifica autoría,
-procedencia ni utilidad mediante heurísticas. Archive verifica CRC/tamaño antes
+La ruta integrada observa metadatos antes de decidir por archivo y ejecuta
+`inventory → identify → normalize → policy/redlist → dedupe → routes → organize
+→ semantic`. La extensión observada no es fuente de verdad: Identify usa firmas,
+contenedores y parsers estructurales bounded; Normalize corrige sólo evidencia
+demostrable antes de cualquier hash completo. La redlist explícita se evalúa
+sobre la ruta normalizada y no clasifica autoría, procedencia ni utilidad mediante
+heurísticas. Archive verifica CRC/tamaño antes
 de parsear, extraer texto/FTS o visitar ZIP anidados. Un miembro virtual nunca
 se convierte en objetivo físico.
 
-Los archivos sin extensión pasan por el detector bounded de firmas. Sólo una
-evidencia fuerte permite restaurar una extensión canónica; la incertidumbre, un
+Los archivos sin extensión pasan por Identify. Sólo una evidencia fuerte permite
+restaurar una extensión canónica; la incertidumbre, un
 destino existente o un drift conserva el original. Redlist y rename cruzan sus
 fronteras físicas únicamente con root, identidad, no-reemplazo, ledger y
 receipt/recovery válidos.
@@ -339,10 +341,10 @@ vigentes, y mantiene la observación hasta la actualización de FTS.
 
 `--all` coordina las ocho rutas de contenido bajo un único run Framework:
 `pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video` e `image`. Con
-`--all --apply`, la ingestión integrada aplica primero la redlist determinista
-del Corpus y registra cada efecto de Papelera antes de dedupe, hashing,
-validación o extracción. La restauración de extensión posterior sólo usa
-evidencia bounded y rename seguro no-replace.
+`--all --apply`, la ingestión integrada ejecuta
+`inventory → identify → normalize → policy/redlist → dedupe → routes → organize
+→ semantic → finalize`; cada efecto de Papelera ocurre sobre la ruta normalizada.
+La restauración de extensión usa evidencia bounded y rename seguro no-replace.
 
 Los artefactos 0.13 y post-0.13 anteriores conservan su evidencia histórica en
 receipts separados; no se usan aquí para declarar aceptado o instalado el

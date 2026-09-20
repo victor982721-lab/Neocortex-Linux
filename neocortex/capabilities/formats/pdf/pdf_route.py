@@ -91,7 +91,7 @@ from neocortex.runtime.control.retry_policy import (
     PdfFailureDiagnostic,
     classify_pdf_failure,
 )
-from neocortex.workflow.review.review import ReviewCandidate
+from neocortex.workflow.findings import ReviewCandidate
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.persistence.framework_route_state import (
     REVIEW_RECONCILIATION_BATCH_SIZE,
@@ -594,7 +594,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         *,
         evidence: dict[str, object] | None = None,
     ) -> None:
-        store = getattr(self.framework_state, "store_review_candidates", None)
+        store = getattr(self.framework_state, "store_findings", None)
         if store is None:
             return
         payload = diagnostic.evidence(str((evidence or {}).get("message", "")))
@@ -754,13 +754,13 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
     ) -> None:
         batch_reconciler = getattr(
             self.framework_state,
-            "reconcile_review_candidates_batch",
+            "reconcile_findings_batch",
             None,
         )
         if batch_reconciler is not None:
             batch_reconciler(self.run_id, "pdf", reconciliations)
             return
-        reconciler = getattr(self.framework_state, "reconcile_review_candidates", None)
+        reconciler = getattr(self.framework_state, "reconcile_findings", None)
         if reconciler is None:
             return
         for reconciliation in reconciliations:

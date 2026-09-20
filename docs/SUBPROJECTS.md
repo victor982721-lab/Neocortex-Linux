@@ -20,11 +20,12 @@ todo este catálogo como una lista de trabajos pendientes.
 
 ## Superficies compartidas
 
-`foundation`, `platform`, `safety`, `enumeration`, `progress`, `integrations` y
-`sdk` conservan el contrato raíz. Consulta la ficha del productor/consumidor
+`foundation`, `platform`, `safety`, `progress`, `integrations` y `sdk` conservan
+el contrato raíz. El inventario portable vive en `deduplication` y su integración
+no depende de una superficie de enumeración de plataforma. Consulta la ficha del productor/consumidor
 afectado sin inventar un AGENTS independiente para cada módulo pequeño:
-identidad/enumeración se relaciona con inventario, seguridad de efectos con
-curación, progreso/control con runtime y SDK con interfaces. `semgrep` es una
+identidad física se relaciona con inventario, seguridad de efectos con curación,
+progreso/control con runtime y SDK con interfaces. `semgrep` es una
 herramienta de desarrollo, no una capacidad del producto.
 
 `neocortex.api.status_codes` traduce los resultados de lectura al contrato común

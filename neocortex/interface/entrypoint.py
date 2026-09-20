@@ -30,7 +30,6 @@ _HUMAN_COMMANDS = frozenset(
         "ask",
         "curate",
         "inspect",
-        "review",
         "knowledge",
         "databases",
         "database",

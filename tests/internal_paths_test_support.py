@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from neocortex.enumeration import JournalCursor
 from neocortex.safety.internal_paths import (
     InternalPathSpec,
     InternalPathsPolicy,
@@ -49,7 +48,7 @@ def begin_signed_normal_run(
     state: FrameworkState,
     corpus_root: Path,
     *,
-    cursor: JournalCursor | None = None,
+    cursor: object | None = None,
     internal_paths_policy: InternalPathsPolicy | None = None,
 ) -> int:
     """Begin a normal run with an exact boundary signature on sibling trees.
@@ -73,7 +72,7 @@ def begin_signed_normal_run(
     )
     return state.begin_initial_run(
         root,
-        cursor or JournalCursor(root.drive, 1, 0),
+        cursor,
         inventory_policy_signature=boundary.effective_signature,
     )
 

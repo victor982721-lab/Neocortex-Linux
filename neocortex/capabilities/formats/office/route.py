@@ -20,7 +20,7 @@ from neocortex.workflow.actions.action_policy import same_snapshot
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
 from neocortex.runtime.control.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
-from neocortex.workflow.review.review import ReviewCandidate
+from neocortex.workflow.findings import ReviewCandidate
 from neocortex.safety.route_filters import CandidateSelection as CandidateSelection
 from neocortex.persistence.framework_route_state import (
     FrameworkRouteState,
@@ -247,7 +247,7 @@ class OfficeRoute:
     ) -> None:
         if not reconciliations:
             return
-        self.framework_state.reconcile_review_candidates_batch(
+        self.framework_state.reconcile_findings_batch(
             self.run_id,
             "office",
             tuple(reconciliations),
@@ -292,7 +292,7 @@ class OfficeRoute:
                 "current Office cache completed without structural errors",
             )
             return True, False
-        self.framework_state.store_review_candidates(
+        self.framework_state.store_findings(
             self.run_id,
             (_review_candidate(snapshot, _cached_office_failure(cached)),),
         )
@@ -512,7 +512,7 @@ class OfficeRoute:
             connection, snapshot, result.work.format_name,
             self.config.processing_signature, self.run_id, failure,
         )
-        self.framework_state.store_review_candidates(
+        self.framework_state.store_findings(
             self.run_id, (_review_candidate(snapshot, failure),),
         )
         return _OfficeCandidateOutcome(

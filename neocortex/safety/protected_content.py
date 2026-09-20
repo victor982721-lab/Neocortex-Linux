@@ -9,11 +9,9 @@ entry, regardless of disposition, remains a symmetric mutation boundary.
 from __future__ import annotations
 # region [01] Contracts and physical identities
 
-import ctypes
 import json
 import os
 import stat
-import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import islice
@@ -536,57 +534,6 @@ def _signature(entries: tuple[ProtectedPathIdentity, ...]) -> str:
 # region [03] Canonical per-user factory
 
 
-_DOCUMENTS_FOLDER_ID = uuid.UUID("FDD39AD0-238F-46AF-ADB4-6C85480369C7")
-
-
-class _Guid(ctypes.Structure):
-    _fields_ = (
-        ("data1", ctypes.c_uint32),
-        ("data2", ctypes.c_uint16),
-        ("data3", ctypes.c_uint16),
-        ("data4", ctypes.c_ubyte * 8),
-    )
-
-
-def _windows_documents_directory() -> Path:
-    """Resolve FOLDERID_Documents without assuming the visible folder name."""
-
-    guid = _Guid.from_buffer_copy(_DOCUMENTS_FOLDER_ID.bytes_le)
-    allocated = ctypes.c_wchar_p()
-    win_dll = getattr(ctypes, "WinDLL", None)
-    if win_dll is None:
-        raise OSError("Windows DLL loading is unavailable on this platform")
-    shell32 = win_dll("shell32", use_last_error=True)
-    ole32 = win_dll("ole32", use_last_error=True)
-    shell32.SHGetKnownFolderPath.argtypes = (
-        ctypes.POINTER(_Guid),
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_wchar_p),
-    )
-    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
-    ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
-    ole32.CoTaskMemFree.restype = None
-    result = int(
-        shell32.SHGetKnownFolderPath(
-            ctypes.byref(guid),
-            0,
-            None,
-            ctypes.byref(allocated),
-        )
-    )
-    if result != 0:
-        code = result & 0xFFFFFFFF
-        raise OSError(f"SHGetKnownFolderPath failed with HRESULT 0x{code:08x}")
-    try:
-        value = allocated.value
-        if not value:
-            raise OSError("SHGetKnownFolderPath returned an empty Documents path")
-        return Path(value)
-    finally:
-        ole32.CoTaskMemFree(ctypes.cast(allocated, ctypes.c_void_p))
-
-
 def canonical_protected_content_policy(
     *,
     home: str | os.PathLike[str] | None = None,
@@ -595,12 +542,7 @@ def canonical_protected_content_policy(
     """Capture the canonical protected content layout for one user profile."""
 
     profile = Path.home() if home is None else Path(home)
-    if documents is None:
-        documents_root = (
-            _windows_documents_directory() if os.name == "nt" else profile / "Documents"
-        )
-    else:
-        documents_root = Path(documents)
+    documents_root = profile / "Documents" if documents is None else Path(documents)
     codex_root = profile / ".codex"
     return ProtectedContentPolicy.capture(
         (

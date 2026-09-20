@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import re
 import struct
+import csv
+import json
 import zipfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+from xml.etree import ElementTree
 
 from neocortex.deduplication.io import absolute_display_path, native_io_path
 
@@ -31,7 +35,7 @@ HEADER_LIMIT = 64 * 1024
 ZIP_MEMBER_LIMIT = 4096
 ZIP_STRUCTURE_MEMBER_LIMIT = 10_000
 ZIP_MIMETYPE_LIMIT = 256
-DETECTOR_VERSION = "content-types-v3"
+DETECTOR_VERSION = "content-types-v4"
 
 _TEXT_EXTENSIONS = frozenset(
     {
@@ -94,6 +98,12 @@ _RFC5322_HEADER = re.compile(
     rb"(?im)^(?:from|to|date|subject|message-id|mime-version):[^\r\n]+\r?$"
 )
 
+_HTML_DOCTYPE = re.compile(r"(?is)<!doctype\s+html(?:\s|>)")
+_HTML_TAG = re.compile(r"(?is)<(?:html|head|body)\b")
+_MARKDOWN_MARKER = re.compile(
+    r"(?m)^(?:#{1,6}\s+\S|[-*+]\s+\S|>\s+\S|```|\[[^\]]+\]\([^\)]+\))"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class DetectedType:
@@ -104,6 +114,49 @@ class DetectedType:
 
     def accepts(self, path: str | Path) -> bool:
         return Path(path).suffix.casefold() in self.accepted_extensions
+
+
+@dataclass(frozen=True, slots=True)
+class FileTypeDecision:
+    """One bounded, extension-independent identification decision.
+
+    ``DetectedType`` remains the compact compatibility payload consumed by the
+    existing route/cache contracts.  This value adds the physical path and an
+    explicit status for the Identify stage without making callers infer that
+    ``None`` means ``UNKNOWN``.  Unknown decisions deliberately carry no
+    proposed extension.
+    """
+
+    path: str
+    detected_type: DetectedType | None
+    mime: str | None
+    canonical_extension: str | None
+    accepted_extensions: frozenset[str]
+    confidence: Literal["high", "medium", "low", "none"]
+    evidence: str
+    status: Literal["known", "unknown"]
+
+    @property
+    def detected(self) -> DetectedType | None:
+        """Compatibility/readability alias for the compact detected value."""
+
+        return self.detected_type
+
+    @property
+    def kind(self) -> str | None:
+        """Return a stable logical kind without adding a second taxonomy."""
+
+        if self.canonical_extension is None:
+            return None
+        return self.canonical_extension.removeprefix(".")
+
+    def accepts(self, path: str | Path | None = None) -> bool:
+        """Whether the observed extension is already valid for this decision."""
+
+        if self.status != "known":
+            return False
+        candidate = self.path if path is None else path
+        return Path(candidate).suffix.casefold() in self.accepted_extensions
 
 
 def _type(mime: str, canonical: str, accepted: tuple[str, ...], evidence: str) -> DetectedType:
@@ -451,32 +504,179 @@ def _text_decoding(header: bytes) -> tuple[str, str] | None:
     return None
 
 
-def _detect_text(path: str, header: bytes) -> DetectedType | None:
-    suffix = Path(path).suffix.casefold()
-    if suffix == ".eml" and len(_RFC5322_HEADER.findall(header)) >= 2:
-        return _type("message/rfc822", ".eml", (".eml",), "rfc5322:headers")
-    if suffix not in _TEXT_EXTENSIONS:
+def _detect_rfc822(header: bytes) -> bool:
+    """Require a bounded RFC822 header block, not merely an ``.eml`` suffix."""
+
+    separator = re.search(rb"\r?\n\r?\n", header)
+    header_block = header if separator is None else header[: separator.start()]
+    matches = _RFC5322_HEADER.findall(header_block)
+    if len(matches) < 2:
+        return False
+    names = {
+        match.split(b":", 1)[0].decode("ascii", "ignore").casefold()
+        for match in matches
+    }
+    return bool(names & {"from", "to", "date", "subject", "message-id", "mime-version"})
+
+
+def _detect_json(value: str, encoding: str, *, complete: bool) -> DetectedType | None:
+    """Parse one complete JSON value or a bounded JSON-lines sample."""
+
+    if not complete:
         return None
+    stripped = value.lstrip("\ufeff \t\r\n")
+    if not stripped:
+        return None
+
+    def reject_non_standard_constant(_value: str) -> object:
+        raise ValueError("non-standard JSON constant")
+
+    try:
+        json.loads(stripped, parse_constant=reject_non_standard_constant)
+    except (TypeError, ValueError):
+        lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return None
+        # JSON-lines is intentionally limited to record-shaped values here;
+        # scalar prose such as ``1\n2`` is too ambiguous to justify a rename.
+        if not all(line.startswith(("{", "[")) for line in lines):
+            return None
+        try:
+            for line in lines:
+                json.loads(line, parse_constant=reject_non_standard_constant)
+        except (TypeError, ValueError):
+            return None
+        return _type(
+            "application/json",
+            ".json",
+            (".json", ".jsonl"),
+            f"text:{encoding}:jsonl",
+        )
+    return _type(
+        "application/json",
+        ".json",
+        (".json", ".jsonl"),
+        f"text:{encoding}:json",
+    )
+
+
+def _detect_xml(value: str, encoding: str, *, complete: bool) -> DetectedType | None:
+    """Parse bounded XML while rejecting entity-bearing payloads."""
+
+    if not complete:
+        return None
+    stripped = value.lstrip("\ufeff \t\r\n")
+    if not stripped.startswith("<"):
+        return None
+    if re.search(r"(?is)<!doctype\b|<!entity\b", stripped):
+        return None
+    try:
+        root = ElementTree.fromstring(stripped)
+    except (ElementTree.ParseError, ValueError):
+        return None
+    if not root.tag or not isinstance(root.tag, str):
+        return None
+    return _type(
+        "application/xml",
+        ".xml",
+        (".xml", ".rels"),
+        f"text:{encoding}:xml",
+    )
+
+
+def _detect_html(value: str, encoding: str, *, complete: bool) -> DetectedType | None:
+    """Recognize strong HTML structure without requiring an HTML suffix."""
+
+    if not complete:
+        return None
+    stripped = value.lstrip("\ufeff \t\r\n")
+    if not (
+        _HTML_DOCTYPE.search(stripped)
+        or (
+            _HTML_TAG.search(stripped)
+            and re.search(r"(?is)</(?:html|body|head)\s*>", stripped)
+        )
+    ):
+        return None
+    return _type("text/html", ".html", (".html", ".htm"), f"text:{encoding}:html")
+
+
+def _detect_delimited(
+    value: str,
+    suffix: str,
+    encoding: str,
+    *,
+    complete: bool,
+) -> DetectedType | None:
+    """Detect only consistently shaped, bounded CSV/TSV data."""
+
+    if not complete:
+        return None
+    lines = value.splitlines()
+    if len(lines) < 2:
+        return None
+    candidates: list[str] = []
+    for delimiter in (",", "\t"):
+        try:
+            rows = list(csv.reader(lines, delimiter=delimiter, strict=True))
+        except (csv.Error, TypeError, ValueError):
+            continue
+        widths = {len(row) for row in rows}
+        if len(widths) != 1 or not widths or next(iter(widths)) < 2:
+            continue
+        if any(not any(cell.strip() for cell in row) for row in rows):
+            continue
+        if sum(line.count(delimiter) for line in lines) < 2:
+            continue
+        candidates.append(delimiter)
+
+    if not candidates:
+        return None
+    preferred = "," if suffix == ".csv" else "\t" if suffix == ".tsv" else None
+    selected = [item for item in candidates if item == preferred] if preferred else candidates
+    if len(selected) != 1:
+        # A suffix can disambiguate two otherwise valid delimiters, but content
+        # alone must not invent a type when both grammars fit.
+        return None
+    delimiter = selected[0]
+    if delimiter == ",":
+        return _type("text/csv", ".csv", (".csv",), f"text:{encoding}:csv")
+    return _type(
+        "text/tab-separated-values",
+        ".tsv",
+        (".tsv",),
+        f"text:{encoding}:tsv",
+    )
+
+
+def _detect_text(
+    path: str,
+    header: bytes,
+    *,
+    complete: bool = True,
+) -> DetectedType | None:
+    suffix = Path(path).suffix.casefold()
     decoded = _text_decoding(header)
     if decoded is None:
         return None
     value, encoding = decoded
     stripped = value.lstrip("\ufeff \t\r\n")
-    if suffix in {".htm", ".html"} and re.match(r"(?is)<!doctype\s+html|<html\b", stripped):
-        return _type("text/html", ".html", (".htm", ".html"), f"text:{encoding}:html")
-    if suffix in {".xml", ".rels"} and stripped.startswith(("<?xml", "<")):
-        return _type("application/xml", ".xml", (".xml", ".rels"), f"text:{encoding}:xml")
-    if suffix in {".json", ".jsonl"} and stripped.startswith(("{", "[")):
-        return _type("application/json", ".json", (".json", ".jsonl"), f"text:{encoding}:json")
-    if suffix == ".csv":
-        return _type("text/csv", ".csv", (".csv",), f"text:{encoding}:csv")
-    if suffix == ".tsv":
-        return _type(
-            "text/tab-separated-values",
-            ".tsv",
-            (".tsv",),
-            f"text:{encoding}:tsv",
-        )
+    if _detect_rfc822(header):
+        return _type("message/rfc822", ".eml", (".eml",), "rfc5322:headers")
+
+    # Structured text is parsed before the suffix is consulted.  A suffix may
+    # select between equally valid CSV/TSV grammars, but never gates JSON/XML/
+    # HTML/RFC822 identification.
+    for detector in (
+        lambda: _detect_json(value, encoding, complete=complete),
+        lambda: _detect_html(value, encoding, complete=complete),
+        lambda: _detect_xml(value, encoding, complete=complete),
+        lambda: _detect_delimited(value, suffix, encoding, complete=complete),
+    ):
+        detected = detector()
+        if detected is not None:
+            return detected
+
     if suffix in {".md", ".rst", ".adoc"}:
         return _type(
             "text/markdown",
@@ -484,6 +684,15 @@ def _detect_text(path: str, header: bytes) -> DetectedType | None:
             (".md", ".rst", ".adoc"),
             f"text:{encoding}:markup",
         )
+    if _MARKDOWN_MARKER.search(stripped):
+        return _type(
+            "text/markdown",
+            ".md",
+            (".md", ".rst", ".adoc"),
+            f"text:{encoding}:markup-structure",
+        )
+    if suffix not in _TEXT_EXTENSIONS:
+        return None
     accepted = tuple(sorted(_TEXT_EXTENSIONS))
     return _type("text/plain", ".txt", accepted, f"text:{encoding}:printable")
 
@@ -510,7 +719,47 @@ def detect_content_type(path: str | Path) -> DetectedType | None:
     database_or_executable = _detect_database_or_executable(native, header)
     if database_or_executable is not None:
         return database_or_executable
-    return _detect_text(native, header)
+    return _detect_text(native, header, complete=len(header) < HEADER_LIMIT)
+
+
+def _decision_confidence(detected: DetectedType | None) -> Literal["high", "medium", "low", "none"]:
+    if detected is None:
+        return "none"
+    if detected.evidence.startswith(("magic:", "riff:", "isobmff:", "ebml:", "zip:")):
+        return "high"
+    if detected.evidence.endswith((":json", ":jsonl", ":xml", ":html", ":csv", ":tsv")):
+        return "high"
+    if detected.evidence == "rfc5322:headers" or detected.evidence.endswith(":markup-structure"):
+        return "medium"
+    return "low"
+
+
+def identify(path: str | Path) -> FileTypeDecision:
+    """Return an explicit bounded Identify-stage decision for ``path``."""
+
+    resolved = absolute_display_path(path)
+    detected = detect_content_type(resolved)
+    if detected is None:
+        return FileTypeDecision(
+            path=resolved,
+            detected_type=None,
+            mime=None,
+            canonical_extension=None,
+            accepted_extensions=frozenset(),
+            confidence="none",
+            evidence="unknown",
+            status="unknown",
+        )
+    return FileTypeDecision(
+        path=resolved,
+        detected_type=detected,
+        mime=detected.mime,
+        canonical_extension=detected.canonical_extension,
+        accepted_extensions=detected.accepted_extensions,
+        confidence=_decision_confidence(detected),
+        evidence=detected.evidence,
+        status="known",
+    )
 
 
 # endregion [02]

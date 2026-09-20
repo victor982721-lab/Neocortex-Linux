@@ -179,9 +179,9 @@ class ReviewCandidateRecordPage:
             "next_cursor": None if self.next_cursor is None else self.next_cursor.to_token(),
             "complete": self.availability == "ready" and self.total_matching == len(self.items),
             "reason_code": self.reason_code,
-            "scope": "legacy_review_candidates_matching_filters",
+            "scope": "legacy_findings_matching_filters",
             "owner": "framework",
-            "surface": "review_candidates",
+            "surface": "findings",
             "read_only": True,
             "advisory_only": True,
             "mutation_authorized": False,
@@ -189,7 +189,7 @@ class ReviewCandidateRecordPage:
         }
 
 
-def list_review_candidates_page(
+def list_findings_page(
     database: str | Path,
     *,
     limit: int,
@@ -237,7 +237,7 @@ def list_review_candidates_page(
                     clauses.append(field + "=?")
                     parameters.append(value)
             where = " AND ".join(clauses)
-            count = int(connection.execute("SELECT COUNT(*) FROM review_candidates WHERE " + where,
+            count = int(connection.execute("SELECT COUNT(*) FROM findings WHERE " + where,
                                            parameters).fetchone()[0])
             if cursor is not None:
                 where += " AND (" + _RANK_SQL + ", -confidence,route_name COLLATE BINARY," \
@@ -246,7 +246,7 @@ def list_review_candidates_page(
                                    cursor.reason_code, cursor.volume_id, cursor.file_id))
             rows = connection.execute(
                 "SELECT " + _REVIEW_CANDIDATE_COLUMNS + "," + _RANK_SQL + " AS priority_rank"
-                " FROM review_candidates WHERE " + where + " ORDER BY priority_rank,confidence DESC,"
+                " FROM findings WHERE " + where + " ORDER BY priority_rank,confidence DESC,"
                 "route_name COLLATE BINARY,path COLLATE BINARY,reason_code COLLATE BINARY,"
                 "volume_id,file_id LIMIT ?", (*parameters, limit + 1),
             ).fetchall()
@@ -272,6 +272,6 @@ def list_review_candidates_page(
 
 
 __all__ = [
-    "ReviewCandidateListCursor", "ReviewCandidateRecordPage", "list_review_candidates_page",
+    "ReviewCandidateListCursor", "ReviewCandidateRecordPage", "list_findings_page",
     "review_candidate_projection",
 ]

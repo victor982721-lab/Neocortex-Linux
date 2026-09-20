@@ -174,7 +174,13 @@ def test_redlist_failure_has_one_bounded_failed_terminal_event_without_traceback
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    failure = RedlistPrepassError(matched=3897, applied=1536, failed=2352, protected=9)
+    failure = RedlistPrepassError(
+        matched=3897,
+        applied=1536,
+        failed=0,
+        protected=9,
+        recovery_required=1,
+    )
 
     def run(_args, *, progress):
         progress(ProgressEvent("framework", "redlist", "Enviando redlist", 3897, None))
@@ -189,7 +195,7 @@ def test_redlist_failure_has_one_bounded_failed_terminal_event_without_traceback
     assert len(terminal) == 1
     assert terminal[0]["metrics"]["status"] == "failed"
     assert terminal[0]["metrics"]["error_code"] == "redlist_prepass_failed"
-    assert terminal[0]["metrics"]["errors"] == 2361
+    assert terminal[0]["metrics"]["errors"] == 1
     assert "redlist prepass incomplete" in output.err
     assert "Traceback" not in output.err
     assert output.out == ""

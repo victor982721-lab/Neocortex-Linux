@@ -142,7 +142,6 @@ _METRIC_LABELS = {
     "classified": "clasificados",
     "planned": "planeados",
     "applied": "aplicados",
-    "review": "revisión",
     "errors": "errores",
     "timeouts": "timeouts",
     "recycled": "papelera",

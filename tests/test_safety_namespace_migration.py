@@ -22,7 +22,6 @@ MODULES = (
     "protected_content",
     "route_filters",
     "state_topology_contracts",
-    "windows_handle_mutation",
 )
 
 

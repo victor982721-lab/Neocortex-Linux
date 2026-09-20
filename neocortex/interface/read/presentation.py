@@ -451,86 +451,6 @@ def _add_missing_context(lines: _Lines, value: object) -> None:
     lines.add()
 
 
-def _size(value: object) -> str:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return "tamaño desconocido"
-    units = ("B", "KiB", "MiB", "GiB", "TiB")
-    amount = float(value)
-    for unit in units:
-        if amount < 1024 or unit == units[-1]:
-            return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
-        amount /= 1024
-    raise AssertionError("unreachable size unit")
-
-
-def _render_review(payload: Mapping[str, object], lines: _Lines) -> tuple[str, str]:
-    lines.add("Revisión conservadora de valor")
-    lines.add("Solo lectura: esta revisión no autoriza mover, archivar o borrar.\n")
-    total_items = 0
-    displayed = 0
-    for entry in _rows(payload.get("scopes")):
-        scope_items, displayed = _render_review_scope(entry, lines, displayed)
-        total_items += scope_items
-    return (
-        "Revisión consultiva",
-        f"{_count_label(total_items, 'candidato visible', 'candidatos visibles')}; "
-        "0 acciones aplicadas",
-    )
-
-
-def _render_review_scope(
-    entry: Mapping[str, object],
-    lines: _Lines,
-    displayed: int,
-) -> tuple[int, int]:
-    report = entry.get("report")
-    if not isinstance(report, Mapping):
-        lines.add(_error_line(entry))
-        lines.add()
-        return 0, displayed
-    items = _rows(report.get("items"))
-    lines.add(
-        f"{_scope_label(entry.get('scope'))}  ·  "
-        f"{_human_code(entry.get('status'))}  ·  {len(items)} de "
-        f"{_safe_line(report.get('matched_count') or 0, limit=40)} candidatos"
-    )
-    reason = report.get("reason")
-    if reason:
-        lines.add(f"   Cobertura: {_safe_line(_human_code(reason), limit=400)}")
-    displayed = _render_review_items(lines, items, displayed)
-    if not items:
-        lines.add("   No hay candidatos publicados dentro de este límite.\n")
-    return len(items), displayed
-
-
-def _render_review_items(
-    lines: _Lines,
-    items: list[Mapping[str, object]],
-    displayed: int,
-) -> int:
-    for index, item in enumerate(items, start=1):
-        if displayed >= MAX_PRESENTATION_ROWS:
-            break
-        _add_review_item(lines, item, index)
-        displayed += 1
-    return displayed
-
-
-def _add_review_item(lines: _Lines, item: Mapping[str, object], index: int) -> None:
-    lines.add(
-        f"{index}. [{_human_code(item.get('state'))}] "
-        f"{_safe_line(item.get('path') or 'sin ruta')}  ·  "
-        f"{_size(item.get('size_bytes'))}"
-    )
-    reasons = _reason_text(item.get("reasons"), limit=12, line_limit=200)
-    if reasons:
-        lines.add("   Evidencia: " + reasons)
-    uncertainties = _reason_text(item.get("uncertainties"), limit=12, line_limit=200)
-    if uncertainties:
-        lines.add("   Incertidumbre: " + uncertainties)
-    lines.add()
-
-
 def present_read_payload(
     request: ReadRequest,
     payload: Mapping[str, object],
@@ -543,7 +463,6 @@ def present_read_payload(
         "status": _render_status,
         "search": _render_search,
         "ask": _render_ask,
-        "review": _render_review,
     }
     title, summary = renderers[selected.operation](payload, lines)
     return ReadPresentation(

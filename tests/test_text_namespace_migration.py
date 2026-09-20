@@ -36,7 +36,6 @@ def test_text_consumers_use_the_product_namespace() -> None:
         "neocortex/semantic/semantic_plan_owners.py",
         "neocortex/semantic/semantic_sources.py",
         "neocortex/safety/state_topology_contracts.py",
-        "neocortex/workflow/review/value_review_repository.py",
     ):
         assert PRODUCT_ROOT in (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
 

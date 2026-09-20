@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.enumeration import JournalCursor
+from tests.portable_inventory import PortableInventoryCursor
 from neocortex.persistence.framework_state_writer import FrameworkState, RunBudgetExceeded
 from neocortex.runtime.orchestration.run_manifest import RunManifest
 from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
@@ -79,7 +79,7 @@ def test_abrupt_run_recovery_is_idempotent_and_retains_route_inputs(tmp_path: Pa
     root.mkdir()
     database = tmp_path / "framework.sqlite3"
     with FrameworkState(database) as state:
-        run_id = state.begin_initial_run(root, JournalCursor("C:", 1, 1))
+        run_id = state.begin_initial_run(root, PortableInventoryCursor("C:", 1, 1))
         state.publish_run_manifest(
             run_id,
             RunManifest(

@@ -78,7 +78,7 @@ from .contracts import (
     _document_verifier_config as _document_verifier_config,
     _image_processing_provenance as _image_processing_provenance,
 )
-from neocortex.workflow.review.review import ReviewCandidate
+from neocortex.workflow.findings import ReviewCandidate
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.persistence.framework_route_state import ReviewCandidateReconciliation
 
@@ -100,13 +100,13 @@ class ImageRouteState(Protocol):
         selection: CandidateSelection,
     ) -> Any: ...
 
-    def store_review_candidates(
+    def store_findings(
         self,
         run_id: int,
         candidates: Iterable[ReviewCandidate],
     ) -> None: ...
 
-    def reconcile_review_candidates_batch(
+    def reconcile_findings_batch(
         self,
         run_id: int,
         route_name: str,
@@ -666,13 +666,13 @@ class ImageRoute:
             store_error_batch(self.config.state_path, tuple(error_batch))
             error_batch.clear()
         if review_batch:
-            self.framework_state.store_review_candidates(
+            self.framework_state.store_findings(
                 self.run_id,
                 tuple(review_batch),
             )
             review_batch.clear()
         if reconciliations:
-            self.framework_state.reconcile_review_candidates_batch(
+            self.framework_state.reconcile_findings_batch(
                 self.run_id,
                 "image",
                 tuple(reconciliations),

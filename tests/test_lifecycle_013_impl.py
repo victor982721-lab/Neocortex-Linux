@@ -30,7 +30,7 @@ from neocortex.deduplication import (
     FileSnapshot,
     InventoryCheckpoint,
 )
-from neocortex.enumeration import JournalCursor
+from tests.portable_inventory import PortableInventoryCursor
 from neocortex.persistence.framework_state_writer import (
     FrameworkState,
     RunBudgetExceeded,
@@ -154,7 +154,7 @@ def _make_source_fixture(
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(
             root,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
             inventory_policy_signature=boundary.effective_signature,
         )
         state.store_route_candidates(run_id, snapshots)
@@ -200,7 +200,7 @@ def _make_source_fixture(
             state.complete_initial_run(
                 run_id,
                 scan.scan_id,
-                JournalCursor("C:", 1, 11),
+                PortableInventoryCursor("C:", 1, 11),
                 0,
                 1,
                 "full",

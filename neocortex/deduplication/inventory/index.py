@@ -1,4 +1,4 @@
-"""Public facade for the modular incremental deduplication inventory."""
+"""Public facade for the modular portable deduplication inventory."""
 # region [00] Contexto del módulo
 # Module: canonical inventory index
 # Propósito: composición pública de los repositorios internos del inventario.
@@ -102,8 +102,7 @@ class DedupIndex(
 
         The default policy excludes internal Neocortex work trees, dependency
         environments, generated caches, and Python bytecode. Path matching
-        uses the filesystem's native path collation (case-insensitive on
-        Windows, case-sensitive on Linux). Links and junctions are never
+        uses the Linux filesystem's case-sensitive path collation. Links are never
         followed. ``excluded_paths`` remains compatible; callers needing
         recursive names or file rules pass ``exclusion_policy``.
         """

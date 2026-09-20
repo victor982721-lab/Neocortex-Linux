@@ -28,7 +28,6 @@ from neocortex.capabilities.formats.video.limits import DEFAULT_VIDEO_WORKER_MEM
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from neocortex.enumeration.models import JournalCursor
     from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
     from neocortex.documents.document_organization import (
@@ -266,8 +265,8 @@ class InitialRunResult:
     run_id: int
     scan: ScanSummary
     dedup_plan: DedupPlan
-    journal_before: JournalCursor | None
-    journal_after: JournalCursor | None
+    journal_before: None
+    journal_after: None
     reconciliation_records: int
     inventory_attempts: int
     inventory_mode: Literal["full", "incremental"]
@@ -286,13 +285,6 @@ class InitialRunResult:
     organization_apply: OrganizationApplySummary | None = None
     route_failures: dict[str, str] = field(default_factory=dict, kw_only=True)
     maintenance: dict[str, object] = field(default_factory=dict, kw_only=True)
-
-    @property
-    def journal_usn_span(self) -> int | None:
-        if self.journal_before is None or self.journal_after is None:
-            return None
-        return self.journal_after.next_usn - self.journal_before.next_usn
-
 
 @dataclass(frozen=True, slots=True)
 class RouteOnlyRunResult:

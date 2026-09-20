@@ -82,7 +82,9 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary as AudioRouteSummary
     from neocortex.capabilities.formats.audio.route import AudioRoute as AudioRoute
     from neocortex.platform.content_types import DetectedType as DetectedType
+    from neocortex.platform.content_types import FileTypeDecision as FileTypeDecision
     from neocortex.platform.content_types import detect_content_type as detect_content_type
+    from neocortex.platform.content_types import identify as identify
     from neocortex.capabilities.formats.docx.route import DocxRoute as DocxRoute
     from neocortex.capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary as DocxRouteSummary
@@ -230,6 +232,7 @@ __all__ = [  # noqa: RUF022
     "CurationVerifyOutput",
     "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "DetectedType",
+    "FileTypeDecision",
     "DerivationRef",
     "DocxRoute",
     "DocxRouteConfig",
@@ -276,6 +279,7 @@ __all__ = [  # noqa: RUF022
     "read_run_status_json",
     "StageDescriptor",
     "detect_content_type",
+    "identify",
     "verify_pdf_state",
     "curation_plan_payload",
     "curation_review_payload",
@@ -414,6 +418,8 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "DERIVATION_CONTRACT_SCHEMA_VERSION",
     ),
     "DetectedType": ("neocortex.platform.content_types", "DetectedType"),
+    "FileTypeDecision": ("neocortex.platform.content_types", "FileTypeDecision"),
+    "identify": ("neocortex.platform.content_types", "identify"),
     "DerivationRef": ("neocortex.semantic.derivation_contracts", "DerivationRef"),
     "DocxRoute": ("neocortex.capabilities.formats.docx.route", "DocxRoute"),
     "DocxRouteConfig": ("neocortex.capabilities.formats.docx.route", "DocxRouteConfig"),

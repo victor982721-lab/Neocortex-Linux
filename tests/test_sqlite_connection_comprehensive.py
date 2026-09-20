@@ -7,9 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.enumeration.path_index import repository as path_index_module
-from neocortex.enumeration.path_index import schema as path_index_schema
-from neocortex.enumeration.path_index.repository import SqlitePathIndex
 from neocortex.deduplication.inventory import index as inventory_module
 from neocortex.deduplication.inventory.index import DedupIndex
 from neocortex.deduplication.persistence import (
@@ -18,7 +15,6 @@ from neocortex.deduplication.persistence import (
 from neocortex.deduplication.persistence import connections as inventory_connections
 from neocortex.documents import document_catalog
 from neocortex.persistence import framework_state_writer
-from neocortex.workflow.review import review_evidence
 from neocortex.semantic import semantic_sources
 from neocortex.documents.document_cache_sync import _synchronize_database
 from neocortex.persistence.framework_connection import connect_existing_framework
@@ -187,15 +183,6 @@ def test_framework_state_existing_only_does_not_recreate_raced_state(
 
 
 @contextmanager
-def _path_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Connection]:
-    connection = path_index_schema._connect(path, readonly=readonly)
-    try:
-        yield connection
-    finally:
-        connection.close()
-
-
-@contextmanager
 def _inventory_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Connection]:
     connection = inventory_connections.connect(path, readonly=readonly)
     try:
@@ -206,11 +193,8 @@ def _inventory_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Con
 
 @pytest.mark.parametrize(
     ("initialize", "open_database"),
-    (
-        (path_index_schema.initialize_path_index_schema, _path_connection),
-        (initialize_inventory_schema, _inventory_connection),
-    ),
-    ids=("path-index", "dedup-inventory"),
+    ((initialize_inventory_schema, _inventory_connection),),
+    ids=("dedup-inventory",),
 )
 def test_lower_layer_readers_are_query_only_and_never_create(
     tmp_path: Path,
@@ -235,10 +219,7 @@ def test_lower_layer_readers_are_query_only_and_never_create(
 
 @pytest.mark.parametrize(
     ("owner", "module", "connect"),
-    (
-        ("path-index", path_index_schema, path_index_schema._connect),
-        ("dedup-inventory", inventory_connections, inventory_connections.connect),
-    ),
+    (("dedup-inventory", inventory_connections, inventory_connections.connect),),
 )
 def test_lower_layer_factories_close_on_keyboard_interrupt(
     tmp_path: Path,
@@ -271,14 +252,6 @@ def test_lower_layer_factories_close_on_keyboard_interrupt(
 def test_lower_layer_long_lived_writers_apply_wal_fk_and_busy_timeout(
     tmp_path: Path,
 ) -> None:
-    with SqlitePathIndex(tmp_path / "path.sqlite3") as index:
-        connection = index._connection
-        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 60_000
-    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        connection.execute("SELECT 1")
-
     with DedupIndex(tmp_path / "dedup.sqlite3") as inventory:
         connection = inventory._connection
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
@@ -290,11 +263,8 @@ def test_lower_layer_long_lived_writers_apply_wal_fk_and_busy_timeout(
 
 @pytest.mark.parametrize(
     ("module", "constructor", "initializer_name"),
-    (
-        (path_index_module, SqlitePathIndex, "initialize_path_index_schema"),
-        (inventory_module, DedupIndex, "initialize_inventory_schema"),
-    ),
-    ids=("path-index", "dedup-inventory"),
+    ((inventory_module, DedupIndex, "initialize_inventory_schema"),),
+    ids=("dedup-inventory",),
 )
 def test_lower_layer_writer_does_not_recreate_state_deleted_after_validation(
     tmp_path: Path,
@@ -369,34 +339,6 @@ def test_cross_cache_writer_rolls_back_keyboard_interrupt_and_handles_special_ur
     )
     assert result.status == "error"
     assert not absent.exists()
-
-
-def test_review_evidence_writer_rolls_back_keyboard_interrupt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database = tmp_path / "framework.sqlite3"
-    with FrameworkState(database):
-        pass
-
-    def interrupt(
-        connection: sqlite3.Connection,
-        _values: object,
-    ) -> list[object]:
-        connection.execute(
-            "UPDATE review_evidence_progress SET updated_ns=123 "
-            "WHERE pipeline_key='human-review-v1'"
-        )
-        raise KeyboardInterrupt("injected review-evidence interruption")
-
-    monkeypatch.setattr(review_evidence, "_pending_materializations", interrupt)
-    with pytest.raises(KeyboardInterrupt, match="review-evidence interruption"):
-        review_evidence.materialize_review_evidence(database)
-
-    with sqlite3.connect(database) as verification:
-        assert (
-            verification.execute("SELECT COUNT(*) FROM review_evidence_progress").fetchone()[0] == 0
-        )
 
 
 # endregion [03]

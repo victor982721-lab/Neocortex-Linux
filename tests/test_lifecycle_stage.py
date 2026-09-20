@@ -18,7 +18,7 @@ from neocortex.api.cli.cli_semantic import (
 )
 from neocortex.api.cli import cli_app, cli_reporting, cli_semantic
 from neocortex.deduplication import DedupIndex, FileSnapshot, InventoryCheckpoint
-from neocortex.enumeration import JournalCursor
+from tests.portable_inventory import PortableInventoryCursor
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.persistence.state_publication import (
     begin_state_publication,
@@ -252,7 +252,7 @@ def test_two_recovery_attempts_keep_24_route_inputs_idempotent(tmp_path: Path) -
     with FrameworkState(database) as state:
         source_run = state.begin_initial_run(
             root,
-            JournalCursor("C:", 1, 10),
+            PortableInventoryCursor("C:", 1, 10),
             inventory_policy_signature=boundary.effective_signature,
         )
         state.publish_run_manifest(

@@ -30,12 +30,18 @@ proyectan visibilidad, sin borrar vectores ni diagnósticos.
 
 La ruta integrada conserva los owners y contratos existentes. `--all` selecciona
 las ocho rutas de contenido (`pdf`, `docx`, `office`, `archive`, `text`, `audio`,
-`video` e `image`). En `--all --apply` aplica primero la redlist determinista
-del Corpus, antes de dedupe, hashing, validación o extracción. Los archivos sin
-extensión sólo se renombran cuando `content_types` aporta evidencia acotada y
-una extensión canónica; los desconocidos permanecen intactos. La redlist y la
-restauración de extensión comparten la misma frontera de root, identidad,
-no-reemplazo, recibo y recuperación.
+`video` e `image`) y converge en este orden: `preflight/lock → inventory →
+identify → normalize → policy/redlist → dedupe → routes → organize → semantic
+→ finalize`. Identify compara contenido físico bounded (no la extensión
+observada) y Normalize corrige extensiones demostrables antes de cualquier hash
+completo. `extension != content identity`; la incertidumbre queda
+`UNKNOWN/KEEP`.
+
+En `--all --apply`, redlist sólo actúa después de Identify/Normalize. Los
+archivos no normalizables permanecen intactos. Redlist, rename y Trash comparten
+la frontera de root, identidad, no-reemplazo y receipt. `recovery_required` sólo
+representa un efecto físico que pudo cruzar la frontera y no puede confirmarse;
+un `blocked/protected` sin syscall es un skip parcial, no recuperación.
 
 Los documentos y datos útiles dentro de `AppData`, cachés o ZIP mixtos siguen
 procesándose; no se excluye un árbol completo sólo por su nombre. Un miembro

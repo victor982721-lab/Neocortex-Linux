@@ -29,10 +29,6 @@ from neocortex.deduplication.persistence.validation import validate_inventory_sc
 from neocortex.documents import document_catalog_schema
 from neocortex.persistence import framework_schema
 from neocortex.semantic import semantic_schema
-from neocortex.workflow.review.review_task_repository import (
-    MAX_REVIEW_TASK_SOURCE_PUBLICATION_HEADS,
-    audit_latest_review_task_source_publications_from_connection,
-)
 from neocortex.persistence.sqlite_immutable import (
     DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES,
     SQLiteReadMode,
@@ -2368,41 +2364,8 @@ def _plan_inventory(
 
 
 def _framework_holds(connection: sqlite3.Connection) -> tuple[RetentionHold, ...]:
-    review_source_audit = audit_latest_review_task_source_publications_from_connection(
-        connection,
-        limit=MAX_REVIEW_TASK_SOURCE_PUBLICATION_HEADS,
-    )
-    human = connection.execute(
-        """SELECT
-        (SELECT COUNT(*) FROM review_candidates)+
-        (SELECT COUNT(*) FROM review_decisions)+
-        (SELECT COUNT(*) FROM review_evidence_examples)+
-        (SELECT COUNT(*) FROM review_tasks)+
-        (SELECT COUNT(*) FROM review_task_events
-         WHERE actor_kind='human'),
-        (SELECT COALESCE(SUM(length(path)+length(evidence_json)),0)
-         FROM review_candidates)+
-        (SELECT COALESCE(SUM(length(path)+COALESCE(length(evidence_json),0)+
-            length(provenance_json)+COALESCE(length(note),0)),0)
-         FROM review_decisions)+
-        (SELECT COALESCE(SUM(length(path)+COALESCE(length(evidence_json),0)+
-            length(provenance_json)+COALESCE(length(note),0)),0)
-         FROM review_evidence_examples)+
-        (SELECT COALESCE(SUM(length(task_id)+length(logical_key)+
-            length(task_type)+length(scope)+length(source_kind)+
-            length(source_input_id)+length(source_ref_json)+
-            length(source_snapshot_fingerprint)+length(snapshot_json)+
-            length(evidence_json)+length(reason_code)+length(uncertainty_json)+
-            length(priority_algorithm)+length(suggestions_json)+length(batch_id)+
-            COALESCE(length(supersedes_task_id),0)),0)
-         FROM review_tasks)+
-        (SELECT COALESCE(SUM(length(event_id)+length(event_key)+length(task_id)+
-            COALESCE(length(previous_event_id),0)+COALESCE(length(from_state),0)+
-            length(to_state)+length(actor_kind)+length(actor_id)+
-            length(provenance_json)+COALESCE(length(decision_json),0)+
-            COALESCE(length(note),0)),0)
-         FROM review_task_events WHERE actor_kind='human')"""
-    ).fetchone()
+    """Retain only physical-action evidence; human review state was removed."""
+
     action_evidence = connection.execute(
         """SELECT
         (SELECT COUNT(*) FROM file_actions)+
@@ -2427,25 +2390,10 @@ def _framework_holds(connection: sqlite3.Connection) -> tuple[RetentionHold, ...
     ).fetchone()
     return (
         RetentionHold(
-            "human_review_evidence",
-            "human_decisions_and_training_evidence_are_permanent_holds",
-            int(human[0]),
-            int(human[1]),
-        ),
-        RetentionHold(
             "file_action_audit_evidence",
             "mutation_and_reconciliation_evidence_is_a_permanent_hold",
             int(action_evidence[0]),
             int(action_evidence[1]),
-        ),
-        RetentionHold(
-            "published_review_task_state",
-            "current_review_task_source_heads_and_receipts_are_protected",
-            len(review_source_audit.publications)
-            + review_source_audit.batch_count
-            + review_source_audit.membership_count
-            + review_source_audit.progress_count,
-            review_source_audit.estimated_bytes,
         ),
     )
 
