@@ -225,7 +225,13 @@ def run_organization_stages(
     publish("organization_apply", "running", checkpoint)
     try:
         apply_summary = apply_all_document_organization(config.document_catalog_database, organization_root, progress=checked_progress, mutation_guard=state.corpus_mutation_guard(run_id))
-        issues = apply_summary.stale + apply_summary.blocked + apply_summary.failed + apply_summary.cache_pending + apply_summary.remaining
+        # A blocked proposal is a terminal, effect-free abstention.  In
+        # particular, the Linux organization backend records advisory/review
+        # proposals as ``blocked`` because no mutation grant-consuming backend
+        # exists; that must not turn an otherwise completed lifecycle into a
+        # recovery obligation.  Keep all non-terminal or uncertain outcomes
+        # as gates below.
+        issues = apply_summary.stale + apply_summary.failed + apply_summary.cache_pending + apply_summary.remaining
         reserve("organization_apply", f"organization:apply:{apply_summary.catalog_run_id}", int(apply_summary.selected))
         publish("organization_apply", "partial" if issues else "completed", checkpoint, reason="organization_apply_incomplete" if issues else None)
         if issues:

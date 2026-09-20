@@ -16,6 +16,7 @@ from neocortex.documents import document_catalog as catalog
 from neocortex.documents import document_organization as organization
 from neocortex.documents import document_organization_planning as planning
 from neocortex.documents.document_organization_recovery import OrganizationRecoveryRequired
+from neocortex.documents.document_organization_models import OrganizationApplySummary
 from neocortex.persistence.framework_state_writer import FrameworkState, RunBudgetExceeded
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from neocortex.runtime.control.global_resources import (
@@ -531,6 +532,80 @@ def test_resume_observes_pending_apply_without_repeating_effect_or_plan(
     with FrameworkState(config.framework_database) as state:
         resumed_run = int(state._connection.execute("SELECT MAX(run_id) FROM initial_runs").fetchone()[0])
         assert organization_stage_state(state, resumed_run)["organization_apply"]["status"] == "partial"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "must_recover"),
+    (
+        ({"blocked": 1}, False),
+        ({"stale": 1}, True),
+        ({"failed": 1}, True),
+        ({"cache_pending": 1}, True),
+        ({"remaining": 1}, True),
+    ),
+)
+def test_organization_apply_treats_blocked_advisory_rows_as_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: dict[str, int],
+    must_recover: bool,
+) -> None:
+    """Blocked advisory proposals abstain; uncertain/pending outcomes recover."""
+
+    config, _ = _sources(tmp_path)
+    _update(config)
+    config = replace(config, apply_actions=True)
+
+    monkeypatch.setattr(
+        organization,
+        "apply_all_document_organization",
+        lambda *_args, **_kwargs: OrganizationApplySummary(
+            catalog_run_id=2,
+            selected=1,
+            **outcome,
+        ),
+    )
+
+    with FrameworkState(config.framework_database) as state:
+        boundary = build_normal_inventory_boundary(config.root, config.state_directory)
+        source_run = state.begin_initial_run(
+            config.root,
+            None,
+            inventory_policy_signature=boundary.effective_signature,
+        )
+        st = config.root.stat()
+        state.publish_run_manifest(
+            source_run,
+            RunManifest(
+                run_id=source_run,
+                run_kind="initial",
+                root=str(config.root),
+                root_identity=(st.st_dev, st.st_ino, -1),
+                selected_routes=("text",),
+            ).event_payload(),
+        )
+        register_organization_stages(state, source_run, config, config.root)
+        runner = FrameworkOrchestrator(config, route_registry={})
+
+        if must_recover:
+            with pytest.raises(OrganizationRecoveryRequired, match="organization_apply_incomplete"):
+                runner._run_document_organization(
+                    root=config.root,
+                    state=state,
+                    run_id=source_run,
+                )
+        else:
+            plan, applied = runner._run_document_organization(
+                root=config.root,
+                state=state,
+                run_id=source_run,
+            )
+            assert plan is not None
+            assert applied is not None and applied.blocked == 1
+
+        assert organization_stage_state(state, source_run)["organization_apply"]["status"] == (
+            "partial" if must_recover else "completed"
+        )
 
 
 @pytest.mark.parametrize("corruption", ("owner_receipt", "summary", "destination"))
