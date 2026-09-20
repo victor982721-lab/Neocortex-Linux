@@ -29,6 +29,7 @@ from typing import Literal, cast
 
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
+    SQLiteSnapshotBudgetExceeded,
     capture_sqlite_read_fence,
     immutable_sqlite_database,
     require_inactive_sqlite_sidecars,
@@ -876,6 +877,24 @@ def _owner_record(
             checks_completed=tuple(completed),
             checks_attempted=tuple(attempted),
         )
+    except SQLiteSnapshotBudgetExceeded as exc:
+        # This is an ``ImmutableSQLiteUnavailable`` subclass, but preparation
+        # budget exhaustion is incomplete evidence rather than a blocked owner.
+        completed.clear()
+        return StateOwnerHealth(
+            name=descriptor.name,
+            path=str(path),
+            status="not_verified",
+            expected_schema_version=expected,
+            schema_version=schema_version,
+            user_version=user_version,
+            table_count=len(tables),
+            sidecars=_sidecars(path),
+            observations={},
+            detail=str(exc),
+            checks_completed=tuple(completed),
+            checks_attempted=tuple(attempted),
+        )
     except ImmutableSQLiteUnavailable as exc:
         # A sidecar may have appeared or changed after the preflight; this is
         # an observation race, not evidence that the owner is corrupt.
@@ -1032,6 +1051,12 @@ def _unknown_record(
             checks_completed=tuple(completed),
             checks_attempted=tuple(attempted),
         )
+    except SQLiteSnapshotBudgetExceeded as exc:
+        # Preparation budget exhaustion is incomplete evidence, not a blocked
+        # unknown owner; keep the same fail-closed timeout classification.
+        status = "not_verified"
+        detail = str(exc)
+        completed.clear()
     except ImmutableSQLiteUnavailable as exc:
         status = "blocked"
         detail = str(exc)

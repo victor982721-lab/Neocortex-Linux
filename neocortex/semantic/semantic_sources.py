@@ -1845,7 +1845,7 @@ def iter_image_source_records(
             fingerprint_acquisition = "streamed-source"
         fingerprint = _image_descriptor_fingerprint(raw_digest, snapshot.size)
         fingerprint_basis = f"raw-full-{FULL_ALGORITHM}-size-descriptor-v1"
-        raw_content_xxh3_128 = raw_digest.hex()
+        raw_content_sha256 = raw_digest.hex()
         processing_signature = str(row["processing_signature"] or "unprocessed")
         source_status = str(row["source_status"] or "unknown")
         ocr_truncated = bool(row["ocr_text_truncated"])
@@ -1858,7 +1858,9 @@ def iter_image_source_records(
             "birthtime_ns": snapshot.birthtime_ns,
             "fingerprint_algorithm": fingerprint_basis,
             "fingerprint_digest": fingerprint.xxh3_128,
-            "raw_content_xxh3_128": raw_content_xxh3_128,
+            # Keep the source-revision key stable for persisted job
+            # compatibility; the value is the complete SHA-256 digest.
+            "raw_content_xxh3_128": raw_content_sha256,
             "source_status": source_status,
             "coverage": coverage,
             "ocr_text_truncated": ocr_truncated,

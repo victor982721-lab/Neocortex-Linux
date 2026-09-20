@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import subprocess
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -141,11 +143,11 @@ def _install_fitz(
     monkeypatch: pytest.MonkeyPatch,
     document: _FakeDocument,
 ) -> ModuleType:
-    module = ModuleType("fitz")
+    module = ModuleType("pymupdf")
     module.csRGB = object()  # type: ignore[attr-defined]
     module.Matrix = lambda x, y: (x, y)  # type: ignore[attr-defined]
     module.open = lambda **_kwargs: document  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "fitz", module)
+    monkeypatch.setitem(sys.modules, "pymupdf", module)
     return module
 
 
@@ -339,7 +341,7 @@ def test_ocr_pdf_page_caps_rendering_and_closes_image(
 def test_extract_pdf_reports_missing_adapter_and_page_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setitem(sys.modules, "fitz", None)
+    monkeypatch.setitem(sys.modules, "pymupdf", None)
     assert worker._extract_pdf(b"pdf", _args()) == {
         "ok": False,
         "reason": "pdf_extractor_unavailable",
@@ -462,13 +464,13 @@ def test_extract_pdf_uses_and_reuses_available_ocr(
 def test_extract_pdf_converts_parser_errors_to_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = ModuleType("fitz")
+    module = ModuleType("pymupdf")
 
     def fail_open(**_kwargs: object) -> object:
         raise ValueError("broken document")
 
     module.open = fail_open  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "fitz", module)
+    monkeypatch.setitem(sys.modules, "pymupdf", module)
 
     assert worker._extract_pdf(b"pdf", _args()) == {
         "ok": False,
@@ -556,3 +558,43 @@ def test_main_emits_extraction_result_and_maps_status(
     assert status == expected_status
     assert emitted == result
     assert calls == [(kind, b"data")]
+
+
+def test_worker_subprocess_stdout_is_one_json_object_for_pdf() -> None:
+    pymupdf = pytest.importorskip("pymupdf")
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "archive worker native text")
+    payload = document.tobytes()
+    document.close()
+
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "neocortex.capabilities.formats.archive.text_worker",
+            "--max-input-bytes",
+            str(len(payload)),
+            "--max-pages",
+            "2",
+            "--max-chars",
+            "100",
+            "--kind",
+            "pdf",
+            "--ocr-mode",
+            "never",
+        ),
+        cwd=Path(__file__).resolve().parents[1],
+        input=payload,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", "replace")
+    stdout = completed.stdout.decode("utf-8", "strict")
+    result = json.loads(stdout)
+    assert isinstance(result, dict)
+    assert result["ok"] is True
+    assert result["extraction_mode"] == "native"
+    assert result["text"] == "archive worker native text\n"

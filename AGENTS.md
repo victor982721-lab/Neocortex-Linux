@@ -18,8 +18,9 @@ para una edición transversal consulta únicamente los contratos compartidos.
 
 ## Contrato común
 
-- Linux/Kubuntu es la única plataforma activa, con CPython 3.13–3.14; Windows y
-  NTFS son legado, fuera de mantenimiento y validación salvo solicitud nueva.
+- Linux/Kubuntu es la única plataforma activa, con CPython 3.13.x (ABI `cp313`);
+  CPython 3.14, Windows y NTFS son legado, fuera de mantenimiento y validación
+  salvo solicitud nueva.
 - GitHub Actions está prohibido. La calidad usa herramientas locales
   individuales, nunca un agregador productivo ni autoauditor de NeoCortex.
 - No transmitas corpus, estado o secretos a proveedores externos. No introduzcas

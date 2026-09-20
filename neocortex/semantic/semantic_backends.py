@@ -185,7 +185,7 @@ def _verify_declared_revision(
             )
 
 
-def _raw_file_xxh3_128(path: Path) -> str:
+def _raw_file_sha256(path: Path) -> str:
     """Return the complete SHA-256 digest for an image source."""
 
     digest = sha256_hasher()
@@ -215,7 +215,7 @@ def _verify_image_source(
             or any(character not in "0123456789abcdef" for character in expected_digest)
         ):
             raise ValueError("image requests require source_revision.raw_content_xxh3_128")
-        actual_digest = _raw_file_xxh3_128(path)
+        actual_digest = _raw_file_sha256(path)
         after = _path_revision(path)
     except (SourceRevisionMismatchError, ValueError):
         raise
@@ -360,11 +360,14 @@ class FastEmbedBackend:
                     f"request {request_id!r} requires {token_count} tokens but "
                     f"{self.model.model_id!r} accepts {token_limit}; refusing truncation"
                 )
+            runtime_model = self._runtime_model
+            if runtime_model is None:
+                raise RuntimeError("FastEmbed runtime model is unavailable")
             kwargs = {"batch_size": self._batch_size, "parallel": self._parallel}
             if role is EmbeddingRole.QUERY:
-                vectors = tuple(self._runtime_model.query_embed(selected_texts, **kwargs))
+                vectors = tuple(runtime_model.query_embed(selected_texts, **kwargs))
             else:
-                vectors = tuple(self._runtime_model.passage_embed(selected_texts, **kwargs))
+                vectors = tuple(runtime_model.passage_embed(selected_texts, **kwargs))
         output: list[tuple[int, BackendEmbedding]] = []
         for (index, request), vector, token_count in zip(
             indexed,
@@ -477,7 +480,10 @@ class FastEmbedBackend:
                 )
             images.append(request.image_path)
             before_revisions.append(_verify_image_source(request))
-        vectors = self._runtime_model.embed(
+        runtime_model = self._runtime_model
+        if runtime_model is None:
+            raise RuntimeError("FastEmbed runtime model is unavailable")
+        vectors = runtime_model.embed(
             images,
             batch_size=self._batch_size,
             parallel=self._parallel,
@@ -511,7 +517,7 @@ class FastEmbedBackend:
                 )
             provenance = dict(result.provenance)
             provenance["source_revision_verified_before_after"] = True
-            provenance["source_content_xxh3_128_verified"] = True
+            provenance["source_content_sha256_verified"] = True
             provenance["source_stat_revision"] = {
                 "size_bytes": after[0],
                 "mtime_ns": after[1],

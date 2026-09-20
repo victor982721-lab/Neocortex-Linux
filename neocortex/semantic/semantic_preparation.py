@@ -11,7 +11,7 @@ from pathlib import Path
 from neocortex.platform.policy import stat_birthtime_ns
 from typing import Protocol, cast
 
-from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256, sha256_hexdigest
 
 from .semantic_backends import (
     EmbeddingBackend,
@@ -287,7 +287,10 @@ def image_probe(embedding_backend: EmbeddingBackend) -> None:
                         "size_bytes": source_stat.st_size,
                         "mtime_ns": source_stat.st_mtime_ns,
                         "birthtime_ns": stat_birthtime_ns(source_stat),
-                        "raw_content_xxh3_128": fingerprint.xxh3_128,
+                        # ``raw_content_xxh3_128`` is the persisted source-revision
+                        # compatibility field.  Its value is the complete SHA-256
+                        # digest, not the compact semantic fingerprint.
+                        "raw_content_xxh3_128": sha256_hexdigest(payload),
                     },
                 ),
             )

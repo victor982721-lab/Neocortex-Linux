@@ -152,7 +152,11 @@ def _ocr_pdf_page(page: Any, fitz: Any, args: argparse.Namespace, pytesseract: A
 
 def _extract_pdf(payload: bytes, args: argparse.Namespace) -> dict[str, object]:
     try:
-        import fitz  # type: ignore[import-untyped]
+        # PyMuPDF 1.28 keeps ``fitz`` as a compatibility module, but importing
+        # that name writes a deprecation notice to stdout.  This process emits
+        # one JSON document on stdout, so use the canonical package name while
+        # retaining the established API alias below.
+        import pymupdf as fitz  # type: ignore[import-untyped]
     except ImportError:
         return {"ok": False, "reason": "pdf_extractor_unavailable"}
 

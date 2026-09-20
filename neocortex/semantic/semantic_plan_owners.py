@@ -51,8 +51,10 @@ from neocortex.persistence.sqlite_cancellation import (
     sqlite_cancellation_scope,
 )
 from neocortex.persistence.sqlite_immutable import (
+    DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS,
     ImmutableSQLiteUnavailable,
     SQLiteReadSession,
+    SQLiteSnapshotBudget,
     preferred_sqlite_read_mode,
 )
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
@@ -169,6 +171,15 @@ def _planner_readonly_database(
             path,
             mode=mode,
             timeout_seconds=PLANNER_BUSY_TIMEOUT_MS / 1000.0,
+            # The planner's 25 ms busy timeout is a lock-wait policy for the
+            # published owner.  It is not a viable preparation deadline for a
+            # detached WAL snapshot: copying/materializing even a tiny owner
+            # routinely takes longer under CPython/CI.  Keep the lock policy
+            # short while using the snapshot kernel's bounded preparation
+            # budget for the copy itself.
+            budget=SQLiteSnapshotBudget(
+                prepare_timeout_seconds=DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS,
+            ),
         )
         connection = session.open()
         # The kernel configures the common safeguards, but the planner uses a

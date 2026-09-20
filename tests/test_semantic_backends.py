@@ -16,6 +16,7 @@ from neocortex.semantic.semantic_backends import (
     merge_exact_search_pages,
     reciprocal_rank_fusion,
 )
+from neocortex.semantic.semantic_preparation import image_probe
 from neocortex.semantic.semantic_models import (
     BackendEmbedding,
     EmbeddingModality,
@@ -138,7 +139,7 @@ def test_fastembed_adapter_checks_declared_dimensions_before_model_loading(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_image_source_xxh3_and_declared_revision_are_checked(tmp_path: Path) -> None:
+def test_image_source_sha256_and_declared_revision_are_checked(tmp_path: Path) -> None:
     path = tmp_path / "subestación-á.jpg"
     path.write_bytes(b"fixture-image-content")
     stat = path.stat()
@@ -159,6 +160,20 @@ def test_image_source_xxh3_and_declared_revision_are_checked(tmp_path: Path) -> 
     path.write_bytes(b"mutated-image-content")
     with pytest.raises(SourceRevisionMismatchError, match="no longer match"):
         _verify_image_source(request)
+
+
+def test_image_probe_supplies_full_sha256_to_backend() -> None:
+    class ProbeBackend:
+        def embed(self, requests: Sequence[EmbeddingRequest]) -> Sequence[BackendEmbedding]:
+            assert len(requests) == 1
+            request = requests[0]
+            assert request.image_path is not None
+            expected = hashlib.sha256(request.image_path.read_bytes()).hexdigest()
+            assert request.source_revision["raw_content_xxh3_128"] == expected
+            _verify_image_source(request)
+            return (BackendEmbedding(request.request_id, (1.0,), {}),)
+
+    image_probe(ProbeBackend())
 
 
 # endregion [02]

@@ -10,11 +10,13 @@ from typing import Sequence, cast
 
 import pytest
 
-from neocortex.semantic import semantic_service as service
 from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
+from neocortex.platform.policy import stat_birthtime_ns
+from neocortex.semantic import semantic_service as service
 from neocortex.semantic import semantic_preparation
 from neocortex.semantic import semantic_search_service as search_implementation
 from neocortex.semantic import semantic_state as state
+from neocortex.semantic.semantic_backends import _verify_image_source
 from neocortex.semantic.semantic_chunking import TextChunkingConfig
 from neocortex.semantic.semantic_chunking import iter_text_chunks
 from neocortex.semantic.semantic_config import (
@@ -1064,6 +1066,58 @@ def test_image_and_ocr_use_separate_embedding_generations(
     )
     state.finalize_embedding_generation(database, compact_cleanup)
     assert not has_active_embeddings(database, compact_model.model_signature)
+
+
+@pytest.mark.capability('image','inference')
+def test_image_index_verifies_full_sha256_source_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The image probe and the durable image job use the same full digest."""
+
+    _declare_source_state(tmp_path, "image")
+    record = _image_record(tmp_path, "sha256-source", with_ocr=False)
+    assert record.item.path is not None
+    revision = dict(record.item.source_revision)
+    revision["birthtime_ns"] = stat_birthtime_ns(Path(record.item.path).stat())
+    record = ImageSourceRecord(replace(record.item, source_revision=revision), None)
+    verified: list[str] = []
+
+    class VerifyingBackend(_FixtureBackend):
+        def embed(
+            self,
+            requests: Sequence[EmbeddingRequest],
+        ) -> Sequence[BackendEmbedding]:
+            for request in requests:
+                if request.role is EmbeddingRole.IMAGE:
+                    _verify_image_source(request)
+                    verified.append(str(request.source_revision["raw_content_xxh3_128"]))
+            return super().embed(requests)
+
+    monkeypatch.setattr(
+        service,
+        "_backend",
+        lambda model, **_kwargs: VerifyingBackend(model),
+    )
+    monkeypatch.setattr(
+        service._image_index,
+        "semantic_source_heads",
+        lambda *_args: _fixture_image_heads((record,)),
+    )
+    monkeypatch.setattr(
+        service,
+        "iter_image_source_records",
+        lambda _state: iter((record,)),
+    )
+
+    result = service.index_image_embeddings(tmp_path, embed_ocr_text=False)
+
+    # The probe and the one image job both pass the full SHA-256 source digest.
+    payload_digest = hashlib.sha256(b"fixture-image-payload:sha256-source").hexdigest()
+    assert result.complete
+    assert len(verified) == 2
+    assert all(len(digest) == 64 for digest in verified)
+    assert verified[1] == payload_digest
 
 
 @pytest.mark.capability('image','inference')

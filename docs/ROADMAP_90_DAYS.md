@@ -38,7 +38,7 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Mutación Linux | `--apply` usa backends POSIX/KIO neutrales y ledger/recovery; incertidumbre queda en KEEP |
 | Backup/restore/purge/factory reset | Implementados mediante `Neocortex databases` y `Neocortex --factory-reset`; sus contratos permanecen separados |
 | MCP | **IMPLEMENTED:** plan/scan/verify y consultas read-only; no publica autorización ni review humano |
-| Lifecycle durable de `--all` | **IMPLEMENTED INSTALADO:** `current` es `0.13.0-c6d3985f7a45-cp314-linux-x86_64`; C0–C7 y la tranche post-0.13 están aceptados sobre sus `source_sha` |
+| Lifecycle durable de `--all` | **IMPLEMENTED INSTALADO:** `current` es la release Linux CPython 3.13 (`cp313`) validada; el `release_id` y `source_sha` vigentes constan en el receipt y en `tools/release_linux.py verify` |
 | Preparación federada de `hygiene` | **CURRENT / PREPARACIÓN:** registry y manifests de owners/procedencia, categorías y cobertura en modo read-only/preview-only; zero deletion. La cadena de efectos es TARGET y permanece bloqueada |
 
 ## 0.10.0–0.11.0 — Evidencia y efectos (histórico consolidado)
@@ -117,7 +117,10 @@ Criterios verificados del corte acotado:
 La conciliación integral entre owners y las métricas de precisión/recall para
 clasificación multimodal siguen siendo objetivos, no resultados de ese benchmark.
 
-## 0.13.0 — IMPLEMENTED: lifecycle durable de `--all`
+## 0.13.0 — IMPLEMENTED: lifecycle durable de `--all` (histórico CPython 3.14)
+
+Los identificadores `cp314` de esta sección conservan evidencia histórica del
+corte 0.13.0; no describen el runtime soportado ni el `current` vigente.
 
 **Estado documental:** el artefacto instalado es
 `0.13.0-1567fe46821b-cp314-linux-x86_64` y su `source_sha` es
@@ -202,7 +205,7 @@ manifest/wheel/launcher, smoke/replay desde el artefacto instalado, piloto
 aislado y corpus intacto. Los gates físicos, Semantic 17 y reservas R1–R4
 siguen separados.
 
-## Post-0.13 — IMPLEMENTED: candidata instalada y verificada
+## Post-0.13 — IMPLEMENTED: candidata instalada y verificada (histórico CPython 3.14)
 
 La tranche quedó implementada en `main` y promovida a `current` desde
 `c6d3985f7a45fc3120bd03e9561195674f2b8ac2`. El artefacto activo es
