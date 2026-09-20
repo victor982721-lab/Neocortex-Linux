@@ -48,6 +48,7 @@ EXPECTED_MODULES = frozenset(
         "semantic_generation_repository",
         "semantic_generation_worker",
         "semantic_image_index",
+        "semantic_application",
         "semantic_item_repository",
         "semantic_lexical",
         "semantic_lineage_repository",
@@ -83,7 +84,12 @@ EXPECTED_MODULES = frozenset(
     }
 )
 INTENTIONAL_NEW_MODULES = frozenset(
-    {"semantic_resources", "semantic_search_order", "semantic_vector_search"}
+    {
+        "semantic_application",
+        "semantic_resources",
+        "semantic_search_order",
+        "semantic_vector_search",
+    }
 )
 
 

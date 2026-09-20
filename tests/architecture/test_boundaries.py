@@ -208,6 +208,71 @@ def test_shared_read_contract_does_not_import_cli() -> None:
 # import failures and not a generic permission for new cycles. Every edge and
 # its calling function/type-checking context must still match this set.
 _RETAINED_DOMAIN_CYCLES = {
+    # Archive extraction slices retain a narrow deferred callback cycle: the
+    # route facade owns SQLite/effects while traversal/container helpers call
+    # back through its injected seams.  The callback edges are explicit and
+    # do not permit unrelated eager imports.
+    frozenset({
+        "neocortex.capabilities.formats.archive.container_execution",
+        "neocortex.capabilities.formats.archive.route",
+        "neocortex.capabilities.formats.archive.runner",
+        "neocortex.capabilities.formats.archive.traversal",
+    }): {
+        (
+            "neocortex.capabilities.formats.archive.container_execution",
+            "neocortex.capabilities.formats.archive.route",
+            "deferred",
+            ("_route",),
+        ),
+        (
+            "neocortex.capabilities.formats.archive.container_execution",
+            "neocortex.capabilities.formats.archive.traversal",
+            "eager",
+            (),
+        ),
+        (
+            "neocortex.capabilities.formats.archive.route",
+            "neocortex.capabilities.formats.archive.container_execution",
+            "eager",
+            (),
+        ),
+        (
+            "neocortex.capabilities.formats.archive.route",
+            "neocortex.capabilities.formats.archive.runner",
+            "deferred",
+            ("_run_locked",),
+        ),
+        (
+            "neocortex.capabilities.formats.archive.route",
+            "neocortex.capabilities.formats.archive.traversal",
+            "eager",
+            (),
+        ),
+        (
+            "neocortex.capabilities.formats.archive.runner",
+            "neocortex.capabilities.formats.archive.container_execution",
+            "eager",
+            (),
+        ),
+        (
+            "neocortex.capabilities.formats.archive.runner",
+            "neocortex.capabilities.formats.archive.route",
+            "deferred",
+            ("_route",),
+        ),
+        (
+            "neocortex.capabilities.formats.archive.runner",
+            "neocortex.capabilities.formats.archive.traversal",
+            "eager",
+            (),
+        ),
+        (
+            "neocortex.capabilities.formats.archive.traversal",
+            "neocortex.capabilities.formats.archive.route",
+            "deferred",
+            ("_route",),
+        ),
+    },
     # Materialization delegates to its durable registry and no-follow primitives; rebuild does not re-enter materialization.
     frozenset({'neocortex.capabilities.formats.archive.materialization', 'neocortex.capabilities.formats.archive.rebuild'}): {
         ('neocortex.capabilities.formats.archive.materialization', 'neocortex.capabilities.formats.archive.rebuild', 'deferred', ('_apply_manifest',)),

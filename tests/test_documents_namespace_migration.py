@@ -13,9 +13,10 @@ MODULES = tuple(sorted(path.stem for path in DOCUMENTS_ROOT.glob("document*.py")
 
 
 def test_document_modules_are_owned_by_the_canonical_tree() -> None:
-    assert len(MODULES) == 24
+    assert len(MODULES) == 25
     assert {
         "document_catalog_models",
+        "document_catalog_query",
         "document_catalog_replay",
         "document_catalog_text",
         "document_catalog_workers",

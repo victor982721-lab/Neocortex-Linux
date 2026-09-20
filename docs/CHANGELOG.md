@@ -4,6 +4,16 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-20 — Identify paralelo y reducción estructural
+
+- Identify consulta la cache de tipos por lotes acotados, observa misses en
+  workers bounded/adaptativos sin abrir SQLite y agrupa el progreso; la
+  identidad completa y la detección de stale permanecen obligatorias.
+- Se redujeron responsabilidades mezcladas en acciones, orquestación,
+  persistencia de cache, Archive, recursos, CLI Semantic, Scratch,
+  ArtifactRegistry, KIO y catálogo mediante módulos cohesivos, conservando
+  owners, locks, receipts, rollback y APIs públicas.
+
 ## 2026-09-20 — Simplificación de curación automática
 
 - Se retiraron ReviewTask, colas/eventos de revisión, value-review y la

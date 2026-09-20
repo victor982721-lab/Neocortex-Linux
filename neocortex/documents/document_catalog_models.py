@@ -20,6 +20,32 @@ SourceKind = Literal[
 ]
 SourceCoverage = Literal["complete", "partial", "blocked"]
 
+
+@dataclass(frozen=True, slots=True)
+class CatalogDocumentView:
+    """Bounded read-only projection returned by the published catalog."""
+
+    source_kind: str
+    path: str
+    primary_kind: str
+    primary_subtype: str | None
+    primary_authority: str | None
+    primary_organization: str | None
+    primary_client: str | None
+    primary_project: str | None
+    primary_workstream: str | None
+    standard_identifiers: tuple[str, ...]
+    clients: tuple[str, ...]
+    projects: tuple[str, ...]
+    workstreams: tuple[str, ...]
+    topics: tuple[str, ...]
+    equipment: tuple[str, ...]
+    activities: tuple[str, ...]
+    confidence: float
+    uncertainty: str
+    catalog_status: str
+
+
 @dataclass(frozen=True, slots=True)
 class SourceDocument:
     source_kind: SourceKind

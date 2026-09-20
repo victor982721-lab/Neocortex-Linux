@@ -292,6 +292,16 @@ destino existente o un drift conserva el original. Redlist y rename cruzan sus
 fronteras físicas únicamente con root, identidad, no-reemplazo, ledger y
 receipt/recovery válidos.
 
+Identify procesa el inventario por páginas: consulta `content_type_cache` en
+lotes acotados, envía sólo misses a observadores bounded y conserva SQLite,
+Normalize, política y publicación en el owner principal. La capacidad de los
+workers se deriva de los recursos vivos (con una ventana en vuelo acotada) y
+se vuelve a muestrear sin crear otro coordinador; los workers sólo observan
+bytes/metadatos y devuelven DTOs identity-bound. La clave de cache incluye
+volumen, identidad física, tamaño, mtime, birthtime y `DETECTOR_VERSION`, por
+lo que un cambio o stale nunca reutiliza evidencia. El progreso se agrupa
+por tiempo/cantidad y la publicación conserva el orden del inventario.
+
 La identidad física se valida con `FileIdentity` y el codec explícito del owner;
 un recurso virtual conserva su `ResourceRef` y ancla, sin reinterpretarlo como
 inode. Catálogo v8 añade bindings y ámbito mediante migración aditiva con copia
@@ -894,6 +904,10 @@ El registro de un hijo verificado alimenta también al observador cuando Linux
 no expone los listados de hijos. Cada muestra vuelve a comprobar identidad y
 cgroup; el crédito exige memoria privada legible y una concesión todavía viva.
 Esto no convierte una observación incompleta del árbol o de CPU en completa.
+Los módulos de orquestación, acciones, persistencia, Archive, recursos, CLI
+Semantic, Scratch y Artifact Registry son fachadas/coordinadores delgados sobre
+owners cohesivos; la separación no crea conexiones SQLite adicionales ni mueve
+las fronteras de seguridad.
 Las renovaciones conservan su contexto de apertura y cierre al pasar entre
 preparador, trabajador y consumidor. Cada ruta mantiene sus reservas hasta
 cerrar, dentro de un contexto propio que las demás rutas no heredan.

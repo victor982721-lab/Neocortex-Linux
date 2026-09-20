@@ -40,7 +40,13 @@ from neocortex.persistence.sqlite_immutable import (
 )
 
 from . import document_taxonomy as _taxonomy_module
-from .document_catalog_models import SourceCoverage, SourceDocument, SourceKind
+from .document_catalog_models import (
+    CatalogDocumentView,
+    SourceCoverage,
+    SourceDocument,
+    SourceKind,
+)
+from .document_catalog_query import read_catalog_documents as _read_catalog_documents
 from .document_catalog_text import (
     _load_leading_text,
     _read_compressed_text_prefix as _read_compressed_text_prefix,
@@ -421,29 +427,6 @@ def _root_identity_json(identity: tuple[int, int, int] | None) -> str | None:
         sort_keys=True,
         separators=(",", ":"),
     )
-
-
-@dataclass(frozen=True, slots=True)
-class CatalogDocumentView:
-    source_kind: str
-    path: str
-    primary_kind: str
-    primary_subtype: str | None
-    primary_authority: str | None
-    primary_organization: str | None
-    primary_client: str | None
-    primary_project: str | None
-    primary_workstream: str | None
-    standard_identifiers: tuple[str, ...]
-    clients: tuple[str, ...]
-    projects: tuple[str, ...]
-    workstreams: tuple[str, ...]
-    topics: tuple[str, ...]
-    equipment: tuple[str, ...]
-    activities: tuple[str, ...]
-    confidence: float
-    uncertainty: str
-    catalog_status: str
 
 
 _DOCUMENT_CATALOG_SQLITE_POLICY = SQLiteConnectionPolicy(
@@ -3624,111 +3607,6 @@ def _store_catalog_error(
 # region [05] Bounded read-only catalog inspection
 
 
-def _catalog_query_predicates(
-    columns: set[str],
-    *,
-    primary_kind: str | None,
-    authority: str | None,
-    organization: str | None,
-    client: str | None,
-    project: str | None,
-    workstream: str | None,
-) -> tuple[list[str], list[object]] | None:
-    clauses = ["active=1"]
-    parameters: list[object] = []
-    for column, value in (
-        ("primary_kind", primary_kind),
-        ("primary_authority", authority),
-        ("primary_organization", organization),
-    ):
-        if value is not None:
-            clauses.append(f"{column}=? COLLATE NOCASE")
-            parameters.append(value)
-    for column, value in (
-        ("primary_client", client),
-        ("primary_project", project),
-        ("primary_workstream", workstream),
-    ):
-        if value is None:
-            continue
-        if column not in columns:
-            return None
-        clauses.append(f"{column}=? COLLATE NOCASE")
-        parameters.append(value)
-    return clauses, parameters
-
-
-def _catalog_projection_column(
-    columns: set[str],
-    column: str,
-    fallback: str,
-) -> str:
-    return column if column in columns else f"{fallback} AS {column}"
-
-
-def _catalog_document_rows(
-    connection: sqlite3.Connection,
-    columns: set[str],
-    clauses: list[str],
-    parameters: list[object],
-    limit: int,
-) -> list[sqlite3.Row]:
-    subtype_column = _catalog_projection_column(columns, "primary_subtype", "NULL")
-    equipment_column = _catalog_projection_column(columns, "equipment_json", "'[]'")
-    activities_column = _catalog_projection_column(columns, "activities_json", "'[]'")
-    client_column = _catalog_projection_column(columns, "primary_client", "NULL")
-    project_column = _catalog_projection_column(columns, "primary_project", "NULL")
-    workstream_column = _catalog_projection_column(columns, "primary_workstream", "NULL")
-    clients_column = _catalog_projection_column(columns, "clients_json", "'[]'")
-    projects_column = _catalog_projection_column(columns, "projects_json", "'[]'")
-    workstreams_column = _catalog_projection_column(columns, "workstreams_json", "'[]'")
-    return connection.execute(
-        f"""SELECT source_kind,path,primary_kind,{subtype_column},
-        primary_authority,primary_organization,{client_column},{project_column},
-        {workstream_column},standard_references_json,{clients_column},
-        {projects_column},{workstreams_column},
-        topics_json,{equipment_column},{activities_column},
-        confidence,uncertainty,catalog_status FROM documents
-        WHERE {" AND ".join(clauses)}
-        ORDER BY primary_kind,primary_client,primary_project,
-        primary_authority,primary_organization,path
-        LIMIT ?""",
-        (*parameters, limit),
-    ).fetchall()
-
-
-def _catalog_optional_text(row: sqlite3.Row, column: str) -> str | None:
-    value = row[column]
-    return None if value is None else str(value)
-
-
-def _catalog_document_view(row: sqlite3.Row) -> CatalogDocumentView:
-    return CatalogDocumentView(
-        source_kind=str(row["source_kind"]),
-        path=str(row["path"]),
-        primary_kind=str(row["primary_kind"]),
-        primary_subtype=_catalog_optional_text(row, "primary_subtype"),
-        primary_authority=_catalog_optional_text(row, "primary_authority"),
-        primary_organization=_catalog_optional_text(row, "primary_organization"),
-        primary_client=_catalog_optional_text(row, "primary_client"),
-        primary_project=_catalog_optional_text(row, "primary_project"),
-        primary_workstream=_catalog_optional_text(row, "primary_workstream"),
-        standard_identifiers=_json_labels(
-            row["standard_references_json"],
-            "identifier",
-        ),
-        clients=_json_labels(row["clients_json"], "label"),
-        projects=_json_labels(row["projects_json"], "label"),
-        workstreams=_json_labels(row["workstreams_json"], "label"),
-        topics=_json_labels(row["topics_json"], "label"),
-        equipment=_json_labels(row["equipment_json"], "label"),
-        activities=_json_labels(row["activities_json"], "label"),
-        confidence=float(row["confidence"]),
-        uncertainty=str(row["uncertainty"]),
-        catalog_status=str(row["catalog_status"]),
-    )
-
-
 def list_catalog_documents(
     catalog_path: Path,
     *,
@@ -3740,43 +3618,18 @@ def list_catalog_documents(
     project: str | None = None,
     workstream: str | None = None,
 ) -> tuple[CatalogDocumentView, ...]:
-    if limit < 1 or limit > 10_000:
-        raise ValueError("limit must be between 1 and 10000")
-    with document_catalog_database(catalog_path, readonly=True) as connection:
-        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")}
-        predicates = _catalog_query_predicates(
-            columns,
-            primary_kind=primary_kind,
-            authority=authority,
-            organization=organization,
-            client=client,
-            project=project,
-            workstream=workstream,
-        )
-        if predicates is None:
-            return ()
-        clauses, parameters = predicates
-        rows = _catalog_document_rows(
-            connection,
-            columns,
-            clauses,
-            parameters,
-            limit,
-        )
-        return tuple(_catalog_document_view(row) for row in rows)
+    """Read a bounded published projection without changing catalog state."""
 
-
-def _json_labels(value: object, key: str) -> tuple[str, ...]:
-    try:
-        decoded = json.loads(str(value))
-    except (TypeError, ValueError):
-        return ()
-    if not isinstance(decoded, list):
-        return ()
-    return tuple(
-        str(item[key])
-        for item in decoded
-        if isinstance(item, dict) and isinstance(item.get(key), str)
+    return _read_catalog_documents(
+        catalog_path,
+        limit=limit,
+        primary_kind=primary_kind,
+        authority=authority,
+        organization=organization,
+        client=client,
+        project=project,
+        workstream=workstream,
+        open_catalog=document_catalog_database,
     )
 
 
