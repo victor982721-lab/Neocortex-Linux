@@ -32,6 +32,30 @@ class _Trash:
         return TrashDisposition("applied", evidence="fixture-trash")
 
 
+class _RollbackRaisingPublisher:
+    def __init__(self) -> None:
+        self._delegate = intake_module.FilesystemPublishHook()
+
+    def publish(self, staged_path: Path, destination: Path) -> object:
+        return self._delegate.publish(staged_path, destination)
+
+    def rollback(self, receipt: object) -> bool:
+        del receipt
+        raise RuntimeError("fixture publication rollback failed")
+
+
+class _FailingTrash:
+    def __call__(self, source: Path, identity: SourceIdentity) -> TrashDisposition:
+        del source, identity
+        raise RuntimeError("fixture Trash failure")
+
+
+class _BlockedTrash:
+    def __call__(self, source: Path, identity: SourceIdentity) -> TrashDisposition:
+        del source, identity
+        return TrashDisposition("blocked", detail="fixture Trash blocked")
+
+
 def _zip(path: Path, entries: list[tuple[str, bytes]]) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
         for name, payload in entries:
@@ -79,6 +103,80 @@ def test_apply_expands_nested_generic_zip_with_safe_modes(tmp_path: Path) -> Non
     assert stat.S_IMODE((destination / "root.txt").stat().st_mode) == 0o600
     assert not source.exists()
     assert len(trash.calls) == 1
+
+
+def test_apply_materializes_implicit_nested_parent_directories(tmp_path: Path) -> None:
+    source = tmp_path / "implicit-directories.zip"
+    _zip(source, [("one/two/three.txt", b"deep payload")])
+    original = source.read_bytes()
+    with zipfile.ZipFile(source) as archive:
+        assert [info.filename for info in archive.infolist()] == ["one/two/three.txt"]
+
+    destination = tmp_path / "implicit-directories"
+    trash = _Trash(tmp_path / "trash")
+
+    result = intake_zip(source, destination, apply=True, trash=trash)
+
+    assert result.status == "applied"
+    output = destination / "one" / "two" / "three.txt"
+    assert output.read_bytes() == b"deep payload"
+    assert stat.S_IMODE((destination / "one").stat().st_mode) == 0o700
+    assert stat.S_IMODE((destination / "one" / "two").stat().st_mode) == 0o700
+    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    assert not source.exists()
+    assert (trash.root / source.name).read_bytes() == original
+    assert len(trash.calls) == 1
+
+
+def test_post_frontier_scratch_completion_failure_preserves_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "completion-failure.zip"
+    _zip(source, [("data.txt", b"published")])
+    original = source.read_bytes()
+
+    def fail_complete(workspace: object) -> None:
+        del workspace
+        raise RuntimeError("fixture scratch completion failed")
+
+    monkeypatch.setattr(intake_module._FilesystemStageLease, "complete", fail_complete)
+    destination = tmp_path / "completion-failure"
+    trash = _Trash(tmp_path / "trash")
+
+    result = intake_zip(source, destination, apply=True, trash=trash)
+
+    assert result.status == "recovery_required"
+    assert result.reason == "scratch_completion_failed"
+    assert result.published is True
+    assert result.trashed is True
+    assert (destination / "data.txt").read_bytes() == b"published"
+    assert not source.exists()
+    assert (trash.root / source.name).read_bytes() == original
+
+
+@pytest.mark.parametrize("trash", [_FailingTrash(), _BlockedTrash()])
+def test_rollback_exception_after_publication_is_recovery_required(
+    tmp_path: Path, trash: object
+) -> None:
+    source = tmp_path / "rollback-failure.zip"
+    _zip(source, [("data.txt", b"published")])
+    destination = tmp_path / "rollback-failure"
+
+    result = intake_zip(
+        source,
+        destination,
+        apply=True,
+        trash=trash,  # type: ignore[arg-type]
+        publisher=_RollbackRaisingPublisher(),
+    )
+
+    assert result.status == "recovery_required"
+    assert result.reason == "trash_failed_publication_rollback_failed"
+    assert result.published is True
+    assert result.trashed is False
+    assert result.detail and "rollback failed" in result.detail
+    assert source.exists()
+    assert (destination / "data.txt").read_bytes() == b"published"
 
 
 def test_global_size_gate_happens_before_zip_open(tmp_path: Path, monkeypatch) -> None:

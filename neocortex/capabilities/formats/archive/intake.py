@@ -1332,6 +1332,15 @@ def _create_directory(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+def _create_directory_chain(root: Path, components: Iterable[str]) -> None:
+    """Create implicit member-directory prefixes without following links."""
+
+    current = root
+    for component in components:
+        current /= component
+        _create_directory(current)
+
+
 def _open_output(path: Path) -> int:
     try:
         return os.open(
@@ -1464,11 +1473,12 @@ def _extract_zip_tree(
         with zipfile.ZipFile(archive_path, "r") as archive:
             for member in effective_preflight.members:
                 deadline.check()
-                target = destination.joinpath(*member.relative_name.split("/"))
+                components = tuple(member.relative_name.split("/"))
+                target = destination.joinpath(*components)
                 if member.is_directory:
-                    _create_directory(target)
+                    _create_directory_chain(destination, components)
                     continue
-                _create_directory(target.parent)
+                _create_directory_chain(destination, components[:-1])
                 _stream_member(
                     archive,
                     member,
@@ -1605,6 +1615,28 @@ def _stage_factory(value: StageFactory | str | os.PathLike[str] | None) -> Stage
 
 def _publisher(value: PublishHook | None) -> PublishHook:
     return FilesystemPublishHook() if value is None else value
+
+
+def _rollback_after_publication(
+    publisher: PublishHook,
+    receipt: PublishReceipt,
+    *,
+    reason: str,
+    detail: str | None = None,
+) -> None:
+    """Convert every rollback failure after publication into recovery state."""
+
+    try:
+        rollback_ok = publisher.rollback(receipt)
+    except BaseException as exc:
+        rollback_detail = f"{detail}; " if detail else ""
+        raise ZipIntakeError(
+            "recovery_required",
+            reason,
+            f"{rollback_detail}publication rollback failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    if not rollback_ok:
+        raise ZipIntakeError("recovery_required", reason, detail)
 
 
 def _first_not_none(*values: object | None) -> object | None:
@@ -1793,9 +1825,11 @@ def run_zip_intake(
         if not isinstance(publish_receipt, PublishReceipt):
             raise ZipIntakeError("recovery_required", "publish_receipt_invalid")
         if not identity.matches(path):
-            rollback_ok = _publisher(publisher).rollback(publish_receipt)
-            if not rollback_ok:
-                raise ZipIntakeError("recovery_required", "source_changed_after_publish")
+            _rollback_after_publication(
+                _publisher(publisher),
+                publish_receipt,
+                reason="source_changed_after_publish",
+            )
             raise ZipIntakeError("source_changed", "source_changed_after_publish")
         trash_callable = getattr(trash, "trash", None)
         if not callable(trash_callable):
@@ -1810,22 +1844,24 @@ def run_zip_intake(
             # A KIO adapter may fail before or after its own physical
             # frontier.  Roll back only through the publisher seam; never
             # unlink the source or published tree here.
-            rollback_ok = _publisher(publisher).rollback(publish_receipt)
-            if not rollback_ok:
-                raise ZipIntakeError(
-                    "recovery_required",
-                    "trash_failed_publication_rollback_failed",
-                    f"{type(exc).__name__}: {exc}",
-                ) from exc
+            _rollback_after_publication(
+                _publisher(publisher),
+                publish_receipt,
+                reason="trash_failed_publication_rollback_failed",
+                detail=f"{type(exc).__name__}: {exc}",
+            )
             raise ZipIntakeError(
                 "blocked",
                 "trash_hook_failed",
                 f"{type(exc).__name__}: {exc}",
             ) from exc
         if trash_result.status != "applied":
-            rollback_ok = _publisher(publisher).rollback(publish_receipt)
-            if not rollback_ok:
-                raise ZipIntakeError("recovery_required", "trash_failed_publication_rollback_failed", trash_result.detail)
+            _rollback_after_publication(
+                _publisher(publisher),
+                publish_receipt,
+                reason="trash_failed_publication_rollback_failed",
+                detail=trash_result.detail,
+            )
             trash_status: IntakeStatus = (
                 "recovery_required"
                 if trash_result.status == "recovery_required"
@@ -1835,7 +1871,26 @@ def run_zip_intake(
         if os.path.lexists(path):
             raise ZipIntakeError("recovery_required", "trash_claim_unverified")
         _COMPLETED_DESTINATIONS[os.fspath(destination_path)] = identity
-        lease.complete()
+        try:
+            lease.complete()
+        except BaseException as exc:
+            reporter.finish("intake", metrics=(ProgressMetric("blocked", 1),))
+            return ZipIntakeOutcome(
+                "recovery_required",
+                source_text,
+                identity,
+                classification,
+                apply=True,
+                destination=os.fspath(destination_path),
+                members=budget.members,
+                uncompressed_bytes=budget.total_uncompressed_bytes,
+                published=True,
+                trashed=True,
+                successor_paths=(os.fspath(destination_path),),
+                reason="scratch_completion_failed",
+                detail=f"{type(exc).__name__}: {exc}",
+                source_sha256=source_digest,
+            )
         reporter.finish("intake", metrics=(ProgressMetric("applied", 1),))
         return ZipIntakeOutcome("applied", source_text, identity, classification, apply=True, destination=os.fspath(destination_path), members=budget.members, uncompressed_bytes=budget.total_uncompressed_bytes, published=True, trashed=True, successor_paths=(os.fspath(destination_path),), reason="generic_zip_published", detail=trash_result.evidence, source_sha256=source_digest)
     except ZipIntakeError as exc:

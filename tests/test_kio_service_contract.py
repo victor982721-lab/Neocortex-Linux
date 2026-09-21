@@ -250,6 +250,43 @@ def test_service_injected_runner_preserves_environment_and_no_claims(tmp_path: P
     assert not list(fixture.root.glob(".neocortex-kio-claim-*"))
 
 
+def test_batch_default_verifier_preserves_verified_siblings_when_one_evidence_missing(
+    tmp_path: Path,
+) -> None:
+    fixture = TrashFixture(tmp_path)
+    items = (fixture.item("verified"), fixture.item("missing-evidence"))
+
+    def partial_runner(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        fixture.calls.append((list(command), kwargs))
+        for position, raw in enumerate(command[command.index("move") + 1 : -1]):
+            source = Path(raw)
+            target = fixture.trash / "files" / source.name
+            os.rename(source, target)
+            if position == 0:
+                (fixture.trash / "info" / (target.name + ".trashinfo")).write_text(
+                    f"[Trash Info]\nPath={source}\n",
+                    encoding="utf-8",
+                )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = fixture.service(runner=partial_runner).move_many(items)
+
+    assert [outcome.status for outcome in result] == [
+        kio.KioTrashStatus.APPLIED,
+        kio.KioTrashStatus.RECOVERY_REQUIRED,
+    ]
+    assert result[0].receipt is not None
+    assert result[1].reason == "kio_verification_failed"
+    assert not Path(items[0].source).exists()
+    assert not Path(items[1].source).exists()
+    assert (fixture.trash / "files" / "verified").exists()
+    assert (fixture.trash / "files" / "missing-evidence").exists()
+    assert (fixture.trash / "info" / "verified.trashinfo").exists()
+    assert not (fixture.trash / "info" / "missing-evidence.trashinfo").exists()
+
+
 def test_batch_verifier_finds_new_item_after_large_existing_trash_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

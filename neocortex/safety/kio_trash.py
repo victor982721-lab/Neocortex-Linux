@@ -2176,12 +2176,12 @@ def _default_kio_verifier_batch(
     for source_key, work in targets.items():
         candidates = matches.get(source_key, [])
         if len(candidates) != 1:
-            detail = (
-                "no unique source-bound KIO Trash item was observed"
-                if not candidates
-                else "multiple source-bound KIO Trash items were observed"
-            )
-            raise RuntimeError(detail)
+            # Verification is source-local.  One item with missing or
+            # colliding Trash evidence must remain recovery_required, but it
+            # must not discard receipts already proven for its siblings in the
+            # same KIO process.  The caller treats an omitted key as one
+            # per-item verification failure.
+            continue
         root, trash_path, info_path = candidates[0]
         expected = work.item.expected
         verifications[source_key] = KioTrashVerification(
