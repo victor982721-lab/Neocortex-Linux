@@ -48,6 +48,19 @@ def test_terminal_completion_rechecks_expired_budget_atomically(
         ).fetchone() == ("running", None)
 
 
+def test_cursorless_completion_accepts_bounded_successor_full_inventory(tmp_path: Path) -> None:
+    """ZIP Intake may publish a second full scan before terminal completion."""
+
+    database = tmp_path / "framework.sqlite3"
+    with FrameworkState(database) as state:
+        run_id = state.begin_initial_run(tmp_path, None)
+        state.publish_initial_routing_snapshot(run_id, 2, 3, 2, "full", 0)
+        assert state.complete_initial_run(run_id, 2, None, 3, 2, "full") is True
+        assert state._connection.execute(
+            "SELECT status FROM initial_runs WHERE run_id=?", (run_id,)
+        ).fetchone() == ("completed",)
+
+
 def test_stage_checkpoint_and_stage_budget_are_idempotent(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()

@@ -459,10 +459,10 @@ class FrameworkStateRoutesMixin(_FrameworkStateOwner):
             inventory_mode,
             0,
         )
-        if cursor is None and (
-            inventory_mode != "full" or reconciliation_records != 0 or inventory_attempts != 1
-        ):
-            raise ValueError("portable inventory must publish one unreconciled full scan")
+        if cursor is None and inventory_mode != "full":
+            raise ValueError("portable inventory must publish a full scan")
+        if cursor is None and (reconciliation_records < 0 or inventory_attempts < 1):
+            raise ValueError("portable inventory must publish a positive full-scan history")
         with self._connection:
             self._check_run_completion_budget_locked(run_id)
             self._check_organization_completion_locked(run_id)
