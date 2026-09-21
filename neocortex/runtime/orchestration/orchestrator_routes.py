@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, cast
 
 from neocortex.persistence.framework_route_state import FrameworkRouteState
+from neocortex.runtime.control.cancellation import CancellationRequested
 from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceSummary,
@@ -328,6 +329,19 @@ class RouteExecutionMixin(_FrameworkOrchestratorOwner):
                                 persisted,
                             )
                             results[route_name] = summary
+                            # A producer may complete while its optional
+                            # technical-catalog consumer abstains.  Preserve
+                            # the producer result/route run, but carry the
+                            # catalog phase failure into the run-scoped
+                            # partial outcome instead of falsely finalizing
+                            # the whole run as complete.
+                            if getattr(summary, "catalog_complete", None) is False:
+                                catalog_errors = getattr(summary, "catalog_errors", 0)
+                                self._unavailable_routes[f"{route_name}:catalog"] = (
+                                    "catalog_incomplete"
+                                    if type(catalog_errors) is not int or catalog_errors <= 0
+                                    else f"catalog_incomplete: errors={catalog_errors}"
+                                )
                             self._finish_route_progress(route_name, "completed")
                         except BaseException as exc:
                             # KeyboardInterrupt is the run-wide cancellation
@@ -335,7 +349,9 @@ class RouteExecutionMixin(_FrameworkOrchestratorOwner):
                             # BaseException subclasses still belong to this route:
                             # persist the failure before aggregating it, otherwise
                             # the durable route run remains ``running``.
-                            if isinstance(exc, KeyboardInterrupt):
+                            if isinstance(exc, (KeyboardInterrupt, CancellationRequested)):
+                                if isinstance(exc, CancellationRequested):
+                                    self.request_cancellation()
                                 raise
                             failures[route_name] = exc
                             state.fail_route_run(run_id, route_name, exc)
@@ -391,12 +407,13 @@ class RouteExecutionMixin(_FrameworkOrchestratorOwner):
             run_id,
             coordinator,
         )
-        self._unavailable_routes = {
+        capability_unavailable = {
             name: f"{type(exc).__name__}: {exc}"
             for name, exc in failures.items()
             if getattr(type(exc), "capability_unavailable", False) is True
         }
-        if any(name not in self._unavailable_routes for name in failures):
+        self._unavailable_routes.update(capability_unavailable)
+        if any(name not in capability_unavailable for name in failures):
             raise RouteExecutionError(failures)
         if self._unavailable_routes:
             publish_stage = getattr(state, "publish_run_stage", None)
@@ -405,7 +422,7 @@ class RouteExecutionMixin(_FrameworkOrchestratorOwner):
                     run_id,
                     "route-capabilities",
                     "partial",
-                    details={"unavailable": self._unavailable_routes},
+                    details={"unavailable": dict(self._unavailable_routes)},
                     idempotency_key="route-capabilities:partial",
                 )
         return results, resource_summary

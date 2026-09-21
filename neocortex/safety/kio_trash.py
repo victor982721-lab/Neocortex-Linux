@@ -26,6 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
+from urllib.parse import quote_from_bytes, unquote_to_bytes
 
 from neocortex.deduplication import (
     FileChangedError,
@@ -154,7 +155,34 @@ def _curation_trash_paths(
     return root, trash_path, info_path
 
 
-def _validate_trash_info(path: Path, source_path: str) -> None:
+def _resolve_trash_info_path(
+    value: str,
+    *,
+    base_directory: Path | None = None,
+) -> str:
+    """Decode a spec-compliant Path value and resolve an allowed relative path."""
+
+    decoded = os.fsdecode(unquote_to_bytes(value))
+    if os.path.isabs(decoded) or base_directory is None:
+        return os.path.normpath(decoded)
+    parts = Path(decoded).parts
+    if ".." in parts:
+        return ""
+    return os.path.normpath(os.fspath(base_directory / decoded))
+
+
+def _encode_trash_info_path(value: str) -> str:
+    """Encode a filesystem path as a FreeDesktop Trash Path value."""
+
+    return quote_from_bytes(os.fsencode(value), safe=b"/-_.!~*'()")
+
+
+def _validate_trash_info(
+    path: Path,
+    source_path: str,
+    *,
+    base_directory: Path | None = None,
+) -> None:
     """Read a bounded, non-link .trashinfo and require its exact source."""
 
     # O_NONBLOCK prevents a concurrently substituted FIFO from blocking before
@@ -179,7 +207,11 @@ def _validate_trash_info(path: Path, source_path: str) -> None:
         for line in lines
         if line.strip().casefold().startswith("path=") and "=" in line
     ]
-    if len(paths) != 1 or paths[0] != source_path:
+    if (
+        len(paths) != 1
+        or _resolve_trash_info_path(paths[0], base_directory=base_directory)
+        != os.path.normpath(source_path)
+    ):
         raise ValueError("trash info source path differs from the grant effect")
 
 
@@ -392,7 +424,11 @@ def _verify_curation_trash_evidence(
         raise ValueError("trash destination no longer identifies the original source")
     if not _binding_matches_snapshot(observed, source_digest):
         raise ValueError("trash destination digest changed")
-    _validate_trash_info(info_path, expected.path)
+    _validate_trash_info(
+        info_path,
+        expected.path,
+        base_directory=root.parent,
+    )
     if os.path.lexists(expected.path):
         raise ValueError("trash source is present")
     return observed
@@ -1028,7 +1064,7 @@ def _candidate_trash_roots(
 
 
 def _trash_info_path_value(raw: bytes) -> str | None:
-    """Return one exact Path= value from a bounded Trash metadata file."""
+    """Return one raw Path= value from a bounded Trash metadata file."""
 
     try:
         text = raw.decode("utf-8")
@@ -1110,7 +1146,10 @@ def _default_kio_verifier(
                         )
                     except (OSError, ValueError):
                         continue
-                    if _trash_info_path_value(raw) != os.fspath(source):
+                    if _resolve_trash_info_path(
+                        _trash_info_path_value(raw) or "",
+                        base_directory=root.parent,
+                    ) != os.fspath(source):
                         continue
                     trash_name = entry.name[: -len(".trashinfo")]
                     trash_path = files_root / trash_name
@@ -1162,7 +1201,13 @@ def _default_kio_verifier(
     )
 
 
-def _rewrite_trash_info_path(path: Path, *, old_source: Path, new_source: Path) -> None:
+def _rewrite_trash_info_path(
+    path: Path,
+    *,
+    old_source: Path,
+    new_source: Path,
+    base_directory: Path | None = None,
+) -> None:
     """Update only ``Path=`` in-place, preserving every other Trash field."""
 
     flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
@@ -1192,11 +1237,26 @@ def _rewrite_trash_info_path(path: Path, *, old_source: Path, new_source: Path) 
                 if prefix.casefold() != "path":
                     output.append(line)
                     continue
-                if value != old_value:
+                if _resolve_trash_info_path(
+                    value,
+                    base_directory=base_directory,
+                ) != os.path.normpath(old_value):
                     raise ValueError("trash info source path differs from the private claim")
                 # Keep the standard KDE spelling and the original newline;
                 # all non-Path fields remain byte-for-byte intact.
-                output.append(f"Path={new_value}{newline}")
+                decoded_value = os.fsdecode(unquote_to_bytes(value))
+                relative = not os.path.isabs(decoded_value)
+                replacement_value = (
+                    os.path.relpath(new_value, base_directory)
+                    if relative and base_directory is not None
+                    else new_value
+                )
+                replacement = (
+                    _encode_trash_info_path(replacement_value)
+                    if decoded_value != value
+                    else replacement_value
+                )
+                output.append(f"Path={replacement}{newline}")
                 replaced += 1
             else:
                 output.append(line)
@@ -1442,7 +1502,10 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
     info_value = _trash_info_path_value(
         _read_regular_bounded(info_path, limit=MAX_TRASH_INFO_BYTES)
     )
-    if info_value != str(source):
+    if _resolve_trash_info_path(
+        info_value or "",
+        base_directory=trash_root.parent,
+    ) != os.path.normpath(str(source)):
         raise KioTrashUnavailable(
             "kio_restore_origin_mismatch", "Trash metadata does not name the original source"
         )
@@ -2028,13 +2091,20 @@ def _batch_curation_evidence(
         path_value = _trash_info_path_value(
             _read_regular_bounded(info_path, limit=MAX_TRASH_INFO_BYTES)
         )
-        if path_value == os.fspath(work.claim.claim_path):
+        if _resolve_trash_info_path(
+            path_value or "",
+            base_directory=_root.parent,
+        ) == os.path.normpath(os.fspath(work.claim.claim_path)):
             _rewrite_trash_info_path(
                 info_path,
                 old_source=work.claim.claim_path,
                 new_source=work.source,
+                base_directory=_root.parent,
             )
-        elif path_value != os.fspath(work.source):
+        elif _resolve_trash_info_path(
+            path_value or "",
+            base_directory=_root.parent,
+        ) != os.path.normpath(os.fspath(work.source)):
             raise ValueError("KIO batch Trash metadata names a different source")
     _verify_curation_trash_evidence(evidence, work.item.expected, work.digest)
     _fsync_directory(info_path.parent)
@@ -2108,10 +2178,14 @@ def _default_kio_verifier_batch(
                 or info_metadata.st_nlink != 1
             ):
                 return
-            source_key = _trash_info_path_value(
+            source_value = _trash_info_path_value(
                 _read_regular_bounded(info_path, limit=MAX_TRASH_INFO_BYTES)
             )
-            if source_key is None or source_key not in targets:
+            source_key = _resolve_trash_info_path(
+                source_value or "",
+                base_directory=root.parent,
+            )
+            if not source_key or source_key not in targets:
                 return
             work = targets[source_key]
             trash_path = files_root / trash_name

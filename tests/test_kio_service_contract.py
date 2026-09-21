@@ -13,6 +13,7 @@ import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import quote_from_bytes
 
 import pytest
 
@@ -195,6 +196,54 @@ def test_service_native_context_bus_and_receipt_roundtrip(
     assert not Path(item.source).exists()
     assert len(fixture.calls) == 1
     assert info.stat().st_ino == stat_before.st_ino
+
+
+def test_native_default_verifier_accepts_url_encoded_collision_trashinfo_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = TrashFixture(tmp_path)
+    item = fixture.item("manifest é space.zip")
+    stale = fixture.trash / "files" / item.source.name
+    stale.write_bytes(b"stale-trash-item")
+    (fixture.trash / "info" / (stale.name + ".trashinfo")).write_text(
+        "[Trash Info]\nPath=/unrelated\n",
+        encoding="utf-8",
+    )
+
+    def encoded_runner(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        fixture.calls.append((list(command), kwargs))
+        claim = Path(command[command.index("move") + 1])
+        target = fixture.trash / "files" / claim.name
+        if target.exists():
+            target = target.with_name(f"{target.stem} (1){target.suffix}")
+        os.rename(claim, target)
+        encoded = quote_from_bytes(os.fsencode(claim), safe=b"/-_.!~*'()")
+        (fixture.trash / "info" / (target.name + ".trashinfo")).write_text(
+            f"[Trash Info]\nPath={encoded}\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(kio.subprocess, "run", encoded_runner)
+    result = fixture.service().move(item.expected, source_digest=item.source_digest)
+
+    assert result.status is kio.KioTrashStatus.APPLIED
+    assert result.receipt is not None
+    evidence = json.loads(result.receipt.trash_evidence)
+    observed = kio.verify_trash_receipt_evidence(
+        evidence,
+        item.expected,
+        item.source_digest,
+    )
+    assert observed.path == evidence["trash_path"]
+    info = Path(evidence["info_path"]).read_text(encoding="utf-8")
+    expected_encoded = quote_from_bytes(
+        os.fsencode(item.source),
+        safe=b"/-_.!~*'()",
+    )
+    assert f"Path={expected_encoded}\n" in info
 
 
 def test_metadata_binding_roundtrip_does_not_read_content(

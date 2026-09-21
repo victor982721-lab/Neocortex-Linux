@@ -17,6 +17,7 @@ from neocortex.runtime.orchestration.route_selection import (
 from neocortex.runtime.orchestration.replay_metrics import (
     normalize_route_replay_metrics,
 )
+from neocortex.runtime.orchestration.dedup_owner import dedup_owner_lock
 
 if TYPE_CHECKING:
     from neocortex.progress import ProgressCallback
@@ -305,17 +306,27 @@ def _run_pdf(context: RouteExecutionContext) -> object:
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute
 
     config = effective_route_config(context.config, "pdf")
-    with DedupIndex(config.dedup_database) as dedup_index:
-        summary = PdfRoute(
-            pdf_route_config_from_framework(config),
-            dedup_index,
-            context.framework_state,
-            context.run_id,
-            context.scan_id,
-            progress=context.progress,
-            global_coordinator=context.resource_coordinator,
-            cancellation=context.cancellation,
-        ).run()
+    # PDF and image both own the shared inventory fingerprint cache.  Keep the
+    # complete DedupIndex lifetime under the per-path lease: locking only the
+    # constructor would let the second schema probe see the first owner's WAL
+    # and request a full temporary snapshot of a potentially multi-gigabyte
+    # inventory database.
+    cancellation_check = getattr(context.cancellation, "checkpoint", None)
+    with dedup_owner_lock(
+        config.dedup_database,
+        cancellation_check=cancellation_check if callable(cancellation_check) else None,
+    ):
+        with DedupIndex(config.dedup_database) as dedup_index:
+            summary = PdfRoute(
+                pdf_route_config_from_framework(config),
+                dedup_index,
+                context.framework_state,
+                context.run_id,
+                context.scan_id,
+                progress=context.progress,
+                global_coordinator=context.resource_coordinator,
+                cancellation=context.cancellation,
+            ).run()
     catalog = _update_document_catalog_after_route(context, "pdf")
     if catalog:
         summary = _summary_with_catalog(summary, catalog)
@@ -357,16 +368,21 @@ def _run_image(context: RouteExecutionContext) -> object:
             context.resource_coordinator, "image", cancellation=cancellation
         )
     )
-    with DedupIndex(config.dedup_database) as dedup_index:
-        summary = ImageRoute(
-            image_route_config_from_framework(config, root=context.root),
-            context.framework_state,
-            context.run_id,
-            progress=context.progress,
-            memory_gate=gate,
-            cancellation=cancellation,
-            dedup_index=dedup_index,
-        ).run()
+    cancellation_check = getattr(context.cancellation, "checkpoint", None)
+    with dedup_owner_lock(
+        config.dedup_database,
+        cancellation_check=cancellation_check if callable(cancellation_check) else None,
+    ):
+        with DedupIndex(config.dedup_database) as dedup_index:
+            summary = ImageRoute(
+                image_route_config_from_framework(config, root=context.root),
+                context.framework_state,
+                context.run_id,
+                progress=context.progress,
+                memory_gate=gate,
+                cancellation=cancellation,
+                dedup_index=dedup_index,
+            ).run()
     catalog = _update_document_catalog_after_route(context, "image")
     if catalog:
         summary = _summary_with_catalog(summary, catalog)
@@ -571,7 +587,11 @@ def _update_document_catalog_after_route(
 
     if not context.config.document_catalog_enabled:
         return ()
-    from neocortex.documents.document_catalog import update_document_catalog_source
+    from neocortex.documents.document_catalog import (
+        CatalogUpdateSummary,
+        update_document_catalog_source,
+    )
+    from neocortex.runtime.control.cancellation import CancellationRequested
 
     sources: tuple[tuple[Path, "SourceKind"], ...]
     if source_kind == "pdf":
@@ -603,51 +623,89 @@ def _update_document_catalog_after_route(
             phase_name,
             source_run_id=context.config.resume_run_id,
         )
-    try:
-        # The catalog owner serializes its write/CAS boundaries and updates
-        # from the same source. Independent sources can prepare concurrently.
-        summaries = tuple(
-            update_document_catalog_source(
-                context.config.document_catalog_database,
-                source_path,
-                document_kind,
-                framework_run_id=context.run_id,
-                taxonomy_path=context.config.document_taxonomy_path,
-                max_text_chars=context.config.document_classification_max_chars,
-                verify_source_paths=False,
-                progress=context.progress,
-                progress_operation=source_kind,
-                cancellation=context.cancellation,
-                source_root=context.root,
+    summaries: list[CatalogUpdateSummary] = []
+    failures: list[tuple["SourceKind", Exception]] = []
+    # The catalog owner serializes its write/CAS boundaries and updates from
+    # the same source.  Keep producer-route success independent from this
+    # optional consumer: a source-reader failure belongs to the catalog phase,
+    # while the route's durable extraction remains useful and replayable.
+    for source_path, document_kind in sources:
+        try:
+            summaries.append(
+                update_document_catalog_source(
+                    context.config.document_catalog_database,
+                    source_path,
+                    document_kind,
+                    framework_run_id=context.run_id,
+                    taxonomy_path=context.config.document_taxonomy_path,
+                    max_text_chars=context.config.document_classification_max_chars,
+                    verify_source_paths=False,
+                    progress=context.progress,
+                    progress_operation=source_kind,
+                    cancellation=context.cancellation,
+                    source_root=context.root,
+                )
             )
-            for source_path, document_kind in sources
-        )
-    except BaseException as exc:
+        except CancellationRequested as exc:
+            # Cancellation is a run-wide control signal, not a recoverable
+            # catalog partial.  Preserve the existing lifecycle contract.
+            if fail_phase is not None:
+                fail_phase(context.run_id, source_kind, phase_name, exc)
+            raise
+        except Exception as exc:
+            failures.append((document_kind, exc))
+            # No fabricated publication is exposed.  ``0`` is an explicit
+            # non-durable sentinel used only in this in-memory route summary;
+            # the failed catalog run/generation retains its real operational
+            # identity in the catalog owner itself.
+            run_id = getattr(exc, "catalog_run_id", 0)
+            summaries.append(
+                CatalogUpdateSummary(
+                    catalog_run_id=run_id if type(run_id) is int and run_id > 0 else 0,
+                    source_kind=document_kind,
+                    errors=1,
+                    publication_state="unavailable",
+                )
+            )
+
+    summary_payload = {"sources": [asdict(summary) for summary in summaries]}
+    if failures:
+        primary = failures[0][1]
         if fail_phase is not None:
-            fail_phase(context.run_id, source_kind, phase_name, exc)
-        raise
-    if complete_phase is not None:
-        complete_phase(
+            fail_phase(context.run_id, source_kind, phase_name, primary)
+        summary_payload["failures"] = [
+            {
+                "source_kind": document_kind,
+                "error_type": type(exc).__name__,
+                "detail": str(exc)[:8192],
+            }
+            for document_kind, exc in failures
+        ]
+        context.framework_state.record_event(
             context.run_id,
-            source_kind,
-            phase_name,
-            {"sources": [asdict(summary) for summary in summaries]},
+            "warning",
+            f"{source_kind}-catalog",
+            "Catálogo técnico no disponible; productor conservado",
+            summary_payload,
         )
-    catalog_attention = any(
-        summary.errors
-        or summary.review_required
-        or summary.source_stale
-        or summary.source_missing
-        for summary in summaries
-    )
-    context.framework_state.record_event(
-        context.run_id,
-        "warning" if catalog_attention else "info",
-        f"{source_kind}-catalog",
-        "Catálogo técnico actualizado",
-        {"sources": [asdict(summary) for summary in summaries]},
-    )
-    return summaries
+    else:
+        if complete_phase is not None:
+            complete_phase(context.run_id, source_kind, phase_name, summary_payload)
+        catalog_attention = any(
+            summary.errors
+            or summary.review_required
+            or summary.source_stale
+            or summary.source_missing
+            for summary in summaries
+        )
+        context.framework_state.record_event(
+            context.run_id,
+            "warning" if catalog_attention else "info",
+            f"{source_kind}-catalog",
+            "Catálogo técnico actualizado",
+            summary_payload,
+        )
+    return tuple(summaries)
 
 
 def _summary_with_catalog(

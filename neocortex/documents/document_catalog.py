@@ -2469,34 +2469,27 @@ def _replace_catalog_projection(
 
 @contextmanager
 def _readonly_source(path: Path, *, cancellation: "CancellationToken | None" = None):
-    try:
-        mode = preferred_sqlite_read_mode(path)
-        with sqlite_read_session(path, mode=mode, timeout_seconds=60.0, cancellation_check=None if cancellation is None else cancellation.checkpoint) as connection:
-            before_stat = _source_fence_json(path)
-            before_data_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
-            try:
-                with catalog_sql_cancellation(connection, cancellation):
-                    yield connection
-            finally:
-                after_data_version = int(
-                    connection.execute("PRAGMA data_version").fetchone()[0]
-                )
-                if (
-                    before_data_version != after_data_version
-                    or not _source_fence_matches(path, before_stat)
-                ):
-                    raise CatalogSourceDrift("catalog source changed during read")
-    except CancellationRequested:
-        # Cancellation is a control signal, not a source-reader failure;
-        # preserve it so the surrounding catalog transaction can roll back
-        # without changing the public cancellation contract.
-        raise
-    except Exception as exc:
-        # Keep the catalog adapter's established error surface while ensuring
-        # all filesystem-sensitive reads are owned by SQLiteReadSession.
-        if isinstance(exc, RuntimeError):
-            raise
-        raise RuntimeError(f"catalog source reader unavailable: {exc}") from exc
+    mode = preferred_sqlite_read_mode(path)
+    with sqlite_read_session(
+        path,
+        mode=mode,
+        timeout_seconds=60.0,
+        cancellation_check=None if cancellation is None else cancellation.checkpoint,
+    ) as connection:
+        before_stat = _source_fence_json(path)
+        before_data_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+        try:
+            with catalog_sql_cancellation(connection, cancellation):
+                yield connection
+        finally:
+            after_data_version = int(
+                connection.execute("PRAGMA data_version").fetchone()[0]
+            )
+            if (
+                before_data_version != after_data_version
+                or not _source_fence_matches(path, before_stat)
+            ):
+                raise CatalogSourceDrift("catalog source changed during read")
 
 
 def _iter_source_documents(

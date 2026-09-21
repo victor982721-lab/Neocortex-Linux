@@ -19,7 +19,7 @@ from neocortex.integrations.inventory.inventory_boundary import (
     initialize_authorized_state_directory,
 )
 from neocortex.runtime.config.runtime_cache import XDG_CACHE_HOME_ENVIRONMENT
-from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.runtime.models import RouteOnlyRunResult
 from neocortex.runtime.orchestration.orchestrator_types import (
@@ -655,6 +655,9 @@ class RouteLifecycleMixin(_FrameworkOrchestratorOwner):
             if finalize:
                 self._complete_route_only_run(state, boundary, source, run_id)
         except KeyboardInterrupt:
+            self._cancel_route_only_run(state, source, run_id)
+            raise
+        except CancellationRequested:
             self._cancel_route_only_run(state, source, run_id)
             raise
         except RunBudgetExceeded:
