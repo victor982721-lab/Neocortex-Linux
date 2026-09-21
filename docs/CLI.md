@@ -584,6 +584,26 @@ pueden recuperar una extensión canónica cuando el detector bounded tiene
 evidencia fuerte; un destino existente, drift o una identidad fuera del root
 producen abstención.
 
+El stage `Identify` mantiene SQLite, caché, clasificación, Normalize y
+publicación en el hilo caller. La observación de filesystem ocurre en workers
+con una ventana `in_flight` bounded: no crea un future por cada entrada ni usa
+lotes seriales de 32 que oculten 31 resultados detrás de un archivo lento. Los
+workers sólo devuelven observaciones ligadas a la identidad física; nunca abren
+SQLite. Una observación que termina fuera de orden incrementa el progreso real y
+queda guardada por índice, mientras el cursor de commit consume resultados en el
+orden estable del inventario. Por ello la salida y los efectos siguen siendo
+deterministas sin congelar visualmente el progreso detrás del primer future
+enviado. Durante el warm-up la ETA puede ser indeterminada; después sólo usa
+throughput de trabajo efectivamente terminado.
+
+La decisión de contenido ZIP tiene un único owner. Intake y Identify reutilizan
+el registro pequeño ligado a identidad que produjo esa decisión; no existe una
+prelectura independiente de cuatro bytes seguida por otro detector del mismo
+archivo, ni se conserva un buffer por cada entrada. Un paquete atómico ya
+clasificado no se vuelve a inspeccionar como ZIP. Un ZIP genérico aplicado no
+llega a Identify: sólo sus archivos físicos nuevos, o los que cambiaron de
+identidad, se admiten en el inventario sucesor y se observan normalmente.
+
 ### Límite global de tamaño
 
 `-S10` limita a 10 MB y `-S100` a 100 MB. El valor usa megabytes decimales
@@ -592,6 +612,11 @@ producen abstención.
 a `--all` después del inventario: los archivos mayores quedan fuera de las
 fases posteriores sin modificarse. Sin `-S` ni `--max-size-mb`, la corrida es
 ilimitada.
+
+Las tres formas (`-S10`, `-S 10` y `--max-size-mb 10`) deben producir el mismo
+valor en `max_file_bytes`, el mismo destino explícito y un conteo explícito de
+una opción. `-S` y `--max-size-mb` son los únicos nombres; no se agregan aliases
+compatibles para ocultar diferencias del parser.
 
 ```bash
 Neocortex --root "$Root" --all --apply -S10
@@ -625,6 +650,31 @@ El techo `-S` se evalúa antes de abrir el ZIP. Un contenedor oversize queda
 `skipped_by_size`; sus sucesores, si el contenedor era elegible, vuelven a
 evaluarse individualmente. No hay búsqueda, listado ni estado durable de
 miembros virtuales: Knowledge y Semantic sólo reciben paths físicos publicados.
+
+Cuando Intake publica o envía un origen a Trash, la consola separa esa mutación
+de la fase siguiente con `Reconciliando inventario tras ZIP Intake` y muestra el
+nuevo total físico; no transforma silenciosamente el total del primer inventario.
+La tarea de reconciliación sólo aparece si hubo cambios físicos. Si no hubo ZIP
+elegibles o no hubo publicaciones, no deja una tarea persistente ni ruido de
+progreso.
+
+La línea humana de Intake es acotada y usa el formato `Procesando ZIPs X/Y`,
+acompañada, cuando aplica, por `generic`, `atomic`, `applied`, `blocked`,
+`members` y `extracted`. No imprime miles de paths. Si el usuario cancela
+Identify después de efectos de Intake ya comprometidos, el resumen conserva la
+cancelación y declara esos efectos, por ejemplo: `ZIP Intake: N contenedores
+aplicados, M archivos físicos publicados`. No afirma rollback total: factory
+reset reconstruye o retira estado propio, pero no restaura ZIP enviados a KIO
+Trash.
+
+Antes de que un efecto de Trash cruce KIO, el adapter debe demostrar que el path
+actual sigue siendo exactamente la `SourceIdentity` original y el
+`FileSnapshot` de Inventory: dispositivo, inode, tamaño, mtime, ctime y nlink
+coinciden; además sigue siendo un archivo regular y no un symlink/hardlink
+inesperado. Un reemplazo de path, aunque conserve tamaño/mtime, un drift de
+nlink/ctime o un symlink produce `blocked/source_changed` antes de KIO y no toca
+otro archivo. Si la frontera de KIO ya quedó ambigua, el resultado es
+`recovery_required`; nunca se hace fallback por path.
 
 ### Lifecycle durable de `--all` (0.14 instalado)
 

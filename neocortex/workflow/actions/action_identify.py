@@ -285,6 +285,7 @@ class IdentifyActionsMixin:
             )
             pending: list[tuple[int, FileSnapshot]] = []
             observations: list[ContentObservation | None] = [None] * len(admitted)
+            pending_indices: set[int] = set()
             for index, planned in enumerate(admitted):
                 cached = cache_lookup.get(self._detection_key(planned))
                 if cached is not None and cached[0]:
@@ -308,7 +309,7 @@ class IdentifyActionsMixin:
                 # for the complete run.  Registering this short-lived phase
                 # keeps worker capacity elastic without adding a second
                 # coordinator or a fixed worker ceiling.
-                from concurrent.futures import ThreadPoolExecutor
+                from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
                 from neocortex.runtime.control.global_resources import (
                     current_resource_coordinator,
                     resource_grant_scope,
@@ -378,9 +379,12 @@ class IdentifyActionsMixin:
                     planned: FileSnapshot,
                     samples: list[int] = observation_samples,
                     samples_lock: threading.Lock = observation_samples_lock,
+                    cancel_token=cancellation,
                 ) -> ContentObservation:
                     # Resolve the module global at invocation time so focused
                     # detector tests and diagnostics retain their seam.
+                    if cancel_token is not None:
+                        cancel_token.checkpoint()
                     started_ns = time.monotonic_ns()
                     try:
                         return observe_content_type(
@@ -394,27 +398,18 @@ class IdentifyActionsMixin:
                             samples.append(time.monotonic_ns() - started_ns)
                             del samples[:-64]
 
-                # Submit bounded batches rather than one future per file.  A
-                # page is already limited to TRASH_BATCH_SIZE; grouping the
-                # pure observations keeps the in-flight window bounded while
-                # avoiding thousands of executor/future hand-offs for small
-                # headers.  Results retain the inventory order explicitly.
-                observation_batches = tuple(
-                    tuple(pending[offset : offset + 32])
-                    for offset in range(0, len(pending), 32)
-                )
-
-                def observe_batch(
-                    batch: tuple[tuple[int, FileSnapshot], ...],
+                def observe_one(
+                    item: tuple[int, FileSnapshot],
                     resource_gate_value=gate,
                     cancel_token=cancellation,
-                ) -> tuple[tuple[int, ContentObservation], ...]:
-                    device = str(batch[0][1].volume_id) if batch else None
+                ) -> tuple[int, ContentObservation]:
+                    index, planned = item
+                    device = str(planned.volume_id)
                     if resource_gate_value is None:
-                        result = tuple((index, observe(planned)) for index, planned in batch)
+                        result = observe(planned)
                     else:
                         with resource_gate_value.admit(
-                            CONTENT_PREFIX_BYTES * 2 * 32,
+                            CONTENT_PREFIX_BYTES * 2,
                             native_threads=1,
                             io_slots=1,
                             io_device=device,
@@ -422,10 +417,8 @@ class IdentifyActionsMixin:
                             cancellation=cancel_token,
                         ) as grant:
                             with resource_grant_scope(grant):
-                                result = tuple(
-                                    (index, observe(planned)) for index, planned in batch
-                                )
-                    return result
+                                result = observe(planned)
+                    return index, result
 
                 if coordinator is None:
                     worker_count = direct_capacity()
@@ -433,17 +426,74 @@ class IdentifyActionsMixin:
                     assert gate is not None
                     worker_count = gate.worker_capacity(
                         max_workers=None,
-                        estimated_bytes=CONTENT_PREFIX_BYTES * 2 * 32,
+                        estimated_bytes=CONTENT_PREFIX_BYTES * 2,
                         native_threads=1,
                     )
-                with ThreadPoolExecutor(
+                # Keep the queue bounded and submit one observation per
+                # future.  The previous implementation submitted serial
+                # batches of 32: one pathological member held 31 siblings
+                # hostage, and consuming futures in submit order hid ready
+                # observations behind that batch.  A worker window gives the
+                # filesystem parallelism without creating one future per
+                # corpus member.
+                max_in_flight = max(1, int(worker_count))
+                executor = ThreadPoolExecutor(
                     max_workers=max(1, int(worker_count)),
                     thread_name_prefix="neocortex-identify",
-                ) as executor:
-                    futures = [executor.submit(observe_batch, batch) for batch in observation_batches]
-                    for future in futures:
-                        for index, observation in future.result():
+                )
+                in_flight: dict[Future[tuple[int, ContentObservation]], int] = {}
+                next_pending = 0
+                pending_indices = {index for index, _ in pending}
+                aborted = False
+                try:
+                    while next_pending < len(pending) or in_flight:
+                        self._checkpoint()
+                        while (
+                            next_pending < len(pending)
+                            and len(in_flight) < max_in_flight
+                        ):
+                            item = pending[next_pending]
+                            future = executor.submit(observe_one, item)
+                            in_flight[future] = item[0]
+                            next_pending += 1
+
+                        if not in_flight:
+                            continue
+                        # A timeout makes the caller's cancellation callback
+                        # observable even when every active detector is
+                        # waiting on a slow filesystem operation.  Workers
+                        # never touch SQLite or FrameworkState.
+                        done, _ = wait(
+                            tuple(in_flight),
+                            timeout=0.05,
+                            return_when=FIRST_COMPLETED,
+                        )
+                        if not done:
+                            continue
+                        for future in done:
+                            index = in_flight.pop(future)
+                            observed_index, observation = future.result()
+                            if observed_index != index:
+                                raise RuntimeError(
+                                    "Identify worker returned an unexpected observation index"
+                                )
                             observations[index] = observation
+                            # Observation progress is reported at completion
+                            # time, not after waiting for every result in
+                            # inventory order.  Classification remains below
+                            # in deterministic inventory order.
+                            processed += 1
+                            report_progress()
+                except BaseException:
+                    aborted = True
+                    for future in in_flight:
+                        future.cancel()
+                    raise
+                finally:
+                    # Do not wait behind a cancelled/failed detector.  A
+                    # running detector is side-effect-free and may finish in
+                    # its own thread; queued work is cancelled immediately.
+                    executor.shutdown(wait=not aborted, cancel_futures=aborted)
 
             for index, planned in enumerate(admitted):
                 self._checkpoint()
@@ -468,8 +518,9 @@ class IdentifyActionsMixin:
                     if len(cache_updates) >= 1000:
                         flush_cache_updates()
                     classify(planned, detected)
-                processed += 1
-                report_progress()
+                if index not in pending_indices:
+                    processed += 1
+                    report_progress()
         flush_route_candidates()
         flush_cache_updates()
         self._flush_deferred_reconciliation()

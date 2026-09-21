@@ -31,6 +31,39 @@ def _print_inventory_report(result) -> None:
     )
 
 
+def _print_zip_intake_report(result) -> None:
+    """Print bounded physical ZIP effects without exposing member paths."""
+
+    payload = getattr(result, "zip_intake", None)
+    if not isinstance(payload, Mapping) or not payload:
+        routes = getattr(result, "route_results", {})
+        candidate = routes.get("zip_intake") if isinstance(routes, Mapping) else None
+        payload = candidate if isinstance(candidate, Mapping) else None
+    if not isinstance(payload, Mapping) or not payload:
+        return
+
+    def counter(*names: str) -> int | str:
+        for name in names:
+            value = _counter_value(payload.get(name))
+            if value is not None:
+                return value
+        return "no_verificado"
+
+    print(
+        "ZIP_INTAKE "
+        f"status={sanitize_untrusted_text(payload.get('status', 'no_verificado'), limit=64)} "
+        f"candidates={counter('candidates')} "
+        f"generic={counter('generic_candidates', 'generic')} "
+        f"atomic={counter('atomic_packages', 'atomic')} "
+        f"applied={counter('applied', 'applied_containers')} "
+        f"blocked={counter('blocked')} "
+        f"members={counter('members')} "
+        f"extracted={counter('extracted', 'published_files')} "
+        f"filesystem_changed={int(bool(payload.get('filesystem_changed', False)))} "
+        f"reconciliation={int(bool(payload.get('reconciliation_required', False)))}"
+    )
+
+
 def _print_pdf_report(result) -> None:
     if result.pdf is None:
         return
@@ -425,6 +458,7 @@ def print_reports(result, args: argparse.Namespace) -> None:
         _print_organization_report(result)
         return
     _print_inventory_report(result)
+    _print_zip_intake_report(result)
     _print_pdf_report(result)
     _print_docx_report(result)
     _print_office_report(result)
@@ -447,6 +481,8 @@ def _print_catalog_reports(result) -> None:
         print("MAINTENANCE_OUTCOME " + json.dumps(maintenance, ensure_ascii=True, sort_keys=True))
 
     for route, summary in getattr(result, "route_results", {}).items():
+        if route == "zip_intake":
+            continue
         candidates, cache_hits, new_work, replay_evidence = _route_replay_view(route, summary)
         print(f"ROUTE_REPLAY route={sanitize_untrusted_text(route, limit=32)} "
               f"candidates={candidates if candidates is not None else 'no_verificado'} "
@@ -1059,6 +1095,31 @@ def print_professional_summary(
                 str(getattr(scan, "excluded_directories", "no_verificado")),
                 ", enlaces=",
                 str(getattr(scan, "skipped_links", "no_verificado")),
+            )
+        )
+    zip_payload = getattr(result, "zip_intake", None)
+    if isinstance(zip_payload, Mapping) and zip_payload:
+        def _zip_detail_counter(*names: str) -> int:
+            for name in names:
+                value = _counter_value(zip_payload.get(name))
+                if value is not None:
+                    return value
+            return 0
+
+        details.append(
+            Text.assemble(
+                ("ZIP Intake: ", "bold"),
+                str(zip_payload.get("status", "no_verificado")),
+                " · ",
+                _human_count(_zip_detail_counter("candidates")),
+                " contenedores · genéricos=",
+                _human_count(_zip_detail_counter("generic_candidates", "generic")),
+                " · atómicos=",
+                _human_count(_zip_detail_counter("atomic_packages", "atomic")),
+                " · aplicados=",
+                _human_count(_zip_detail_counter("applied", "applied_containers")),
+                " · publicados=",
+                _human_count(_zip_detail_counter("published", "published_files", "extracted")),
             )
         )
     plan = getattr(result, "dedup_plan", None)

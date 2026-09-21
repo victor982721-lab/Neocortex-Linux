@@ -301,10 +301,28 @@ lotes acotados, envía sólo misses a observadores bounded y conserva SQLite,
 Normalize, política y publicación en el owner principal. La capacidad de los
 workers se deriva de los recursos vivos (con una ventana en vuelo acotada) y
 se vuelve a muestrear sin crear otro coordinador; los workers sólo observan
-bytes/metadatos y devuelven DTOs identity-bound. La clave de cache incluye
-volumen, identidad física, tamaño, mtime, birthtime y `DETECTOR_VERSION`, por
-lo que un cambio o stale nunca reutiliza evidencia. El progreso se agrupa
-por tiempo/cantidad y la publicación conserva el orden del inventario.
+bytes/metadatos y devuelven DTOs identity-bound. La ventana se rellena mientras
+terminan observaciones individuales: no se forman batches seriales de 32 ni se
+crea un future por cada entrada. El caller consume completions fuera de orden,
+guarda cada resultado por índice y avanza un cursor de commit determinista para
+clasificar, normalizar y publicar en el orden del inventario. Así un elemento
+lento no retiene visualmente a sus siblings, pero tampoco vuelve aleatorios los
+efectos. SQLite nunca cruza a los workers y la cancelación detiene admisiones,
+propaga checkpoints y drena el conjunto en vuelo sin esperar un timeout fijo.
+La clave de cache incluye volumen, identidad física, tamaño, mtime, birthtime y
+`DETECTOR_VERSION`, por lo que un cambio o stale nunca reutiliza evidencia. El
+progreso reporta observaciones realmente terminadas; la ETA permanece
+indeterminada durante warm-up y después deriva de throughput observado, no de
+futures enviados.
+
+La decisión de contenido ZIP tiene un único owner y se representa con un
+registro pequeño ligado a la identidad. Intake y Identify reutilizan esa
+decisión: no hay una prelectura de la firma `PK` por cada archivo seguida de un
+detector independiente, no se guardan headers/buffers masivos y un paquete
+atómico no se vuelve a inspeccionar. Un ZIP genérico aplicado desaparece de la
+selección de Identify; sus hijos físicos nuevos se incorporan mediante el
+inventario sucesor y se observan normalmente. Cualquier cambio de identidad
+invalida la decisión reutilizada.
 
 La identidad física se valida con `FileIdentity` y el codec explícito del owner.
 Cada archivo publicado desde ZIP se vuelve un recurso físico ordinario y su
@@ -361,11 +379,15 @@ La extracción es transaccional: captura y revalida identidad del origen,
 preflight estructural, crea un workspace privado bajo `state/scratch`, valida
 traversal y entradas especiales, extrae y verifica todo el árbol, publica una
 sola vez en un destino determinista, revalida el origen y sólo entonces entrega
-el ZIP a KIO Trash. Colisiones, drift, límites agotados, CRC/EOF inconsistente,
+el ZIP a KIO Trash. La observación de contenido y la clasificación se pasan
+entre Intake e Identify como decisiones identity-bound; no se abre dos veces un
+paquete atómico ni se hace un `open/read` de cuatro bytes independiente antes
+de Identify. Colisiones, drift, límites agotados, CRC/EOF inconsistente,
 cifrado, cancelación o fallo de KIO conservan el original y dejan
 `blocked`/`recovery_required`; nunca se publica un árbol parcial ni se hace
 `unlink`. La reconciliación sustituye el snapshot del ZIP por los snapshots de
-los archivos físicos sucesores antes de continuar.
+los archivos físicos sucesores antes de continuar y publica una fase visible
+distinta de `Reconciliando inventario tras ZIP Intake`.
 
 El contenido extraído siempre es datos no confiables: el Intake no ejecuta,
 importa, abre con aplicaciones externas ni invoca intérpretes. No preserva
@@ -386,6 +408,15 @@ devolver la extracción, incluidos los componentes XLSX. DOCX clasifica primero
 el posible acierto de caché y valida su representación completa una sola vez al
 consumirla. La escritura comprueba identidad, firma de procesamiento y estado
 vigentes, y mantiene la observación hasta la actualización de FTS.
+
+El progreso de Intake es conciso y bounded: la UI muestra `Procesando ZIPs X/Y`
+con contadores `generic`, `atomic`, `applied`, `blocked`, `members` y
+`extracted`, sin volcar paths. Si no hay ZIPs o no hay cambios físicos, no se
+mantiene una tarea de Intake molesta. Si Identify se cancela después de efectos
+de Intake ya comprometidos, el estado terminal conserva `cancelled` y un
+resumen de esos efectos (`N` contenedores aplicados y `M` archivos físicos
+publicados); no simula rollback total y factory reset no restaura originales ya
+enviados a Trash.
 
 ### Lifecycle durable de `--all` (implementado; aceptación en curso)
 
@@ -535,6 +566,22 @@ reanudación explícita por defaults ni se ocultan parciales.
 `neocortex.progress` define `ProgressEvent` y métricas estructuradas. Terminal y
 grabadores consumen el mismo evento. En Linux los procesos externos usan
 sesión/grupo propios; la cancelación alcanza el árbol y registra el estado final.
+
+Identify publica dos contabilidades separadas: observación completada y commit
+determinista. La primera avanza cuando cualquier worker termina, incluso si un
+índice temprano sigue lento; la segunda conserva el orden estable de efectos.
+`in_flight` tiene un techo observable y la ventana se rellena sin explosión de
+futures. Durante el warm-up la ETA es `unknown`/indeterminada; una ETA posterior
+sólo usa throughput de observaciones completadas. Un worker no puede abrir
+SQLite ni publicar caché o efectos.
+
+ZIP Intake propaga el mismo token de cancelación y callback de progreso desde
+Framework hasta clasificación, recorrido de miembros, SHA-256, extracción,
+ZIP anidado y verificación del árbol. Cada bucle tiene checkpoints bounded; la
+cancelación detiene nuevas admisiones y drena el conjunto en vuelo de forma
+cooperativa, sin convertir el timeout de espera de recursos en un retraso
+obligatorio. La UI identifica la fase como `Procesando ZIPs X/Y` y, si el árbol
+físico ya cambió, emite después la fase distinta de reconciliación de inventario.
 
 Durante el stage Semantic, Framework mantiene su heartbeat escritor. Su consulta
 interna de cancelación participa en el lifecycle de ese owner: abre sólo la base
@@ -918,6 +965,16 @@ caller. La frontera integrada agrupa hasta 256 archivos por invocación no
 interactiva, conserva claim/receipt por elemento y publica reconciliación por
 lote. Es reversible pero path-bound; la canaria instalada se ejecutó sólo en
 fixtures privados y la restauración visual de Dolphin conserva su gate humano.
+
+El binding ZIP→KIO es más estricto que una comprobación del path. Justo antes
+del backend, el adapter revalida que la ruta actual sea la misma
+`SourceIdentity` recibida del engine y el mismo `FileSnapshot` de Inventory:
+root/path esperado, dispositivo, inode, tamaño, mtime, ctime y nlink deben
+coincidir exactamente; el objeto debe seguir siendo regular y no symlink. Si el
+path fue reemplazado, aunque conserve tamaño y mtime, o deriva ctime/nlink, se
+devuelve `blocked/source_changed` sin tocar KIO ni otro archivo. Un resultado
+que ya cruzó una frontera ambigua es `recovery_required`; nunca se captura un
+snapshot nuevo por path como fallback.
 
 La integración actual hace que `apply` lea y revalide el grant, además de
 identidades, guard same-filesystem, ledger y expiración, y que `reconcile`

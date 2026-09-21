@@ -395,6 +395,37 @@ cancelación, falta de recursos o fallo/ambigüedad de KIO conserva el ZIP y el
 staging no publicado; el estado es `blocked` o `recovery_required` según la
 frontera. Nunca se usa `rm`/`unlink` como fallback.
 
+La clasificación de contenido tiene un único owner y entrega una decisión
+pequeña ligada a la `SourceIdentity`. No se ejecuta una prepasada que abra cada
+archivo para leer cuatro bytes y luego otro detector independiente: Intake y
+Identify reutilizan esa decisión. Un paquete atómico se conserva y no se
+reinspecciona como ZIP; un ZIP genérico aplicado sale de Identify y sólo sus
+archivos físicos publicados entran al inventario sucesor. Si cambia la
+identidad física, la decisión se invalida y el archivo se observa de nuevo. No
+se guardan headers o payloads de todos los archivos en RAM.
+
+Antes de cualquier `move ... trash:/`, el adapter compara la ruta actual con la
+`SourceIdentity` original y el `FileSnapshot` de Inventory: root/path,
+dispositivo, inode, tamaño, mtime, ctime y nlink deben coincidir, y el objeto
+debe seguir siendo regular y no symlink. Un reemplazo con otro inode, incluso
+con el mismo tamaño/mtime, un cambio de nlink/ctime o un symlink produce
+`blocked/source_changed` antes de invocar KIO. No se captura un snapshot nuevo
+por path ni se redirige el efecto a otro archivo; una frontera ya ambigua queda
+`recovery_required`. El piloto debe incluir esas variantes y comprobar que el
+reemplazo nunca llega a Trash.
+
+La UI muestra Intake como `Procesando ZIPs X/Y` y contadores bounded de
+`generic`, `atomic`, `applied`, `blocked`, `members` y `extracted`, sin imprimir
+paths masivamente. Si Intake cambió el filesystem, la siguiente tarea es
+`Reconciliando inventario tras ZIP Intake`: el primer total físico permanece
+histórico y el nuevo total se muestra como sucesor. Sin ZIP elegibles o sin
+cambios físicos no se deja una tarea persistente de Intake.
+
+Si el usuario cancela durante Identify después de aplicar ZIPs, el resumen debe
+decirlo sin sugerir rollback total, por ejemplo `ZIP Intake: N contenedores
+aplicados, M archivos físicos publicados`. Factory reset no restaura originales
+que ya cruzaron a KIO Trash.
+
 Para probar interacción con el techo global, usa un ZIP fuente menor a 10 MB que
 contenga un miembro mayor y un ZIP fuente mayor a 10 MB:
 
@@ -407,6 +438,11 @@ puede publicarse; su miembro grande se inventaría como archivo físico y vuelve
 a evaluarse con `-S10`, sin heredar elegibilidad del contenedor. Repite con
 `-S100` o sin `-S` para comprobar readmisión; no se borra historial por el
 cambio de política.
+
+Comprueba también el contrato del parser: `-S10`, `-S 10` y
+`--max-size-mb 10` deben dar el mismo valor, el mismo destino explícito
+`max_file_bytes` y un conteo explícito de una opción. No agregues aliases ni
+trates el spelling compacto como texto libre.
 
 ### Redlist y restauración de extensión
 
@@ -424,6 +460,16 @@ no se interpreta texto débil como formato y un destino existente no se reemplaz
 El rename seguro usa el backend POSIX no-replace, revalida identidad y registra
 receipt/recovery. ZIP Intake sólo publica archivos físicos verificados; el
 nombre de un miembro no modifica el contenedor ni crea un objetivo virtual.
+
+Identify observa misses individualmente con una ventana `in_flight` bounded y
+consume completions conforme terminan. El caller conserva SQLite, caché,
+clasificación, Normalize y efectos; los workers sólo observan filesystem y no
+abren SQLite. El resultado de cada índice se guarda para que el cursor de commit
+mantenga orden determinista, mientras el contador de observación y la ETA usan
+trabajo realmente terminado. Un archivo lento temprano no bloquea el progreso
+de sus siblings, no se crean 150k futures y no se usan batches seriales de 32.
+Durante warm-up la ETA puede ser indeterminada; no se corrige el problema sólo
+suavizando la cifra.
 
 Las rutas reutilizan extracción válida para reparar FTS y derivados sin repetir
 OCR, transcripción o análisis íntegros. Los reintentos sólo proceden con
@@ -523,6 +569,16 @@ límites globales explícitos (`--run-max-items`, `--run-max-bytes` y
 `--run-time-budget-seconds`) cubren todo el lifecycle, incluidos inventario,
 workers, Semantic y publicación; no se añade un techo global implícito y los
 límites específicos de una ruta no se sustituyen ni reinician.
+
+En Identify, `completed` significa observación terminada, no future enviado ni
+commit ya publicado; la UI puede mostrar esa contabilidad mientras el cursor
+determinista espera un índice anterior. Expón el techo `in_flight`, el trabajo
+pendiente y una ETA indeterminada hasta reunir una muestra suficiente. En ZIP
+Intake, el callback de progreso y el token de cancelación deben viajar desde
+Framework hasta clasificación, recorrido de miembros, hash SHA-256,
+extracción, ZIP anidado y verificación del árbol. Cada bucle consulta
+cancelación con frecuencia bounded, detiene nuevas admisiones y cierra la
+ventana en vuelo sin esperar un timeout fijo.
 
 No ejecutes un recorrido largo sin máximo o deadline. Evita un proceso por
 archivo y commits SQLite por elemento; usa streaming y batches acotados.

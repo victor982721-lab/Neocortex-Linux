@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -20,7 +20,7 @@ from neocortex.integrations.inventory.inventory_coordinator import (
     PreparedInventory,
     prepare_inventory,
 )
-from neocortex.progress import ProgressEvent, emit_progress
+from neocortex.progress import ProgressEvent, ProgressMetric, emit_progress
 from neocortex.runtime.config.runtime_cache import XDG_CACHE_HOME_ENVIRONMENT
 from neocortex.runtime.control.global_resources import GlobalResourceSummary, resource_gate
 from neocortex.runtime.models import ActionSummary
@@ -43,6 +43,176 @@ if TYPE_CHECKING:
     from neocortex.integrations.inventory.inventory_boundary import NormalInventoryBoundary
     from neocortex.persistence.framework_state_writer import FrameworkState
     from neocortex.runtime.orchestration.run_manifest import RunBudget
+
+
+_ZIP_PROGRESS_OPERATION = "zip-intake"
+_ZIP_PROGRESS_PHASE = "process"
+_ZIP_PROGRESS_DESCRIPTION = "Procesando ZIPs"
+_ZIP_PROGRESS_MAX_EVENTS = 128
+_ZIP_PROGRESS_INTERVAL_SECONDS = 0.25
+
+
+def _bounded_counter(value: object) -> int:
+    """Return a safe non-negative counter for the live ZIP projection."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if type(value) is int and value >= 0:
+        return value
+    return 0
+
+
+class _BoundedZipProgress:
+    """Coalesce engine progress into one small, stable ZIP task.
+
+    The intake engine may report member-level work.  Framework must not relay
+    one terminal event per member to a human reporter, nor should it inspect
+    the corpus a second time merely to discover the ZIP count.  This adapter
+    therefore forwards only the engine's already-observed counters and caps
+    the number of updates for one run.
+    """
+
+    _COUNTER_ALIASES = {
+        "generic": ("generic", "generic_candidates", "generic_zip"),
+        "atomic": ("atomic", "atomic_packages", "atomic_package"),
+        "applied": ("applied", "applied_containers"),
+        "blocked": ("blocked", "blocked_containers"),
+        "members": ("members", "member_count"),
+        "extracted": ("extracted", "extracted_files", "published_files", "published"),
+    }
+
+    def __init__(self, callback, *, total_hint: int) -> None:
+        self._callback = callback
+        self._total_hint = max(0, int(total_hint))
+        self._completed = 0
+        self._total: int | None = None
+        self._counters = dict.fromkeys(self._COUNTER_ALIASES, 0)
+        self._status = "running"
+        self._started = False
+        self._finished = False
+        self._events = 0
+        self._last_emitted_completed = -1
+        self._last_emit_at = 0.0
+        self._clock = time.monotonic
+
+    @staticmethod
+    def _metric_value(metrics: Mapping[str, object], names: tuple[str, ...]) -> int:
+        for name in names:
+            if name in metrics:
+                return _bounded_counter(metrics[name])
+        return 0
+
+    def _merge_event(self, event: ProgressEvent) -> None:
+        metrics = {metric.name: metric.value for metric in event.metrics}
+        for name, aliases in self._COUNTER_ALIASES.items():
+            # Engine counters are cumulative.  Max protects the projection
+            # from a retry or a backend that reports a stale intermediate
+            # snapshot without ever inventing progress.
+            self._counters[name] = max(
+                self._counters[name], self._metric_value(metrics, aliases)
+            )
+        status = metrics.get("status")
+        if isinstance(status, str) and status:
+            self._status = status[:64]
+        if type(event.completed) is int and event.completed >= 0:
+            self._completed = max(self._completed, event.completed)
+        if type(event.total) is int and event.total >= 0:
+            self._total = event.total
+
+    def _event(self, *, finished: bool, total: int | None = None) -> ProgressEvent:
+        effective_total = self._total if self._total is not None else total
+        if effective_total is None:
+            effective_total = self._total_hint or None
+        completed = self._completed
+        if effective_total is not None:
+            completed = min(completed, effective_total)
+        metrics = (
+            *(ProgressMetric(name, value) for name, value in self._counters.items()),
+            ProgressMetric("status", self._status),
+        )
+        return ProgressEvent(
+            _ZIP_PROGRESS_OPERATION,
+            _ZIP_PROGRESS_PHASE,
+            _ZIP_PROGRESS_DESCRIPTION,
+            completed,
+            effective_total,
+            "ZIPs",
+            finished,
+            metrics,
+        )
+
+    def _emit(self, *, finished: bool = False, total: int | None = None) -> None:
+        if self._callback is None:
+            return
+        if not finished and self._events >= _ZIP_PROGRESS_MAX_EVENTS:
+            return
+        event = self._event(finished=finished, total=total)
+        self._callback(event)
+        self._events += 1
+        self._started = True
+        self._last_emitted_completed = event.completed
+        self._last_emit_at = self._clock()
+
+    def __call__(self, event: ProgressEvent) -> None:
+        if not isinstance(event, ProgressEvent) or self._finished:
+            return
+        self._merge_event(event)
+        now = self._clock()
+        completed_delta = self._completed - self._last_emitted_completed
+        interval = max(1, (self._total or self._total_hint or 1) // 100)
+        should_emit = (
+            not self._started
+            or event.finished
+            or completed_delta >= interval
+            or now - self._last_emit_at >= _ZIP_PROGRESS_INTERVAL_SECONDS
+        )
+        if should_emit:
+            self._emit(finished=event.finished)
+            if event.finished:
+                self._finished = True
+
+    def finish(self, payload: dict[str, object], *, status: str | None = None) -> None:
+        """Publish one terminal event from the engine's bounded result."""
+
+        if self._finished:
+            return
+        candidates = _bounded_counter(payload.get("candidates"))
+        self._total = candidates or self._total
+        if status is None and isinstance(payload.get("status"), str):
+            status = str(payload["status"])
+        if status:
+            self._status = status[:64]
+        for name, aliases in self._COUNTER_ALIASES.items():
+            values = [payload.get(alias) for alias in aliases]
+            for value in values:
+                if type(value) is int and value >= 0:
+                    self._counters[name] = max(self._counters[name], value)
+        statuses = payload.get("statuses")
+        if isinstance(statuses, dict):
+            self._counters["blocked"] = max(
+                self._counters["blocked"], _bounded_counter(statuses.get("blocked"))
+            )
+        self._completed = max(self._completed, candidates)
+        if candidates and not self._started:
+            self._emit(total=candidates)
+        if candidates or self._started:
+            self._emit(finished=True, total=candidates or None)
+        self._finished = True
+
+    def partial(self, *, status: str) -> dict[str, object]:
+        """Return only observed counters for cancellation/failure evidence."""
+
+        self._status = status[:64]
+        return {
+            "status": self._status,
+            "candidates": self._completed,
+            **self._counters,
+            "progress_events": self._events,
+        }
+
+    @property
+    def event_count(self) -> int:
+        return self._events
 
 
 def collect_size_admission_metrics(
@@ -467,8 +637,9 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         boundary: NormalInventoryBoundary,
         dedup_index: DedupIndex,
         journal_before: None,
+        phase: str = "inventory",
     ) -> PreparedInventory:
-        state.set_run_phase(run_id, "inventory")
+        state.set_run_phase(run_id, phase)
         read_budget = getattr(state, "read_run_budget", None)
         if callable(read_budget) and read_budget(run_id) is not None:
             state.check_run_budget(run_id)
@@ -588,6 +759,70 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             metrics,
         )
 
+    def _emit_zip_reconciliation_progress(
+        self,
+        *,
+        completed: int,
+        total: int,
+        source_files: int,
+        successor_files: int | None = None,
+        successor_scan_id: int | None = None,
+        status: str = "running",
+        finished: bool = False,
+    ) -> None:
+        """Expose the physical successor scan as a distinct visible phase."""
+
+        metrics = [
+            ProgressMetric("source_files", max(0, source_files)),
+            ProgressMetric("status", status),
+        ]
+        if successor_files is not None:
+            metrics.append(ProgressMetric("successor_files", max(0, successor_files)))
+        if successor_scan_id is not None:
+            metrics.append(ProgressMetric("successor_scan_id", max(0, successor_scan_id)))
+        emit_progress(
+            self.progress,
+            ProgressEvent(
+                "framework",
+                "zip-intake-reconciliation",
+                "Reconciliando inventario tras ZIP Intake",
+                max(0, completed),
+                max(0, total),
+                "fase",
+                finished,
+                tuple(metrics),
+            ),
+        )
+
+    def _zip_intake_effects_summary(self) -> dict[str, object]:
+        """Return compact evidence of ZIP effects already past commit."""
+
+        payload = getattr(self, "_last_zip_intake_result", {})
+        if not isinstance(payload, dict):
+            return {}
+
+        def counter(*names: str) -> int:
+            for name in names:
+                value = payload.get(name)
+                if type(value) is int and value >= 0:
+                    return value
+            return 0
+
+        applied = counter("applied", "applied_containers")
+        published = counter("published", "published_files", "extracted")
+        trashed = counter("trashed", "trashed_sources")
+        changed = bool(payload.get("filesystem_changed"))
+        if not (applied or published or trashed or changed):
+            return {}
+        return {
+            "status": str(payload.get("status", "unknown"))[:64],
+            "applied_containers": applied,
+            "published_files": published,
+            "trashed_sources": trashed,
+            "filesystem_changed": changed,
+            "reconciliation_required": bool(payload.get("reconciliation_required")),
+        }
+
     def _run_zip_intake_stage(
         self,
         *,
@@ -607,6 +842,12 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         successor inventory is prepared before Identify so all later stages
         see physical paths rather than the stale pre-intake generation.
         """
+
+        # Reset per-run evidence before the first source is considered.  The
+        # value is also used by terminal cancellation reporting when Identify
+        # is interrupted after ZIP effects have already crossed their commit
+        # frontier.
+        self._last_zip_intake_result: dict[str, object] = {}
 
         empty_payload: dict[str, object] = {
             "schema": "neocortex.zip-intake/v1",
@@ -669,6 +910,10 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 },
                 idempotency_key="zip-intake:running",
             )
+        zip_progress = _BoundedZipProgress(
+            self.progress,
+            total_hint=int(admission.eligible_files),
+        )
         try:
             outcome = run_zip_intake_stage(
                 root=root,
@@ -678,10 +923,16 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 state_directory=self.config.state_directory,
                 run_id=run_id,
                 state=state,
-                progress=self.progress,
+                # The adapter forwards this real callback to the intake
+                # engine.  Coalescing here keeps member traversal bounded for
+                # both Rich and line-oriented reporters without a second
+                # content/header observation.
+                progress=zip_progress,
                 cancellation=self._cancellation,
             )
         except BaseException as exc:
+            partial_status = "cancelled" if isinstance(exc, KeyboardInterrupt) else "failed"
+            self._last_zip_intake_result = zip_progress.partial(status=partial_status)
             if callable(publish_stage):
                 try:
                     publish_stage(
@@ -691,6 +942,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                         details={
                             "error_type": type(exc).__name__,
                             "detail": str(exc)[:8192],
+                            "observed_progress": dict(self._last_zip_intake_result),
                         },
                         idempotency_key="zip-intake:failed",
                     )
@@ -699,6 +951,16 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                     # records the primary failure and recovery state.
                     pass
             raise
+        # Atomic ZIP decisions are already validated by the intake owner.
+        # Seed the existing content-type cache on this caller thread so the
+        # subsequent Identify pass reuses the identity-bound decision instead
+        # of reopening the package.  No ZIP or SQLite work crosses workers.
+        if outcome.atomic_decisions:
+            store_cache = getattr(state, "store_content_type_cache_batch", None)
+            if callable(store_cache):
+                from neocortex.platform.content_types import DETECTOR_VERSION
+
+                store_cache(outcome.atomic_decisions, DETECTOR_VERSION, run_id)
         payload = dict(outcome.as_dict())
         payload.update(
             {
@@ -706,6 +968,9 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 "effective_max_file_bytes": effective_limit,
             }
         )
+        zip_progress.finish(payload, status=str(payload.get("status", "completed")))
+        payload["progress_events"] = zip_progress.event_count
+        self._last_zip_intake_result = payload
         # ZIP Intake may change children but must never replace the corpus
         # root itself.  Revalidate the physical boundary before any successor
         # inventory or downstream route can consume the result.
@@ -733,13 +998,29 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                     "reason": "physical_zip_intake_changes",
                 },
             )
-            successor = self._prepare_normal_inventory(
-                state=state,
-                run_id=run_id,
-                boundary=boundary,
-                dedup_index=dedup_index,
-                journal_before=None,
+            self._emit_zip_reconciliation_progress(
+                completed=0,
+                total=1,
+                source_files=int(inventory.scan.files_seen),
             )
+            try:
+                successor = self._prepare_normal_inventory(
+                    state=state,
+                    run_id=run_id,
+                    boundary=boundary,
+                    dedup_index=dedup_index,
+                    journal_before=None,
+                    phase="inventory_reconciliation",
+                )
+            except BaseException:
+                self._emit_zip_reconciliation_progress(
+                    completed=0,
+                    total=1,
+                    source_files=int(inventory.scan.files_seen),
+                    status="cancelled",
+                    finished=True,
+                )
+                raise
             successor = replace(
                 successor,
                 inventory_attempts=(
@@ -762,6 +1043,15 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                     "successor_scan_id": successor.scan.scan_id,
                     "files": successor.scan.files_seen,
                 },
+            )
+            self._emit_zip_reconciliation_progress(
+                completed=1,
+                total=1,
+                source_files=int(inventory.scan.files_seen),
+                successor_files=int(successor.scan.files_seen),
+                successor_scan_id=int(successor.scan.scan_id),
+                status="completed",
+                finished=True,
             )
         if callable(publish_stage):
             stage_status = (

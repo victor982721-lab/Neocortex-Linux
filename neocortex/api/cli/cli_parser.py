@@ -61,6 +61,22 @@ class ExplicitArgumentParser(argparse.ArgumentParser):
                 break
             option = token.split("=", 1)[0]
             action = self._option_string_actions.get(option)
+            if action is None:
+                # ``argparse`` accepts an attached value for a short option
+                # (for example, ``-S10``), but that spelling is not itself a
+                # key in ``_option_string_actions``.  Resolve it through the
+                # same option parser used by ``parse_known_args`` so explicit
+                # tracking observes the canonical ``-S`` action rather than
+                # treating the token as an unrecognised option.
+                option_matches = self._parse_optional(token)
+                if option_matches:
+                    actions = tuple(
+                        match[0]
+                        for match in option_matches
+                        if match[0] is not None
+                    )
+                    if len(actions) == 1:
+                        action = actions[0]
             if action is not None:
                 explicit.add(action.dest)
                 explicit_counts[action.dest] = explicit_counts.get(action.dest, 0) + 1

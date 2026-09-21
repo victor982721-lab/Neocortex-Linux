@@ -23,6 +23,7 @@ from neocortex.deduplication.admission import size_is_admitted, validate_max_fil
 
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive.intake import ZipIntakeLimits
+    from neocortex.platform.content_types import DetectedType
     from neocortex.progress import ProgressCallback
     from neocortex.runtime.control.cancellation import CancellationToken
 
@@ -70,6 +71,10 @@ class ZipIntakeStageResult:
     details: Mapping[str, object]
     filesystem_changed: bool = False
     reconciliation_required: bool = False
+    # Caller-owned, identity-bound seeds for Framework Identify.  These stay
+    # out of the serialized stage payload and are consumed on the SQLite owner
+    # thread before Identify starts.
+    atomic_decisions: tuple[tuple[FileSnapshot, "DetectedType"], ...] = ()
 
     @property
     def status(self) -> str:
@@ -136,21 +141,6 @@ def _engine_result_payload(value: object) -> dict[str, object]:
     return payload
 
 
-def _zip_candidate(path: Path) -> bool:
-    """Read only the ZIP signature needed to find mislabeled containers."""
-
-    if path.suffix.casefold() == ".zip":
-        return True
-    try:
-        with path.open("rb") as source:
-            return source.read(4) in {b"PK\x03\x04", b"PK\x05\x06", b"PK\x06\x06"}
-    except OSError:
-        # The intake engine owns the typed blocked/corrupt outcome for a
-        # candidate path.  A path that cannot even provide a bounded signature
-        # is not a candidate discovered by this metadata/header pass.
-        return False
-
-
 def _zip_limits(config: object) -> ZipIntakeLimits:
     """Build engine limits from existing archive knobs without eager imports."""
 
@@ -185,6 +175,101 @@ def _zip_limits(config: object) -> ZipIntakeLimits:
     )
 
 
+def _decide_zip_candidate(
+    engine: object,
+    path: Path,
+    *,
+    max_file_bytes: int | None,
+    limits: object,
+    cancellation: object,
+    progress: object | None,
+) -> object | None:
+    """Delegate candidate discovery and ZIP classification to the engine.
+
+    The engine owns the one bounded signature/content decision.  Framework
+    must not probe a header and then ask the engine to inspect the same path
+    again.  The owner is mandatory so a missing decision seam fails closed
+    instead of silently skipping wrong-extension ZIPs.
+    """
+
+    decider = getattr(engine, "decide_zip_candidate", None)
+    if not callable(decider):
+        raise RuntimeError(
+            f"ZIP Intake engine {INTAKE_ENGINE_MODULE!r} has no "
+            "decide_zip_candidate() callable"
+        )
+    return decider(
+        path,
+        max_file_bytes=max_file_bytes,
+        limits=limits,
+        cancellation=cancellation,
+        progress=progress,
+    )
+
+
+def _atomic_detected_type(decision: object) -> "DetectedType | None":
+    """Translate a validated atomic decision into a cache DTO."""
+
+    classification = getattr(decision, "classification", None)
+    if classification is None or getattr(classification, "kind", None) != "atomic_package":
+        return None
+    values: dict[str, tuple[str, str, tuple[str, ...], str]] = {
+        "docx": (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".docx",
+            (".docx", ".dotx", ".docm", ".dotm"),
+            "zip:intake-atomic-docx",
+        ),
+        "xlsx": (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xlsx",
+            (".xlsx", ".xltx", ".xlsm", ".xltm"),
+            "zip:intake-atomic-xlsx",
+        ),
+        "pptx": (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".pptx",
+            (".pptx", ".potx", ".ppsx", ".pptm", ".potm", ".ppsm"),
+            "zip:intake-atomic-pptx",
+        ),
+        "epub": ("application/epub+zip", ".epub", (".epub",), "zip:intake-atomic-epub"),
+        "apk": (
+            "application/vnd.android.package-archive",
+            ".apk",
+            (".apk",),
+            "zip:intake-atomic-apk",
+        ),
+        "jar": ("application/java-archive", ".jar", (".jar",), "zip:intake-atomic-jar"),
+    }
+    unit_kind = str(
+        getattr(classification, "unit_kind", getattr(classification, "codec", ""))
+    ).casefold()
+    value = values.get(unit_kind)
+    if unit_kind == "odf":
+        odf = {
+            "application/vnd.oasis.opendocument.text": (".odt", (".odt", ".ott")),
+            "application/vnd.oasis.opendocument.spreadsheet": (".ods", (".ods", ".ots")),
+            "application/vnd.oasis.opendocument.presentation": (".odp", (".odp", ".otp")),
+            "application/vnd.oasis.opendocument.graphics": (".odg", (".odg", ".otg")),
+        }.get(str(getattr(classification, "mime", "")).casefold())
+        if odf is not None:
+            extension, accepted = odf
+            value = (
+                str(classification.mime),
+                extension,
+                accepted,
+                "zip:intake-atomic-odf",
+            )
+    if value is None:
+        # ODF currently does not retain its exact MIME in the bounded
+        # classification DTO; avoid seeding an incorrect route decision.
+        return None
+    from neocortex.platform.content_types import DetectedType
+
+    mime, extension, accepted, evidence = value
+    return DetectedType(mime, extension, frozenset(accepted), evidence)
+
+
 class _KioTrashHook:
     """Bind the existing KIO backend to the intake identity contract."""
 
@@ -194,14 +279,47 @@ class _KioTrashHook:
         self._snapshot = snapshot
 
     def trash(self, source: Path, identity: object) -> object:
-        from neocortex.capabilities.formats.archive.intake import TrashDisposition
+        from neocortex.capabilities.formats.archive.intake import (
+            SourceIdentity,
+            TrashDisposition,
+        )
         from neocortex.deduplication.fingerprinting import snapshot_path
         from neocortex.safety.kio_trash import metadata_binding
 
-        if Path(source) != Path(self._snapshot.path):
+        source_path = Path(source)
+        if source_path != Path(self._snapshot.path):
             return TrashDisposition("blocked", "intake_source_snapshot_mismatch")
+        # The intake engine's SourceIdentity is the proof captured before
+        # classification/staging.  Never replace it with a fresh path
+        # observation: a replacement at the same pathname must not become the
+        # object that KIO receives.  Keep this validation here, immediately at
+        # the framework-to-KIO seam, in addition to the backend's own checks.
+        if not isinstance(identity, SourceIdentity):
+            return TrashDisposition("blocked", "source_identity_invalid")
         try:
-            current = snapshot_path(source)
+            identity_path = Path(identity.path)
+        except (TypeError, ValueError, OSError):
+            return TrashDisposition("blocked", "source_identity_invalid")
+        if identity_path != source_path:
+            return TrashDisposition("blocked", "source_identity_invalid")
+        try:
+            current_identity = SourceIdentity.capture(source_path)
+            if current_identity != identity:
+                return TrashDisposition("blocked", "source_changed")
+            # KIO's path-bound effect is only safe for a unique regular file.
+            # A changed link count is also a source drift even when all other
+            # visible metadata happens to remain equal.
+            if current_identity.nlink != 1:
+                return TrashDisposition("blocked", "source_changed")
+            current = snapshot_path(source_path)
+            if current != self._snapshot:
+                return TrashDisposition("blocked", "source_changed")
+        except (OSError, RuntimeError, ValueError, TypeError):
+            # Validation failures are pre-frontier source drift.  Do not pass
+            # a newly observed path/snapshot to KIO and do not label this a
+            # backend recovery case.
+            return TrashDisposition("blocked", "source_changed")
+        try:
             binding = metadata_binding(current)
             backend = cast(_KioTrashBackend, self._backend)
             outcome = backend.apply_snapshot(
@@ -270,12 +388,22 @@ def run_zip_intake_stage(
     }
     statuses: dict[str, int] = {}
     samples: list[dict[str, object]] = []
+    atomic_decisions: list[tuple[FileSnapshot, "DetectedType"]] = []
     filesystem_changed = False
     for snapshot in admission.snapshots:
         checkpoint = getattr(cancellation, "checkpoint", None)
         if callable(checkpoint):
             checkpoint()
-        if not _zip_candidate(Path(snapshot.path)):
+        source_path = Path(snapshot.path)
+        decision = _decide_zip_candidate(
+            engine,
+            source_path,
+            max_file_bytes=limit,
+            limits=limits,
+            cancellation=cancellation,
+            progress=progress,
+        )
+        if decision is None:
             continue
         counters["candidates"] += 1
         if apply and staging_factory is None:
@@ -292,6 +420,10 @@ def run_zip_intake_stage(
             limits=limits,
             staging=staging_factory,
             trash=trash,
+            cancellation=cancellation,
+            cancellation_token=cancellation,
+            progress=progress,
+            decision=decision,
         )
         source_payload = _engine_result_payload(outcome)
         source_status = str(source_payload.get("status", "unknown"))
@@ -303,6 +435,9 @@ def run_zip_intake_stage(
                 counters["generic_candidates"] += 1
             elif kind == "atomic_package":
                 counters["atomic_packages"] += 1
+                detected = _atomic_detected_type(decision)
+                if detected is not None:
+                    atomic_decisions.append((snapshot, detected))
         if source_status == "planned":
             counters["planned"] += 1
         if source_status == "applied":
@@ -360,6 +495,7 @@ def run_zip_intake_stage(
         "filesystem_changed": filesystem_changed,
         "reconciliation_required": bool(apply and filesystem_changed),
         **counters,
+        "atomic_decisions_reused": len(atomic_decisions),
         "statuses": statuses,
         "failures": failure_statuses,
         "failure_samples": samples,
@@ -374,6 +510,7 @@ def run_zip_intake_stage(
         details=payload,
         filesystem_changed=filesystem_changed,
         reconciliation_required=reconciliation_required,
+        atomic_decisions=tuple(atomic_decisions),
     )
 
 

@@ -28,7 +28,6 @@ import tempfile
 import time
 import zipfile
 import zlib
-from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -41,6 +40,7 @@ from neocortex.platform.zip_safety import (
     ZipStructureError,
     inspect_zip_structure,
 )
+from neocortex.progress import ProgressEvent, ProgressMetric, emit_progress
 
 # Keep classification marker reads bounded.  Classification is not a second
 # complete extraction: only package marker members are read.  Generic ZIPs are
@@ -231,6 +231,7 @@ class ZipIntakeClassification:
     estimated_uncompressed_bytes: int = 0
     detail: str | None = None
     structure: ZipStructure | None = field(default=None, repr=False, compare=False)
+    mime: str | None = None
 
     @property
     def is_generic(self) -> bool:
@@ -253,6 +254,7 @@ class ZipIntakeClassification:
             "member_count": self.member_count,
             "estimated_uncompressed_bytes": self.estimated_uncompressed_bytes,
             "detail": self.detail,
+            "mime": self.mime,
         }
 
 
@@ -478,6 +480,31 @@ class _Preflight:
     total_uncompressed_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class ZipDecision:
+    """One bounded ZIP decision tied to the physical source identity.
+
+    A decision is intentionally process-local.  It may be handed from the
+    inventory/intake discovery pass to the apply pass, but it is never valid
+    merely because the path string is unchanged: the complete
+    :class:`SourceIdentity` must still match.  ``_preflight`` is an internal
+    reuse seam that avoids rebuilding the central-directory decision before a
+    generic ZIP is extracted; it is not serialized in the public payload.
+    """
+
+    identity: SourceIdentity
+    classification: ZipIntakeClassification
+    _preflight: _Preflight | None = field(default=None, repr=False, compare=False)
+
+    def matches(self, path: Path, identity: SourceIdentity | None = None) -> bool:
+        """Return whether this decision is safe to reuse for ``path``."""
+
+        if os.fspath(path) != self.identity.path:
+            return False
+        current = self.identity if identity is None else identity
+        return _same_physical_identity(self.identity, current)
+
+
 @dataclass(slots=True)
 class _ExtractionBudget:
     members: int = 0
@@ -665,7 +692,86 @@ def _structure_entries(structure: ZipStructure) -> tuple[ZipMemberStructure, ...
     return tuple(structure.entries)
 
 
-def _preflight_zip(path: Path, *, limits: ZipIntakeLimits, deadline: _Deadline) -> _Preflight:
+def _preflight_from_archive(
+    archive: zipfile.ZipFile,
+    structure: ZipStructure,
+    *,
+    limits: ZipIntakeLimits,
+    deadline: _Deadline,
+    progress: "_ZipProgress | None" = None,
+) -> _Preflight:
+    """Validate one already-open archive and retain its reusable members."""
+
+    infos = tuple(archive.infolist())
+    if len(infos) != structure.members or len(infos) > limits.max_members:
+        raise ZipIntakeError("unsafe", "member_count_changed")
+    entries = _structure_entries(structure)
+    if entries and len(entries) != len(infos):
+        raise ZipIntakeError("unsafe", "central_directory_member_count_changed")
+    structures = {entry.ordinal: entry for entry in entries}
+    members: list[_Member] = []
+    seen: set[str] = set()
+    occupied: dict[str, bool] = {}
+    total = 0
+    for ordinal, info in enumerate(infos):
+        deadline.check()
+        if progress is not None:
+            progress.tick("preflight", 1, total=len(infos))
+        valid, name = _safe_member_name(info.filename)
+        if not valid:
+            raise ZipIntakeError("unsafe", "unsafe_member_name", info.filename[:512])
+        is_directory = bool(info.is_dir() or info.filename.endswith("/"))
+        if name in seen:
+            raise ZipIntakeError("unsafe", "duplicate_member_name", name[:512])
+        seen.add(name)
+        if _special_zip_mode(info):
+            raise ZipIntakeError("unsafe", "special_member", name[:512])
+        if int(info.flag_bits) & 0x1:
+            raise ZipIntakeError("password", "encrypted_member", name[:512])
+        if info.compress_type not in {
+            zipfile.ZIP_STORED,
+            zipfile.ZIP_DEFLATED,
+            zipfile.ZIP_BZIP2,
+            zipfile.ZIP_LZMA,
+        }:
+            raise ZipIntakeError("dependency", "unsupported_compression", str(info.compress_type))
+        declared = int(info.file_size)
+        compressed = int(info.compress_size)
+        if declared < 0 or declared > limits.max_member_bytes:
+            raise ZipIntakeError("budget", "member_size_budget", name[:512])
+        if declared and compressed <= 0:
+            raise ZipIntakeError("budget", "invalid_compression_size", name[:512])
+        ratio = float(declared) / float(max(1, compressed))
+        if ratio > float(limits.max_compression_ratio):
+            raise ZipIntakeError("budget", "compression_ratio_budget", name[:512])
+        if not is_directory:
+            total += declared
+            if total > limits.max_total_uncompressed_bytes:
+                raise ZipIntakeError("budget", "total_uncompressed_budget")
+        # A file cannot also be a parent directory and a directory cannot be
+        # repeated under a different spelling.
+        prefix_parts = name.split("/")
+        for index in range(1, len(prefix_parts)):
+            prefix = "/".join(prefix_parts[:index])
+            if occupied.get(prefix) is False:
+                raise ZipIntakeError("unsafe", "file_directory_collision", prefix)
+        previous = occupied.get(name)
+        if previous is not None and previous != is_directory:
+            raise ZipIntakeError("unsafe", "file_directory_collision", name)
+        occupied[name] = is_directory
+        for index in range(1, len(prefix_parts)):
+            occupied.setdefault("/".join(prefix_parts[:index]), True)
+        members.append(_Member(info, name, is_directory, structures.get(ordinal)))
+    return _Preflight(structure, tuple(members), total)
+
+
+def _preflight_zip(
+    path: Path,
+    *,
+    limits: ZipIntakeLimits,
+    deadline: _Deadline,
+    progress: "_ZipProgress | None" = None,
+) -> _Preflight:
     deadline.check()
     try:
         structure = inspect_zip_structure(
@@ -674,65 +780,13 @@ def _preflight_zip(path: Path, *, limits: ZipIntakeLimits, deadline: _Deadline) 
             max_central_directory_bytes=limits.max_central_directory_bytes,
         )
         with zipfile.ZipFile(path, "r") as archive:
-            infos = tuple(archive.infolist())
-            if len(infos) != structure.members or len(infos) > limits.max_members:
-                raise ZipIntakeError("unsafe", "member_count_changed")
-            entries = _structure_entries(structure)
-            if entries and len(entries) != len(infos):
-                raise ZipIntakeError("unsafe", "central_directory_member_count_changed")
-            structures = {entry.ordinal: entry for entry in entries}
-            members: list[_Member] = []
-            seen: set[str] = set()
-            occupied: dict[str, bool] = {}
-            total = 0
-            for ordinal, info in enumerate(infos):
-                deadline.check()
-                valid, name = _safe_member_name(info.filename)
-                if not valid:
-                    raise ZipIntakeError("unsafe", "unsafe_member_name", info.filename[:512])
-                is_directory = bool(info.is_dir() or info.filename.endswith("/"))
-                if name in seen:
-                    raise ZipIntakeError("unsafe", "duplicate_member_name", name[:512])
-                seen.add(name)
-                if _special_zip_mode(info):
-                    raise ZipIntakeError("unsafe", "special_member", name[:512])
-                if int(info.flag_bits) & 0x1:
-                    raise ZipIntakeError("password", "encrypted_member", name[:512])
-                if info.compress_type not in {
-                    zipfile.ZIP_STORED,
-                    zipfile.ZIP_DEFLATED,
-                    zipfile.ZIP_BZIP2,
-                    zipfile.ZIP_LZMA,
-                }:
-                    raise ZipIntakeError("dependency", "unsupported_compression", str(info.compress_type))
-                declared = int(info.file_size)
-                compressed = int(info.compress_size)
-                if declared < 0 or declared > limits.max_member_bytes:
-                    raise ZipIntakeError("budget", "member_size_budget", name[:512])
-                if declared and compressed <= 0:
-                    raise ZipIntakeError("budget", "invalid_compression_size", name[:512])
-                ratio = float(declared) / float(max(1, compressed))
-                if ratio > float(limits.max_compression_ratio):
-                    raise ZipIntakeError("budget", "compression_ratio_budget", name[:512])
-                if not is_directory:
-                    total += declared
-                    if total > limits.max_total_uncompressed_bytes:
-                        raise ZipIntakeError("budget", "total_uncompressed_budget")
-                # A file cannot also be a parent directory and a directory
-                # cannot be repeated under a different spelling.
-                prefix_parts = name.split("/")
-                for index in range(1, len(prefix_parts)):
-                    prefix = "/".join(prefix_parts[:index])
-                    if occupied.get(prefix) is False:
-                        raise ZipIntakeError("unsafe", "file_directory_collision", prefix)
-                previous = occupied.get(name)
-                if previous is not None and previous != is_directory:
-                    raise ZipIntakeError("unsafe", "file_directory_collision", name)
-                occupied[name] = is_directory
-                for index in range(1, len(prefix_parts)):
-                    occupied.setdefault("/".join(prefix_parts[:index]), True)
-                members.append(_Member(info, name, is_directory, structures.get(ordinal)))
-            return _Preflight(structure, tuple(members), total)
+            return _preflight_from_archive(
+                archive,
+                structure,
+                limits=limits,
+                deadline=deadline,
+                progress=progress,
+            )
     except ZipIntakeError:
         raise
     except PermissionError as exc:
@@ -741,22 +795,97 @@ def _preflight_zip(path: Path, *, limits: ZipIntakeLimits, deadline: _Deadline) 
         raise ZipIntakeError("corrupt", "zip_structure_invalid", f"{type(exc).__name__}: {exc}") from exc
 
 
-def _read_marker(archive: zipfile.ZipFile, info: zipfile.ZipInfo, *, limit: int) -> bytes:
+class _ZipProgress:
+    """Bounded progress adapter for one source ZIP.
+
+    The engine may check cancellation at chunk granularity, but it must not
+    turn every 64 KiB read into a terminal/UI event.  Updates are coalesced by
+    work units or a short wall-clock interval and a terminal event is emitted
+    only once for each phase.
+    """
+
+    def __init__(self, callback: object | None, *, source: Path) -> None:
+        self._callback: Callable[[ProgressEvent], None] | None = (
+            cast(Callable[[ProgressEvent], None], callback) if callable(callback) else None
+        )
+        self._source = source
+        self._counts: dict[str, int] = {}
+        self._last_emitted: dict[str, int] = {}
+        self._last_at: dict[str, float] = {}
+        self._finished: set[str] = set()
+
+    def tick(
+        self,
+        phase: str,
+        increment: int = 1,
+        *,
+        total: int | None = None,
+        metrics: tuple[ProgressMetric, ...] = (),
+        force: bool = False,
+    ) -> None:
+        if self._callback is None or phase in self._finished:
+            return
+        count = self._counts.get(phase, 0) + max(0, int(increment))
+        self._counts[phase] = count
+        now = time.monotonic()
+        previous = self._last_emitted.get(phase, -1)
+        last_at = self._last_at.get(phase, now)
+        if not force and previous >= 0 and count - previous < 32 and now - last_at < 0.25:
+            return
+        self._last_emitted[phase] = count
+        self._last_at[phase] = now
+        emit_progress(
+            self._callback,
+            ProgressEvent(
+                operation="zip-intake",
+                phase=phase,
+                description="Procesando ZIP",
+                completed=count,
+                total=total,
+                unit="elementos",
+                finished=force,
+                metrics=metrics,
+            ),
+        )
+        if force:
+            self._finished.add(phase)
+
+    def finish(
+        self,
+        phase: str,
+        *,
+        metrics: tuple[ProgressMetric, ...] = (),
+    ) -> None:
+        self.tick(phase, 0, metrics=metrics, force=True)
+
+
+def _read_marker(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    limit: int,
+    deadline: _Deadline,
+    progress: _ZipProgress | None = None,
+) -> bytes:
     if int(info.flag_bits) & 0x1:
         raise ZipIntakeError("password", "encrypted_marker", info.filename[:512])
     if int(info.file_size) > limit:
         raise ZipIntakeError("budget", "marker_size_budget", info.filename[:512])
     try:
         with archive.open(info, "r") as stream:
-            payload = stream.read(limit + 1)
-            if len(payload) > limit:
-                raise ZipIntakeError("budget", "marker_size_budget", info.filename[:512])
-            # Consume exactly to EOF; zipfile performs CRC validation when the
-            # declared payload is exhausted.
-            tail = stream.read(1)
-            if tail:
-                raise ZipIntakeError("budget", "marker_size_budget", info.filename[:512])
-            return payload
+            payload = bytearray()
+            while True:
+                deadline.check()
+                chunk = stream.read(min(CHUNK_BYTES, limit + 1 - len(payload)))
+                if not chunk:
+                    break
+                payload.extend(chunk)
+                if progress is not None:
+                    progress.tick("classification", len(chunk))
+                if len(payload) > limit:
+                    raise ZipIntakeError("budget", "marker_size_budget", info.filename[:512])
+            # Reading through EOF makes zipfile perform CRC validation.
+            return bytes(payload)
     except ZipIntakeError:
         raise
     except (OSError, RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
@@ -789,39 +918,54 @@ def _known_odf_mimes() -> set[str]:
         }
 
 
-def _classify_zip(path: Path, *, limits: ZipIntakeLimits, deadline: _Deadline) -> ZipIntakeClassification:
-    """Classify only bounded package markers; never extract generic members."""
+def _decide_zip(
+    path: Path,
+    *,
+    identity: SourceIdentity,
+    limits: ZipIntakeLimits,
+    deadline: _Deadline,
+    progress: _ZipProgress | None = None,
+) -> ZipDecision:
+    """Make one bounded decision and retain its preflight for apply mode."""
 
     try:
+        deadline.check()
         structure = inspect_zip_structure(
             path,
             max_members=limits.max_members,
             max_central_directory_bytes=limits.max_central_directory_bytes,
         )
         with zipfile.ZipFile(path, "r") as archive:
-            infos = tuple(archive.infolist())
-            if len(infos) != structure.members:
-                return ZipIntakeClassification("invalid", "corrupt", "invalid", detail="member count changed")
-            names = tuple(info.filename for info in infos)
-            normalized: list[str] = []
-            for name in names:
-                valid, clean = _safe_member_name(name)
-                if not valid:
-                    return ZipIntakeClassification("invalid", "unsafe", "invalid", member_count=len(infos), detail=f"unsafe member name: {name[:256]}", structure=structure)
-                normalized.append(clean)
-            duplicate_names = tuple(sorted(name for name, count in Counter(normalized).items() if count > 1))
-            if duplicate_names:
-                return ZipIntakeClassification("invalid", "unsafe", "invalid", tuple(f"duplicate:{name}" for name in duplicate_names[:8]), len(infos), detail="duplicate member names", structure=structure)
-            by_name = dict(zip(normalized, infos, strict=True))
-            total = sum(int(info.file_size) for info in infos if not info.is_dir() and not info.filename.endswith("/"))
-            if total > limits.max_total_uncompressed_bytes:
-                return ZipIntakeClassification("invalid", "budget", "invalid", member_count=len(infos), estimated_uncompressed_bytes=total, detail="total uncompressed budget", structure=structure)
+            # The central directory and member policy are validated in the
+            # same open handle used for marker reads.  Generic apply can then
+            # reuse this preflight instead of inspecting the source again.
+            preflight = _preflight_from_archive(
+                archive,
+                structure,
+                limits=limits,
+                deadline=deadline,
+                progress=progress,
+            )
+            members = preflight.members
+            by_name = {member.relative_name: member.info for member in members}
+            normalized = tuple(member.relative_name for member in members)
+            total = preflight.total_uncompressed_bytes
+            member_count = len(members)
             deadline.check()
             evidence: list[str] = []
             content_types = by_name.get("[Content_Types].xml")
             required_office: tuple[str, str] | None = None
             if content_types is not None:
-                _parse_xml_marker(_read_marker(archive, content_types, limit=MAX_MARKER_BYTES), "[Content_Types].xml")
+                _parse_xml_marker(
+                    _read_marker(
+                        archive,
+                        content_types,
+                        limit=MAX_MARKER_BYTES,
+                        deadline=deadline,
+                        progress=progress,
+                    ),
+                    "[Content_Types].xml",
+                )
                 if "word/document.xml" in by_name:
                     required_office = ("docx", "word/document.xml")
                 elif "xl/workbook.xml" in by_name:
@@ -830,42 +974,149 @@ def _classify_zip(path: Path, *, limits: ZipIntakeLimits, deadline: _Deadline) -
                     required_office = ("pptx", "ppt/presentation.xml")
                 if required_office is not None:
                     marker = by_name[required_office[1]]
-                    _parse_xml_marker(_read_marker(archive, marker, limit=MAX_MARKER_BYTES), required_office[1])
+                    _parse_xml_marker(
+                        _read_marker(
+                            archive,
+                            marker,
+                            limit=MAX_MARKER_BYTES,
+                            deadline=deadline,
+                            progress=progress,
+                        ),
+                        required_office[1],
+                    )
                     evidence.extend(("[Content_Types].xml", required_office[1]))
-                    return ZipIntakeClassification("atomic_package", "validated", required_office[0], tuple(evidence), len(infos), total, structure=structure)
+                    classification = ZipIntakeClassification(
+                        "atomic_package",
+                        "validated",
+                        required_office[0],
+                        tuple(evidence),
+                        member_count,
+                        total,
+                        structure=structure,
+                    )
+                    return ZipDecision(identity, classification, preflight)
                 # A malformed/incomplete OOXML-looking package is ambiguous,
                 # not permission to expand arbitrary package internals.
                 if any(name.startswith(("word/", "xl/", "ppt/")) for name in normalized):
-                    return ZipIntakeClassification("invalid", "ambiguous", "invalid", ("content_types_without_functional_marker",), len(infos), total, detail="incomplete OOXML package", structure=structure)
+                    classification = ZipIntakeClassification(
+                        "invalid",
+                        "ambiguous",
+                        "invalid",
+                        ("content_types_without_functional_marker",),
+                        member_count,
+                        total,
+                        detail="incomplete OOXML package",
+                        structure=structure,
+                    )
+                    return ZipDecision(identity, classification, preflight)
             mimetype = by_name.get("mimetype")
             if mimetype is not None:
-                payload = _read_marker(archive, mimetype, limit=MAX_MIMETYPE_BYTES)
+                payload = _read_marker(
+                    archive,
+                    mimetype,
+                    limit=MAX_MIMETYPE_BYTES,
+                    deadline=deadline,
+                    progress=progress,
+                )
                 try:
                     declared_mime = payload.decode("ascii")
                 except UnicodeDecodeError as exc:
                     raise ZipIntakeError("ambiguous", "mimetype_not_ascii") from exc
                 if declared_mime == "application/epub+zip" and "META-INF/container.xml" in by_name:
-                    # EPUB/ODF marker payloads are package data.  Reading to
-                    # EOF verifies CRC; XML parsing is deliberately left to
-                    # the normal package route, because small fixtures and
-                    # older producers may use namespace-tolerant markers.
-                    _read_marker(archive, by_name["META-INF/container.xml"], limit=MAX_MARKER_BYTES)
-                    return ZipIntakeClassification("atomic_package", "validated", "epub", ("mimetype", "META-INF/container.xml"), len(infos), total, structure=structure)
+                    _read_marker(
+                        archive,
+                        by_name["META-INF/container.xml"],
+                        limit=MAX_MARKER_BYTES,
+                        deadline=deadline,
+                        progress=progress,
+                    )
+                    classification = ZipIntakeClassification(
+                        "atomic_package",
+                        "validated",
+                        "epub",
+                        ("mimetype", "META-INF/container.xml"),
+                        member_count,
+                        total,
+                        structure=structure,
+                    )
+                    return ZipDecision(identity, classification, preflight)
                 if declared_mime in _known_odf_mimes() and "content.xml" in by_name and "META-INF/manifest.xml" in by_name:
-                    _read_marker(archive, by_name["content.xml"], limit=MAX_MARKER_BYTES)
-                    _read_marker(archive, by_name["META-INF/manifest.xml"], limit=MAX_MARKER_BYTES)
-                    return ZipIntakeClassification("atomic_package", "validated", "odf", ("mimetype", "content.xml", "META-INF/manifest.xml"), len(infos), total, structure=structure)
+                    _read_marker(
+                        archive,
+                        by_name["content.xml"],
+                        limit=MAX_MARKER_BYTES,
+                        deadline=deadline,
+                        progress=progress,
+                    )
+                    _read_marker(
+                        archive,
+                        by_name["META-INF/manifest.xml"],
+                        limit=MAX_MARKER_BYTES,
+                        deadline=deadline,
+                        progress=progress,
+                    )
+                    classification = ZipIntakeClassification(
+                        "atomic_package",
+                        "validated",
+                        "odf",
+                        ("mimetype", "content.xml", "META-INF/manifest.xml"),
+                        member_count,
+                        total,
+                        mime=declared_mime,
+                        structure=structure,
+                    )
+                    return ZipDecision(identity, classification, preflight)
                 if declared_mime in _known_odf_mimes() or declared_mime == "application/epub+zip":
-                    return ZipIntakeClassification("invalid", "ambiguous", "invalid", ("mimetype",), len(infos), total, detail="incomplete package markers", structure=structure)
+                    classification = ZipIntakeClassification(
+                        "invalid",
+                        "ambiguous",
+                        "invalid",
+                        ("mimetype",),
+                        member_count,
+                        total,
+                        detail="incomplete package markers",
+                        structure=structure,
+                    )
+                    return ZipDecision(identity, classification, preflight)
             android_manifest = by_name.get("AndroidManifest.xml")
             if android_manifest is not None:
-                _read_marker(archive, android_manifest, limit=MAX_MARKER_BYTES)
-                return ZipIntakeClassification("atomic_package", "validated", "apk", ("AndroidManifest.xml",), len(infos), total, structure=structure)
+                _read_marker(
+                    archive,
+                    android_manifest,
+                    limit=MAX_MARKER_BYTES,
+                    deadline=deadline,
+                    progress=progress,
+                )
+                classification = ZipIntakeClassification(
+                    "atomic_package",
+                    "validated",
+                    "apk",
+                    ("AndroidManifest.xml",),
+                    member_count,
+                    total,
+                    structure=structure,
+                )
+                return ZipDecision(identity, classification, preflight)
             jar_manifest = by_name.get("META-INF/MANIFEST.MF")
             if jar_manifest is not None:
-                manifest_payload = _read_marker(archive, jar_manifest, limit=MAX_MARKER_BYTES)
+                manifest_payload = _read_marker(
+                    archive,
+                    jar_manifest,
+                    limit=MAX_MARKER_BYTES,
+                    deadline=deadline,
+                    progress=progress,
+                )
                 if b"Manifest-Version:" in manifest_payload:
-                    return ZipIntakeClassification("atomic_package", "validated", "jar", ("META-INF/MANIFEST.MF",), len(infos), total, structure=structure)
+                    classification = ZipIntakeClassification(
+                        "atomic_package",
+                        "validated",
+                        "jar",
+                        ("META-INF/MANIFEST.MF",),
+                        member_count,
+                        total,
+                        structure=structure,
+                    )
+                    return ZipDecision(identity, classification, preflight)
             # A project is intentionally *generic*: its directory layout is
             # data to expand, not a virtual unit to preserve.
             project_markers = {
@@ -881,17 +1132,128 @@ def _classify_zip(path: Path, *, limits: ZipIntakeLimits, deadline: _Deadline) -
                 "setup.py",
                 "setup.cfg",
             }
-            project_evidence = tuple(name for name in normalized if PurePosixPath(name).name.casefold() in project_markers)
+            project_evidence = tuple(
+                name for name in normalized if PurePosixPath(name).name.casefold() in project_markers
+            )
             if project_evidence:
                 evidence.extend(f"project:{name}" for name in project_evidence[:8])
-                return ZipIntakeClassification("generic_zip", "validated", "project", tuple(evidence), len(infos), total, structure=structure)
-            return ZipIntakeClassification("generic_zip", "validated", "storage_archive", ("no_atomic_markers",), len(infos), total, structure=structure)
+                classification = ZipIntakeClassification(
+                    "generic_zip",
+                    "validated",
+                    "project",
+                    tuple(evidence),
+                    member_count,
+                    total,
+                    structure=structure,
+                )
+            else:
+                classification = ZipIntakeClassification(
+                    "generic_zip",
+                    "validated",
+                    "storage_archive",
+                    ("no_atomic_markers",),
+                    member_count,
+                    total,
+                    structure=structure,
+                )
+            return ZipDecision(identity, classification, preflight)
     except ZipIntakeError as exc:
-        return ZipIntakeClassification("invalid", exc.status, "invalid", detail=exc.detail)
+        classification = ZipIntakeClassification("invalid", exc.status, "invalid", detail=exc.detail)
+        return ZipDecision(identity, classification)
     except PermissionError as exc:
-        return ZipIntakeClassification("invalid", "blocked", "invalid", detail=str(exc))
+        classification = ZipIntakeClassification("invalid", "blocked", "invalid", detail=str(exc))
+        return ZipDecision(identity, classification)
     except (ZipStructureError, zipfile.BadZipFile, OSError, RuntimeError, zlib.error) as exc:
-        return ZipIntakeClassification("invalid", "corrupt", "invalid", detail=f"{type(exc).__name__}: {exc}")
+        classification = ZipIntakeClassification(
+            "invalid",
+            "corrupt",
+            "invalid",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+        return ZipDecision(identity, classification)
+
+
+def decide_zip(
+    source: str | os.PathLike[str],
+    *,
+    limits: ZipIntakeLimits | None = None,
+    max_file_bytes: int | None = None,
+    deadline: float | None = None,
+    cancellation: object | None = None,
+    progress: object | None = None,
+) -> ZipDecision:
+    """Return the canonical bounded ZIP decision for one source identity."""
+
+    effective_limits = ZipIntakeLimits() if limits is None else limits
+    effective_limits.validate()
+    path = Path(source)
+    identity = SourceIdentity.capture(path)
+    reporter = _ZipProgress(progress, source=path)
+    if max_file_bytes is not None:
+        if isinstance(max_file_bytes, bool) or not isinstance(max_file_bytes, int) or max_file_bytes < 0:
+            raise ValueError("max_file_bytes must be a non-negative integer or None")
+        if identity.size > max_file_bytes:
+            classification = ZipIntakeClassification(
+                "invalid",
+                "skipped_by_size",
+                "invalid",
+                detail="source exceeds global size admission",
+            )
+            reporter.finish("classification", metrics=(ProgressMetric("blocked", 1),))
+            return ZipDecision(identity, classification)
+    if identity.size > effective_limits.max_input_bytes:
+        classification = ZipIntakeClassification(
+            "invalid",
+            "budget",
+            "invalid",
+            detail="source exceeds max_input_bytes",
+        )
+        reporter.finish("classification", metrics=(ProgressMetric("blocked", 1),))
+        return ZipDecision(identity, classification)
+    decision = _decide_zip(
+        path,
+        identity=identity,
+        limits=effective_limits,
+        deadline=_deadline_for(effective_limits, deadline, cancellation),
+        progress=reporter,
+    )
+    metric_name = "atomic" if decision.classification.is_atomic else "generic" if decision.classification.is_generic else "blocked"
+    reporter.finish("classification", metrics=(ProgressMetric(metric_name, 1),))
+    return decision
+
+
+def decide_zip_candidate(
+    source: str | os.PathLike[str],
+    *,
+    limits: ZipIntakeLimits | None = None,
+    max_file_bytes: int | None = None,
+    deadline: float | None = None,
+    cancellation: object | None = None,
+    progress: object | None = None,
+) -> ZipDecision | None:
+    """Find and decide one ZIP candidate without a second detector layer.
+
+    A non-``.zip`` path is admitted by its four-byte ZIP signature.  The
+    signature probe is owned by this function, so callers must not probe and
+    then call :func:`decide_zip` independently for the same source.
+    """
+
+    path = Path(source)
+    if path.suffix.casefold() != ".zip":
+        try:
+            with path.open("rb") as stream:
+                if stream.read(4) not in {b"PK\x03\x04", b"PK\x05\x06", b"PK\x06\x06"}:
+                    return None
+        except OSError:
+            return None
+    return decide_zip(
+        path,
+        limits=limits,
+        max_file_bytes=max_file_bytes,
+        deadline=deadline,
+        cancellation=cancellation,
+        progress=progress,
+    )
 
 
 def classify_zip(
@@ -899,16 +1261,18 @@ def classify_zip(
     *,
     limits: ZipIntakeLimits | None = None,
     deadline: float | None = None,
+    cancellation: object | None = None,
+    progress: object | None = None,
 ) -> ZipIntakeClassification:
     """Return the one bounded content-based classification for ``source``."""
 
-    effective_limits = ZipIntakeLimits() if limits is None else limits
-    effective_limits.validate()
-    path = Path(source)
-    identity = SourceIdentity.capture(path)
-    if identity.size > effective_limits.max_input_bytes:
-        return ZipIntakeClassification("invalid", "budget", "invalid", detail="source exceeds max_input_bytes")
-    return _classify_zip(path, limits=effective_limits, deadline=_deadline_for(effective_limits, deadline))
+    return decide_zip(
+        source,
+        limits=limits,
+        deadline=deadline,
+        cancellation=cancellation,
+        progress=progress,
+    ).classification
 
 
 def _default_destination(source: Path) -> Path:
@@ -934,7 +1298,12 @@ def _check_disk(path: Path, needed: int, *, limits: ZipIntakeLimits) -> None:
         raise ZipIntakeError("budget", "disk_space_budget")
 
 
-def _source_sha256(path: Path, *, deadline: _Deadline) -> str:
+def _source_sha256(
+    path: Path,
+    *,
+    deadline: _Deadline,
+    progress: _ZipProgress | None = None,
+) -> str:
     digest = hashlib.sha256()
     try:
         with path.open("rb") as stream:
@@ -944,6 +1313,8 @@ def _source_sha256(path: Path, *, deadline: _Deadline) -> str:
                 if not chunk:
                     break
                 digest.update(chunk)
+                if progress is not None:
+                    progress.tick("hash", len(chunk))
     except ZipIntakeError:
         raise
     except OSError as exc:
@@ -983,6 +1354,7 @@ def _stream_member(
     deadline: _Deadline,
     budget: _ExtractionBudget,
     disk_root: Path,
+    progress: _ZipProgress | None = None,
 ) -> None:
     info = member.info
     declared = int(info.file_size)
@@ -1010,6 +1382,8 @@ def _stream_member(
                     _check_disk(disk_root, max(0, declared - actual), limits=limits)
                     sink.write(chunk)
                     crc = zlib.crc32(chunk, crc)
+                    if progress is not None:
+                        progress.tick("extract", len(chunk))
             sink.flush()
             os.fchmod(sink.fileno(), 0o600)
             os.fsync(sink.fileno())
@@ -1040,6 +1414,27 @@ def _is_zip_candidate(path: Path) -> bool:
         raise ZipIntakeError("blocked", "nested_candidate_unavailable", str(exc)) from exc
 
 
+def _nested_zip_decision(
+    path: Path,
+    *,
+    limits: ZipIntakeLimits,
+    deadline: _Deadline,
+    progress: _ZipProgress | None = None,
+) -> ZipDecision | None:
+    """Observe a nested candidate once, including its reusable preflight."""
+
+    if not _is_zip_candidate(path):
+        return None
+    identity = SourceIdentity.capture(path)
+    return _decide_zip(
+        path,
+        identity=identity,
+        limits=limits,
+        deadline=deadline,
+        progress=progress,
+    )
+
+
 def _extract_zip_tree(
     archive_path: Path,
     destination: Path,
@@ -1048,17 +1443,26 @@ def _extract_zip_tree(
     deadline: _Deadline,
     budget: _ExtractionBudget,
     depth: int,
+    preflight: _Preflight | None = None,
+    progress: _ZipProgress | None = None,
 ) -> int:
     deadline.check()
     if depth > limits.depth_limit:
         raise ZipIntakeError("budget", "nested_depth_budget")
-    preflight = _preflight_zip(archive_path, limits=limits, deadline=deadline)
-    if preflight.total_uncompressed_bytes + budget.total_uncompressed_bytes > limits.max_total_uncompressed_bytes:
+    effective_preflight = preflight
+    if effective_preflight is None:
+        effective_preflight = _preflight_zip(
+            archive_path,
+            limits=limits,
+            deadline=deadline,
+            progress=progress,
+        )
+    if effective_preflight.total_uncompressed_bytes + budget.total_uncompressed_bytes > limits.max_total_uncompressed_bytes:
         raise ZipIntakeError("budget", "nested_total_uncompressed_budget")
     _create_directory(destination)
     try:
         with zipfile.ZipFile(archive_path, "r") as archive:
-            for member in preflight.members:
+            for member in effective_preflight.members:
                 deadline.check()
                 target = destination.joinpath(*member.relative_name.split("/"))
                 if member.is_directory:
@@ -1073,6 +1477,7 @@ def _extract_zip_tree(
                     deadline=deadline,
                     budget=budget,
                     disk_root=destination,
+                    progress=progress,
                 )
     except ZipIntakeError:
         raise
@@ -1082,9 +1487,17 @@ def _extract_zip_tree(
     # nested atomic package is left as the regular file for normal routes.
     for child in sorted(destination.rglob("*"), key=lambda item: (len(item.parts), os.fsencode(os.fspath(item)))):
         deadline.check()
-        if not child.is_file() or child.is_symlink() or not _is_zip_candidate(child):
+        if not child.is_file() or child.is_symlink():
             continue
-        nested = _classify_zip(child, limits=limits, deadline=deadline)
+        nested_decision = _nested_zip_decision(
+            child,
+            limits=limits,
+            deadline=deadline,
+            progress=progress,
+        )
+        if nested_decision is None:
+            continue
+        nested = nested_decision.classification
         if nested.kind == "invalid":
             nested_status = nested.status
             if nested_status not in {
@@ -1116,16 +1529,24 @@ def _extract_zip_tree(
             deadline=deadline,
             budget=budget,
             depth=depth + 1,
+            preflight=nested_decision._preflight,
+            progress=progress,
         )
         try:
             child.unlink()
         except OSError as exc:
             raise ZipIntakeError("blocked", "nested_source_cleanup_failed", str(exc)) from exc
-    _verify_tree(destination, limits=limits, deadline=deadline)
+    _verify_tree(destination, limits=limits, deadline=deadline, progress=progress)
     return budget.members
 
 
-def _verify_tree(root: Path, *, limits: ZipIntakeLimits, deadline: _Deadline) -> None:
+def _verify_tree(
+    root: Path,
+    *,
+    limits: ZipIntakeLimits,
+    deadline: _Deadline,
+    progress: _ZipProgress | None = None,
+) -> None:
     _assert_real_directory(root, label="staged tree")
     total = 0
     for current, directories, files in os.walk(root, topdown=True, followlinks=False):
@@ -1137,6 +1558,7 @@ def _verify_tree(root: Path, *, limits: ZipIntakeLimits, deadline: _Deadline) ->
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode) or metadata.st_mode & 0o777 != 0o700:
                 raise ZipIntakeError("unsafe", "staged_directory_permissions", os.fspath(path))
         for name in files:
+            deadline.check()
             path = current_path / name
             metadata = path.lstat()
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -1146,6 +1568,8 @@ def _verify_tree(root: Path, *, limits: ZipIntakeLimits, deadline: _Deadline) ->
             total += int(metadata.st_size)
             if total > limits.max_total_uncompressed_bytes:
                 raise ZipIntakeError("budget", "staged_tree_budget")
+            if progress is not None:
+                progress.tick("verify", 1)
 
 
 def _normalize_trash_result(value: object) -> TrashDisposition:
@@ -1183,6 +1607,13 @@ def _publisher(value: PublishHook | None) -> PublishHook:
     return FilesystemPublishHook() if value is None else value
 
 
+def _first_not_none(*values: object | None) -> object | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 def run_zip_intake(
     source: str | os.PathLike[str] | None = None,
     *,
@@ -1204,13 +1635,18 @@ def run_zip_intake(
     state: object | None = None,
     run_id: int | None = None,
     progress: object | None = None,
+    decision: ZipDecision | None = None,
 ) -> ZipIntakeOutcome | dict[str, object]:
     """Plan or physically intake one ZIP, always failing closed.
 
     ``apply=False`` performs no staging, publication, or Trash effect.  Apply
     requires a caller-owned Trash hook because removing the source is a KIO
     effect, never an ``unlink`` fallback.  A source over ``max_file_bytes`` is
-    rejected before opening or classifying it.
+    rejected before opening or classifying it.  ``decision`` may only come
+    from the canonical :func:`decide_zip`/ :func:`decide_zip_candidate` pass;
+    it is reused only when its complete ``SourceIdentity`` still matches the
+    current path.  A stale decision is discarded and the source is decided
+    again before any extraction or effect.
     """
 
     if source is None and root is not None:
@@ -1225,7 +1661,7 @@ def run_zip_intake(
             publisher=publisher,
             trash=trash,
             deadline=deadline,
-            cancellation=cancellation or cancellation_token or cancel,
+            cancellation=_first_not_none(cancellation, cancellation_token, cancel),
             state=state,
             run_id=run_id,
             progress=progress,
@@ -1236,6 +1672,7 @@ def run_zip_intake(
     effective_limits.validate()
     path = Path(source)
     source_text = os.fspath(path)
+    reporter: _ZipProgress
     try:
         identity = SourceIdentity.capture(path)
     except ZipIntakeError as exc:
@@ -1250,15 +1687,45 @@ def run_zip_intake(
         if identity.size > max_file_bytes:
             classification = ZipIntakeClassification("invalid", "skipped_by_size", "invalid", detail="source exceeds global size admission")
             return ZipIntakeOutcome("skipped_by_size", source_text, identity, classification, apply=apply, reason="max_file_bytes", detail=classification.detail)
+    reporter = _ZipProgress(progress, source=path)
+    effective_cancellation = _first_not_none(cancellation, cancellation_token, cancel)
+    deadline_obj = _deadline_for(effective_limits, deadline, effective_cancellation)
     try:
-        deadline_obj = _deadline_for(
-            effective_limits,
-            deadline,
-            cancellation or cancellation_token or cancel,
-        )
-        classification = _classify_zip(path, limits=effective_limits, deadline=deadline_obj)
+        deadline_obj.check()
     except ZipIntakeError as exc:
         classification = ZipIntakeClassification("invalid", exc.status, "invalid", detail=exc.detail)
+        reporter.finish("classification", metrics=(ProgressMetric("blocked", 1),))
+        return ZipIntakeOutcome(
+            exc.status,
+            source_text,
+            identity,
+            classification,
+            apply=apply,
+            reason=exc.reason,
+            detail=exc.detail,
+        )
+    if decision is not None and not isinstance(decision, ZipDecision):
+        raise TypeError("decision must be a ZipDecision or None")
+    if decision is not None and decision.matches(path, identity):
+        selected_decision = decision
+    else:
+        selected_decision = _decide_zip(
+            path,
+            identity=identity,
+            limits=effective_limits,
+            deadline=deadline_obj,
+            progress=reporter,
+        )
+    classification = selected_decision.classification
+    reporter.finish(
+        "classification",
+        metrics=(
+            ProgressMetric(
+                "atomic" if classification.is_atomic else "generic" if classification.is_generic else "blocked",
+                1,
+            ),
+        ),
+    )
     if classification.kind == "invalid":
         status_value = classification.status
         if status_value not in {
@@ -1275,9 +1742,11 @@ def run_zip_intake(
         status = cast(IntakeStatus, status_value)
         return ZipIntakeOutcome(status, source_text, identity, classification, apply=apply, reason=classification.status, detail=classification.detail)
     if classification.kind == "atomic_package":
+        reporter.finish("intake", metrics=(ProgressMetric("atomic", 1),))
         return ZipIntakeOutcome("atomic", source_text, identity, classification, apply=apply, members=classification.member_count, uncompressed_bytes=classification.estimated_uncompressed_bytes, reason="atomic_package", detail="preserved as a functional package")
     try:
-        source_digest = _source_sha256(path, deadline=deadline_obj)
+        source_digest = _source_sha256(path, deadline=deadline_obj, progress=reporter)
+        reporter.finish("hash")
     except ZipIntakeError as exc:
         return ZipIntakeOutcome(exc.status, source_text, identity, classification, apply=apply, reason=exc.reason, detail=exc.detail)
     destination_path = _validate_destination(Path(destination) if destination is not None else _default_destination(path))
@@ -1302,8 +1771,19 @@ def run_zip_intake(
         destination_name = destination_path.name
         staged_destination = payload_root / destination_name
         _check_disk(lease.path, classification.estimated_uncompressed_bytes, limits=effective_limits)
-        _extract_zip_tree(path, staged_destination, limits=effective_limits, deadline=deadline_obj, budget=budget, depth=0)
-        _verify_tree(staged_destination, limits=effective_limits, deadline=deadline_obj)
+        _extract_zip_tree(
+            path,
+            staged_destination,
+            limits=effective_limits,
+            deadline=deadline_obj,
+            budget=budget,
+            depth=0,
+            preflight=selected_decision._preflight,
+            progress=reporter,
+        )
+        reporter.finish("extract")
+        _verify_tree(staged_destination, limits=effective_limits, deadline=deadline_obj, progress=reporter)
+        reporter.finish("verify")
         if not identity.matches(path):
             raise ZipIntakeError("source_changed", "source_changed_before_publish")
         _assert_destination_parent(destination_path)
@@ -1356,6 +1836,7 @@ def run_zip_intake(
             raise ZipIntakeError("recovery_required", "trash_claim_unverified")
         _COMPLETED_DESTINATIONS[os.fspath(destination_path)] = identity
         lease.complete()
+        reporter.finish("intake", metrics=(ProgressMetric("applied", 1),))
         return ZipIntakeOutcome("applied", source_text, identity, classification, apply=True, destination=os.fspath(destination_path), members=budget.members, uncompressed_bytes=budget.total_uncompressed_bytes, published=True, trashed=True, successor_paths=(os.fspath(destination_path),), reason="generic_zip_published", detail=trash_result.evidence, source_sha256=source_digest)
     except ZipIntakeError as exc:
         if lease is not None:
@@ -1363,6 +1844,7 @@ def run_zip_intake(
                 lease.fail(exc.detail)
             except BaseException:
                 pass
+        reporter.finish("intake", metrics=(ProgressMetric("blocked", 1),))
         return ZipIntakeOutcome(exc.status, source_text, identity, classification, apply=True, destination=os.fspath(destination_path), members=budget.members, uncompressed_bytes=budget.total_uncompressed_bytes, published=publish_receipt is not None and exc.status == "recovery_required", reason=exc.reason, detail=exc.detail, source_sha256=source_digest)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         if lease is not None:
@@ -1370,6 +1852,7 @@ def run_zip_intake(
                 lease.fail(f"{type(exc).__name__}: {exc}")
             except BaseException:
                 pass
+        reporter.finish("intake", metrics=(ProgressMetric("blocked", 1),))
         return ZipIntakeOutcome("dependency", source_text, identity, classification, apply=True, destination=os.fspath(destination_path), members=budget.members, uncompressed_bytes=budget.total_uncompressed_bytes, reason="intake_failed", detail=f"{type(exc).__name__}: {exc}", source_sha256=source_digest)
 
 
@@ -1412,6 +1895,8 @@ def intake_zip(
     scratch_root: str | os.PathLike[str] | None = None,
     publisher: PublishHook | None = None,
     deadline: float | None = None,
+    progress: object | None = None,
+    decision: ZipDecision | None = None,
 ) -> ZipIntakeOutcome:
     """Compatibility/direct boundary used by E2E tests and small callers.
 
@@ -1424,7 +1909,7 @@ def intake_zip(
         TrashHook | Callable[[Path, SourceIdentity], object] | None,
         trash or trash_backend or trash_service or kio_trash,
     )
-    token = cancellation or cancellation_token or cancel
+    token = _first_not_none(cancellation, cancellation_token, cancel)
     if token is not None and bool(getattr(token, "is_cancelled", False)):
         identity: SourceIdentity | None
         try:
@@ -1455,6 +1940,8 @@ def intake_zip(
             trash=effective_trash,
             deadline=deadline,
             cancellation=token,
+            progress=progress,
+            decision=decision,
         )
         if not isinstance(value, ZipIntakeOutcome):
             raise TypeError("run_zip_intake returned a batch result for one source")
@@ -1483,7 +1970,7 @@ def _run_framework_batch(
 ) -> dict[str, object]:
     """Adapt the framework batch call without importing its state owner."""
 
-    del config, state, run_id, progress
+    del config, state, run_id
     if not isinstance(root, Path):
         raise TypeError("root must be a Path")
     values = tuple(snapshots or ())
@@ -1517,6 +2004,7 @@ def _run_framework_batch(
             trash=trash,
             deadline=deadline,
             cancellation=cancellation,
+            progress=progress,
         )
         payload = value.to_dict() if isinstance(value, ZipIntakeOutcome) else dict(value)
         outcomes.append(payload)
@@ -1577,11 +2065,14 @@ __all__ = (
     "StageLease",
     "TrashDisposition",
     "TrashHook",
+    "ZipDecision",
     "ZipIntakeClassification",
     "ZipIntakeError",
     "ZipIntakeLimits",
     "ZipIntakeOutcome",
     "classify_zip",
+    "decide_zip",
+    "decide_zip_candidate",
     "intake_zip",
     "plan_zip_intake",
     "run_zip_intake",

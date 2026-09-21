@@ -17,8 +17,9 @@ from neocortex.integrations.inventory.inventory_boundary import (
     build_normal_inventory_boundary,
     initialize_authorized_state_directory,
 )
-from neocortex.progress import ProgressEvent, emit_progress
+from neocortex.progress import ProgressEvent, ProgressMetric, emit_progress
 from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.runtime.control.cancellation import CancellationRequested
 from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.runtime.models import InitialRunResult, RouteOnlyRunResult
 from neocortex.runtime.orchestration.orchestrator_types import (
@@ -588,23 +589,82 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
             )
         return _InitialExecution(work, journal_after)
 
-    @staticmethod
     def _persist_initial_termination(
+        self,
         state: FrameworkState,
         run_id: int,
         exc: BaseException,
         *,
         cancelled: bool,
     ) -> None:
+        zip_effects: dict[str, object] = {}
+        if cancelled:
+            effects_reader = getattr(self, "_zip_intake_effects_summary", None)
+            if callable(effects_reader):
+                observed = effects_reader()
+                if isinstance(observed, dict):
+                    zip_effects = dict(observed)
+            if zip_effects:
+                # The CLI's terminal progress event is emitted after this
+                # lifecycle hook.  Carry the bounded evidence on the
+                # cancellation exception so that event can state explicitly
+                # that ZIP effects were already committed and are not rolled
+                # back by cancelling Identify.
+                try:
+                    exc.__dict__["zip_intake_effects"] = dict(zip_effects)
+                except (AttributeError, TypeError):
+                    pass
+
+                def effect_counter(name: str) -> int:
+                    value = zip_effects.get(name)
+                    return value if type(value) is int and value >= 0 else 0
+
+                emit_progress(
+                    self.progress,
+                    ProgressEvent(
+                        "framework",
+                        "zip-effects",
+                        "ZIP Intake: efectos previos ya aplicados",
+                        1,
+                        1,
+                        "fase",
+                        True,
+                        (
+                            ProgressMetric(
+                                "applied_containers",
+                                effect_counter("applied_containers"),
+                            ),
+                            ProgressMetric(
+                                "published_files",
+                                effect_counter("published_files"),
+                            ),
+                            ProgressMetric(
+                                "trashed_sources",
+                                effect_counter("trashed_sources"),
+                            ),
+                            ProgressMetric("status", "committed_before_cancel"),
+                        ),
+                    ),
+                )
         keep_runs = set(state.resumable_route_candidate_run_ids())
         keep_runs.add(run_id)
         state.prune_route_candidates(tuple(sorted(keep_runs)))
+        termination_details: dict[str, object] | None
+        if cancelled:
+            termination_details = (
+                {"zip_intake_effects": zip_effects} if zip_effects else None
+            )
+        else:
+            termination_details = {
+                "error_type": type(exc).__name__,
+                "detail": str(exc),
+            }
         state.record_event(
             run_id,
             "warning" if cancelled else "error",
             "run",
             "Ejecución cancelada por el usuario" if cancelled else "Ejecución fallida",
-            None if cancelled else {"error_type": type(exc).__name__, "detail": str(exc)},
+            termination_details,
         )
         if cancelled:
             request_cancel = getattr(state, "request_run_cancellation", None)
@@ -657,6 +717,9 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
         except RunBudgetExceeded as exc:
             self._persist_initial_termination(state, run_id, exc, cancelled=True)
             raise
+        except CancellationRequested as exc:
+            self._persist_initial_termination(state, run_id, exc, cancelled=True)
+            raise
         except BaseException as exc:
             self._persist_initial_termination(state, run_id, exc, cancelled=False)
             raise
@@ -703,6 +766,10 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
             with self._framework_state() as state:
                 self._persist_initial_termination(state, run_id, exc, cancelled=True)
             raise
+        except CancellationRequested as exc:
+            with self._framework_state() as state:
+                self._persist_initial_termination(state, run_id, exc, cancelled=True)
+            raise
         except BaseException as exc:
             with self._framework_state() as state:
                 self._persist_initial_termination(state, run_id, exc, cancelled=False)
@@ -723,6 +790,10 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
                 self._persist_initial_termination(state, run_id, exc, cancelled=True)
             raise
         except RunBudgetExceeded as exc:
+            with self._framework_state() as state:
+                self._persist_initial_termination(state, run_id, exc, cancelled=True)
+            raise
+        except CancellationRequested as exc:
             with self._framework_state() as state:
                 self._persist_initial_termination(state, run_id, exc, cancelled=True)
             raise

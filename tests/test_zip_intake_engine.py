@@ -5,10 +5,15 @@ import stat
 import zipfile
 from pathlib import Path
 
+import pytest
+
+from neocortex.capabilities.formats.archive import intake as intake_module
 from neocortex.capabilities.formats.archive.intake import (
     SourceIdentity,
     TrashDisposition,
     classify_zip,
+    decide_zip,
+    decide_zip_candidate,
     intake_zip,
     plan_zip_intake,
 )
@@ -102,3 +107,138 @@ def test_destination_collision_is_fail_closed(tmp_path: Path) -> None:
     assert result.status == "collision"
     assert (destination / "old.txt").read_bytes() == b"old"
     assert source.exists()
+
+
+def test_apply_reuses_one_canonical_preflight_without_duplicate_structure_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "generic.zip"
+    _zip(source, [("payload.txt", b"payload")])
+    destination = tmp_path / "generic"
+    trash_root = tmp_path / "trash"
+    counts = {"structure": 0, "zipfile": 0}
+    original_inspect = intake_module.inspect_zip_structure
+    original_zipfile = zipfile.ZipFile
+
+    def inspect(*args: object, **kwargs: object) -> object:
+        counts["structure"] += 1
+        return original_inspect(*args, **kwargs)
+
+    class CountingZipFile(original_zipfile):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            counts["zipfile"] += 1
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(intake_module, "inspect_zip_structure", inspect)
+    monkeypatch.setattr(zipfile, "ZipFile", CountingZipFile)
+
+    result = intake_zip(
+        source,
+        destination,
+        apply=True,
+        trash=_Trash(trash_root),
+    )
+
+    assert result.status == "applied"
+    assert counts == {"structure": 1, "zipfile": 2}
+
+
+def test_atomic_decision_is_reused_and_stale_identity_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "document.zip"
+    _zip(source, [("[Content_Types].xml", b"<Types/>") , ("word/document.xml", b"<document/>")])
+    decision = decide_zip(source)
+
+    def unexpected(*args: object, **kwargs: object) -> object:
+        raise AssertionError("stale decision was unexpectedly reclassified")
+
+    monkeypatch.setattr(intake_module, "_decide_zip", unexpected)
+    reused = intake_module.run_zip_intake(source, decision=decision)
+    assert reused.status == "atomic"
+    assert reused.classification == decision.classification
+
+    # Same path, changed physical metadata: a decision is not reusable merely
+    # because the inventory path string survived.
+    monkeypatch.undo()
+    source.write_bytes(source.read_bytes() + b"changed")
+    calls = 0
+    original_decide = intake_module._decide_zip
+
+    def counted(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original_decide(*args, **kwargs)
+
+    monkeypatch.setattr(intake_module, "_decide_zip", counted)
+    refreshed = intake_module.run_zip_intake(source, decision=decision)
+    assert calls == 1
+    assert refreshed.status != "atomic"
+
+
+def test_generic_decision_reuse_extracts_physical_successors_without_reclassifying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "generic.zip"
+    _zip(source, [("extracted.txt", b"physical")])
+    decision = decide_zip(source)
+    destination = tmp_path / "generic"
+    trash_root = tmp_path / "trash"
+
+    def unexpected(*args: object, **kwargs: object) -> object:
+        raise AssertionError("generic decision was reclassified")
+
+    monkeypatch.setattr(intake_module, "_decide_zip", unexpected)
+    result = intake_zip(
+        source,
+        destination,
+        apply=True,
+        trash=_Trash(trash_root),
+        decision=decision,
+    )
+
+    assert result.status == "applied"
+    assert (destination / "extracted.txt").read_bytes() == b"physical"
+    assert not source.exists()
+
+
+def test_inner_cancellation_is_checked_during_member_observation(tmp_path: Path) -> None:
+    source = tmp_path / "many.zip"
+    _zip(source, [(f"item-{index}.txt", b"payload") for index in range(96)])
+
+    class CancellationRequested(Exception):
+        pass
+
+    class Token:
+        checks = 0
+
+        def checkpoint(self) -> None:
+            self.checks += 1
+            if self.checks >= 4:
+                raise CancellationRequested()
+
+    token = Token()
+    result = intake_module.run_zip_intake(source, cancellation=token)
+
+    assert result.status == "blocked"
+    assert result.reason == "blocked"
+    assert result.detail and "cancellation" in result.detail
+    assert token.checks >= 4
+
+
+def test_progress_updates_are_coalesced_for_large_marker_inventory(tmp_path: Path) -> None:
+    source = tmp_path / "many.zip"
+    _zip(source, [(f"item-{index}.txt", b"payload") for index in range(256)])
+    events = []
+
+    result = classify_zip(source, progress=events.append)
+
+    assert result.kind == "generic_zip"
+    assert len(events) < 32
+    assert events[-1].finished is True
+
+
+def test_candidate_owner_does_not_classify_non_zip_files(tmp_path: Path) -> None:
+    text = tmp_path / "wrong-extension.bin"
+    text.write_bytes(b"plain text")
+    assert decide_zip_candidate(text) is None

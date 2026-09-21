@@ -18,6 +18,14 @@ def test_short_attached_and_separated_spellings_share_the_global_field() -> None
     assert attached.max_file_bytes == 10_000_000
     assert separated.max_file_bytes == attached.max_file_bytes
     assert long.max_file_bytes == attached.max_file_bytes
+    expected_explicit_options = frozenset({"all", "max_file_bytes"})
+    expected_explicit_counts = {"all": 1, "max_file_bytes": 1}
+    assert attached._explicit_options == expected_explicit_options
+    assert separated._explicit_options == expected_explicit_options
+    assert long._explicit_options == expected_explicit_options
+    assert attached._explicit_option_counts == expected_explicit_counts
+    assert separated._explicit_option_counts == expected_explicit_counts
+    assert long._explicit_option_counts == expected_explicit_counts
 
     attached_config = framework_config_from_args(attached)
     separated_config = framework_config_from_args(separated)

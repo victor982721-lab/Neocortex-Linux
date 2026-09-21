@@ -397,6 +397,39 @@ def _emit_unsuccessful_execution(
     from neocortex.api.read_contract import sanitize_untrusted_text
     from neocortex.progress import ProgressEvent, ProgressMetric
 
+    zip_effects = getattr(failure, "zip_intake_effects", None)
+    zip_effects_metric: ProgressMetric | None = None
+    if isinstance(zip_effects, Mapping):
+        applied = zip_effects.get("applied_containers", 0)
+        published = zip_effects.get("published_files", 0)
+        trashed = zip_effects.get("trashed_sources", 0)
+        if all(type(value) is int and value >= 0 for value in (applied, published, trashed)):
+            zip_effects_metric = ProgressMetric(
+                "zip_effects",
+                "ZIP Intake: "
+                f"{applied} contenedores aplicados, "
+                f"{published} archivos físicos publicados, "
+                f"{trashed} fuentes enviadas a Trash",
+            )
+
+    metrics = [
+        ProgressMetric("status", "cancelled" if cancelled else "failed"),
+        ProgressMetric("completion", "incomplete"),
+        ProgressMetric("exit_code", 130 if cancelled else 2),
+        ProgressMetric("error_code", error_code),
+        ProgressMetric(
+            "error_type", sanitize_untrusted_text(type(failure).__name__, limit=128)
+        ),
+        ProgressMetric("cause", sanitize_untrusted_text(failure, limit=512)),
+        ProgressMetric("errors", errors),
+        ProgressMetric(
+            "failed_routes",
+            sanitize_untrusted_text(",".join(sorted(failed_routes)), limit=512),
+        ),
+    ]
+    if zip_effects_metric is not None:
+        metrics.append(zip_effects_metric)
+
     progress(
         ProgressEvent(
             "framework",
@@ -406,21 +439,7 @@ def _emit_unsuccessful_execution(
             None,
             "ejecución",
             True,
-            (
-                ProgressMetric("status", "cancelled" if cancelled else "failed"),
-                ProgressMetric("completion", "incomplete"),
-                ProgressMetric("exit_code", 130 if cancelled else 2),
-                ProgressMetric("error_code", error_code),
-                ProgressMetric(
-                    "error_type", sanitize_untrusted_text(type(failure).__name__, limit=128)
-                ),
-                ProgressMetric("cause", sanitize_untrusted_text(failure, limit=512)),
-                ProgressMetric("errors", errors),
-                ProgressMetric(
-                    "failed_routes",
-                    sanitize_untrusted_text(",".join(sorted(failed_routes)), limit=512),
-                ),
-            ),
+            tuple(metrics),
         )
     )
 
@@ -706,6 +725,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
     from neocortex.persistence.state_publication import StatePublicationError
     from neocortex.persistence.framework_state_writer import RunBudgetExceeded
+    from neocortex.runtime.control.cancellation import CancellationRequested
     from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
     from neocortex.runtime.config.runtime_cache import RuntimeCacheConfigurationError
     from neocortex.safety.protected_content import ProtectedContentError
@@ -800,6 +820,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 # The public entrypoint owns exit 130; direct callers retain
                 # KeyboardInterrupt and the orchestrator's cancellation contract.
                 raise
+            except CancellationRequested as exc:
+                _emit_unsuccessful_execution(
+                    progress, exc, error_code="execution_cancelled", errors=0, cancelled=True
+                )
+                # Normalize cooperative cancellation to the public Ctrl+C
+                # contract so callers receive exit 130 without a traceback.
+                raise KeyboardInterrupt from exc
             except (
                 InventoryError,
                 RouteExecutionError,
