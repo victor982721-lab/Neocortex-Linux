@@ -56,6 +56,7 @@ from neocortex.runtime.control.memory_runtime import MemoryResourceLimits, Weigh
 from neocortex.workflow.findings import ReviewCandidate
 from neocortex.persistence.framework_route_state import (
     FrameworkRouteState,
+    REVIEW_RECONCILIATION_BATCH_SIZE,
     ReviewCandidateReconciliation,
     reconcile_findings_batch_compat,
     store_findings_compat,
@@ -208,15 +209,18 @@ class _AudioReviewBuffer:
         )
 
     def flush(self) -> None:
-        if not self.reconciliations:
-            return
-        reconcile_findings_batch_compat(
-            self.framework_state,
-            self.run_id,
-            "audio",
-            tuple(self.reconciliations),
-        )
-        self.reconciliations.clear()
+        while self.reconciliations:
+            batch = tuple(self.reconciliations[:REVIEW_RECONCILIATION_BATCH_SIZE])
+            reconcile_findings_batch_compat(
+                self.framework_state,
+                self.run_id,
+                "audio",
+                batch,
+            )
+            # Retire only the transaction that was accepted.  If a later
+            # chunk fails, the unsubmitted suffix remains available for a
+            # bounded retry without duplicating an already accepted prefix.
+            del self.reconciliations[: len(batch)]
 
 
 class _TranscriberLease:

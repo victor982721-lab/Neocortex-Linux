@@ -105,6 +105,36 @@ def test_owner_wait_is_interruptible_before_the_second_database_open(
     assert isinstance(errors[0], CancellationRequested)
 
 
+def test_owner_wait_accepts_boolean_cancellation_before_the_second_database_open(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "dedup.sqlite3"
+    with DedupIndex(database):
+        pass
+    cancelled = threading.Event()
+    opened = threading.Event()
+    errors: list[BaseException] = []
+
+    def queued_owner() -> None:
+        try:
+            with dedup_owner_lock(database, cancellation_check=cancelled.is_set):
+                opened.set()
+        except BaseException as exc:  # pragma: no cover - assertion aid
+            errors.append(exc)
+
+    with dedup_owner_lock(database):
+        worker = threading.Thread(target=queued_owner)
+        worker.start()
+        time.sleep(0.05)
+        cancelled.set()
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+
+    assert not opened.is_set()
+    assert len(errors) == 1
+    assert isinstance(errors[0], CancellationRequested)
+
+
 def test_owner_aliases_share_the_same_physical_lease(tmp_path: Path) -> None:
     database = tmp_path / "dedup.sqlite3"
     with DedupIndex(database):

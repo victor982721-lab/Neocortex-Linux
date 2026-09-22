@@ -20,6 +20,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from neocortex.runtime.control.cancellation import CancellationRequested
+
 
 @dataclass(slots=True)
 class _OwnerLock:
@@ -29,6 +31,15 @@ class _OwnerLock:
 
 _REGISTRY_LOCK = threading.Lock()
 _OWNER_LOCKS: dict[str, _OwnerLock] = {}
+
+
+def _check_cancellation(cancellation_check: Callable[[], object] | None) -> None:
+    """Run one owner-wait checkpoint and accept bool-style callbacks too."""
+
+    if cancellation_check is None:
+        return
+    if cancellation_check():
+        raise CancellationRequested("dedup owner wait cancelled")
 
 
 def _owner_key(path: str | Path) -> str:
@@ -59,8 +70,9 @@ def dedup_owner_lock(
     final lease, avoiding a process-lifetime path registry.
     """
 
-    if cancellation_check is not None:
-        cancellation_check()
+    if cancellation_check is not None and not callable(cancellation_check):
+        raise TypeError("cancellation_check must be callable or None")
+    _check_cancellation(cancellation_check)
     key = _owner_key(path)
     with _REGISTRY_LOCK:
         owner = _OWNER_LOCKS.get(key)
@@ -74,11 +86,9 @@ def dedup_owner_lock(
         # cancellation.  Poll in a bounded interval so a queued PDF/Image
         # owner never opens SQLite after its run has been cancelled.
         while not acquired:
-            if cancellation_check is not None:
-                cancellation_check()
+            _check_cancellation(cancellation_check)
             acquired = owner.lock.acquire(timeout=0.1)
-        if cancellation_check is not None:
-            cancellation_check()
+        _check_cancellation(cancellation_check)
         yield
     finally:
         if acquired:

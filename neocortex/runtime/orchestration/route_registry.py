@@ -368,7 +368,15 @@ def _run_image(context: RouteExecutionContext) -> object:
             context.resource_coordinator, "image", cancellation=cancellation
         )
     )
-    cancellation_check = getattr(context.cancellation, "checkpoint", None)
+    # Image has a route-local child token so a local admission failure also
+    # cancels a queued owner before it can construct ``DedupIndex``.  Keep the
+    # compatibility fallback for lightweight route doubles without a real
+    # parent token.
+    cancellation_check = (
+        getattr(cancellation, "checkpoint", None)
+        if callable(getattr(context.cancellation, "checkpoint", None))
+        else None
+    )
     with dedup_owner_lock(
         config.dedup_database,
         cancellation_check=cancellation_check if callable(cancellation_check) else None,

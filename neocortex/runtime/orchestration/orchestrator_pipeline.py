@@ -1230,9 +1230,10 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         state: FrameworkState,
         run_id: int,
         scan_id: int,
-        action_runner: FrameworkActions,
         plan: DedupPlan,
         actions: ActionSummary,
+        excluded_paths: tuple[Path, ...],
+        inventory_policy: InventoryExclusionPolicy,
     ) -> tuple[
         ActionSummary,
         dict[str, object],
@@ -1254,7 +1255,21 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             run_id=run_id,
         )
         if self.selected_routes:
-            actions = action_runner.cleanup_empty_directories(plan, actions)
+            # The inventory owner used by Identify/Dedupe must be closed
+            # before PDF/Image route workers open their own connections. A
+            # fresh short-lived owner is sufficient for the post-route empty
+            # directory reconciliation and avoids a live WAL forcing a
+            # multi-hundred-megabyte snapshot in sibling routes.
+            with DedupIndex(self.config.dedup_database) as cleanup_index:
+                cleanup_runner = self._build_initial_action_runner(
+                    state=state,
+                    run_id=run_id,
+                    dedup_index=cleanup_index,
+                    scan_id=scan_id,
+                    excluded_paths=excluded_paths,
+                    inventory_policy=inventory_policy,
+                )
+                actions = cleanup_runner.cleanup_empty_directories(plan, actions)
         return (
             actions,
             route_results,
@@ -1349,27 +1364,28 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 inventory.inventory_mode,
                 candidate_rows,
             )
-            (
-                actions,
-                route_results,
-                image_summary,
-                global_resources,
-                organization_plan,
-                organization_apply,
-            ) = self._run_initial_routes(
-                root=boundary.access_policy.root,
-                state=state,
-                run_id=run_id,
-                scan_id=inventory.scan.scan_id,
-                action_runner=action_runner,
-                plan=plan,
-                actions=actions,
-            )
-            # ZIP Intake is a Framework stage rather than a content route.
-            # Keep the compact projection in route_results for status/replay
-            # consumers and pass the same mapping through InitialWork below;
-            # no second archive state is created.
-            route_results["zip_intake"] = dict(zip_intake_result)
+        (
+            actions,
+            route_results,
+            image_summary,
+            global_resources,
+            organization_plan,
+            organization_apply,
+        ) = self._run_initial_routes(
+            root=boundary.access_policy.root,
+            state=state,
+            run_id=run_id,
+            scan_id=inventory.scan.scan_id,
+            plan=plan,
+            actions=actions,
+            excluded_paths=excluded_paths,
+            inventory_policy=boundary.exclusion_policy,
+        )
+        # ZIP Intake is a Framework stage rather than a content route. Keep
+        # the compact projection in route_results for status/replay consumers
+        # and pass the same mapping through InitialWork below; no second
+        # archive state is created.
+        route_results["zip_intake"] = dict(zip_intake_result)
         return _InitialWork(
             inventory,
             plan,

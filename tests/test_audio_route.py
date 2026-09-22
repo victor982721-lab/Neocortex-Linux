@@ -25,6 +25,7 @@ from neocortex.capabilities.formats.audio.models import (
 from neocortex.capabilities.formats.audio.route import (
     AUDIO_MIME_TYPES,
     AudioRoute,
+    _AudioReviewBuffer,
     search_audio_state,
 )
 from neocortex.capabilities.formats.audio.state import (
@@ -236,6 +237,52 @@ class FakeMemoryGate:
     def admit(self, estimated_bytes: int):
         self.peak_reserved_bytes = max(self.peak_reserved_bytes, estimated_bytes)
         yield
+
+
+def test_audio_review_buffer_chunks_and_retries_only_unsubmitted_suffix(
+    tmp_path: Path,
+) -> None:
+    class ReconciliationState:
+        def __init__(self) -> None:
+            self.accepted: list[tuple[object, ...]] = []
+            self.fail_once = True
+
+        def reconcile_review_candidates_batch(
+            self,
+            _run_id: int,
+            _route_name: str,
+            reconciliations,
+        ) -> None:
+            batch = tuple(reconciliations)
+            if self.fail_once and len(self.accepted) == 1:
+                self.fail_once = False
+                raise RuntimeError("fixture reconciliation failure")
+            self.accepted.append(batch)
+
+    state = ReconciliationState()
+    buffer = _AudioReviewBuffer(state, 17)  # type: ignore[arg-type]
+    snapshots = tuple(
+        FileSnapshot(str(tmp_path / f"audio-{index}.ogg"), 1, index + 1, 1, index + 2, -1)
+        for index in range(513)
+    )
+    for snapshot in snapshots:
+        buffer.queue_success(snapshot, "fixture audio review")
+
+    with pytest.raises(RuntimeError, match="fixture reconciliation failure"):
+        buffer.flush()
+
+    assert [len(batch) for batch in state.accepted] == [256]
+    assert len(buffer.reconciliations) == 257
+
+    buffer.flush()
+
+    assert [len(batch) for batch in state.accepted] == [256, 256, 1]
+    assert tuple(
+        reconciliation.snapshot.path
+        for batch in state.accepted
+        for reconciliation in batch
+    ) == tuple(snapshot.path for snapshot in snapshots)
+    assert buffer.reconciliations == []
 
 
 class FakeTranscriber:
