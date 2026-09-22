@@ -1931,6 +1931,43 @@ def test_loader_overrides_are_stripped_by_environment_and_real_wrapper(tmp_path:
     assert result.returncode == 0
 
 
+def test_launcher_preserves_explicit_xdg_sandbox_overrides(tmp_path: Path) -> None:
+    root = tmp_path / "release"
+    (root / "bin").mkdir(parents=True)
+    program = root / "bin" / "Neocortex"
+    program.write_text(
+        '#!/bin/sh\nprintf "%s\\n%s\\n%s\\n" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME"\n',
+        encoding="utf-8",
+    )
+    program.chmod(0o755)
+    launcher = tmp_path / "launcher"
+    launcher.write_bytes(
+        release_linux._launcher_payload(
+            tmp_path / "corpus",
+            root,
+            config_home=tmp_path / "default-config",
+            state_home=tmp_path / "default-state",
+            data_home=tmp_path / "default-data",
+        )
+    )
+    launcher.chmod(0o755)
+    sandbox = {
+        "XDG_CONFIG_HOME": str(tmp_path / "sandbox-config"),
+        "XDG_STATE_HOME": str(tmp_path / "sandbox-state"),
+        "XDG_DATA_HOME": str(tmp_path / "sandbox-data"),
+    }
+    result = subprocess.run(
+        [launcher],
+        env={**os.environ, **sandbox},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == list(sandbox.values())
+
+
 @pytest.mark.parametrize("fault", [None, "receipt", "policy", "live_library"])
 def test_v2_public_verify_binds_receipt_policy_and_current_measurement(tmp_path: Path, monkeypatch, fault: str | None) -> None:
     import copy

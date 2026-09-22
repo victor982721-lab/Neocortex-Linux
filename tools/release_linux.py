@@ -2475,7 +2475,16 @@ def _launcher_payload(
         ("XDG_DATA_HOME", data_home),
     ):
         if value is not None:
-            exports += f"export {name}={shlex.quote(str(value))}\n"
+            # Preserve an explicit caller-owned HOME/XDG sandbox.  The
+            # launcher still supplies the operational default when no
+            # override exists, but must not redirect isolated verification or
+            # fixture runs back into the user's live state.
+            exports += (
+                f'if [ -z "${{{name}:-}}" ]; then\n'
+                f"    {name}={shlex.quote(str(value))}\n"
+                "fi\n"
+                f"export {name}\n"
+            )
     return (
         "#!/bin/sh\n"
         "set -eu\n"
