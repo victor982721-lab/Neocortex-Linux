@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import os
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -20,6 +22,7 @@ from neocortex.documents.document_cache_sync import _synchronize_database
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
+from neocortex.persistence import sqlite_connection
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 
 
@@ -174,6 +177,33 @@ def test_framework_state_existing_only_does_not_recreate_raced_state(
         FrameworkState(database, existing_only=True)
     assert removed is True
     assert not database.exists()
+
+
+def test_sidecar_creation_tolerates_checkpoint_unlink_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "raced-sidecars.sqlite3"
+    database.touch()
+    wal = Path(f"{database}-wal")
+    wal.touch(mode=0o600)
+    original_open = sqlite_connection.os.open
+    raced = False
+
+    def race_once(path: object, flags: int, *args: object, **kwargs: object):
+        nonlocal raced
+        if Path(path) == wal and flags & os.O_EXCL and not raced:
+            raced = True
+            wal.unlink()
+            raise FileExistsError(errno.EEXIST, "sidecar checkpointed", os.fspath(wal))
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite_connection.os, "open", race_once)
+    sqlite_connection.ensure_private_sqlite_sidecars(database)
+
+    assert raced is True
+    assert not wal.exists()
+    assert Path(f"{database}-shm").is_file()
 
 
 # endregion [01]

@@ -151,7 +151,15 @@ def ensure_private_sqlite_sidecars(path: str | Path) -> None:
             try:
                 descriptor = os.open(candidate, flags, STATE_FILE_MODE)
             except FileExistsError as err:
-                metadata = candidate.lstat()
+                try:
+                    metadata = candidate.lstat()
+                except FileNotFoundError:
+                    # SQLite may checkpoint and unlink a WAL between the
+                    # exclusive-create probe and this metadata check.  The
+                    # next writer/open will recreate the sidecar under the
+                    # private-state umask; do not turn that normal lifecycle
+                    # race into a route failure.
+                    continue
                 if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                     raise sqlite3.OperationalError(
                         f"SQLite state sidecar is not a regular file: {candidate}"

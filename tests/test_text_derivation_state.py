@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import zlib
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 
 import neocortex.capabilities.formats.text.text_derivation_repository as text_derivation_repository_module
 import neocortex.capabilities.formats.text.text_state as text_state_module
+from neocortex.persistence.sqlite_immutable import SQLiteSnapshotBudgetExceeded
 from neocortex.semantic.derivation_contracts import (
     CapabilityFailure,
     InputBinding,
@@ -206,6 +208,34 @@ def test_fresh_schema_two_is_exact_idempotent_and_has_owner_lineage_tables(
         assert connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE name='text_derivation_outbox'"
         ).fetchone() == (1,)
+
+
+def test_text_state_falls_back_to_coordinated_writer_when_probe_budget_is_exhausted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "text.sqlite3"
+    initialize_text_state(path)
+    original_database = text_state_module.text_database
+    probe_attempted = False
+
+    @contextmanager
+    def fail_large_read(*args, **kwargs):
+        nonlocal probe_attempted
+        if kwargs.get("readonly") and not probe_attempted:
+            probe_attempted = True
+            raise SQLiteSnapshotBudgetExceeded("temporary_bytes")
+        with original_database(*args, **kwargs) as connection:
+            yield connection
+
+    monkeypatch.setattr(text_state_module, "text_database", fail_large_read)
+    initialize_text_state(path)
+
+    assert probe_attempted is True
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone() == ("2",)
 
 
 def test_published_document_revision_cannot_be_downgraded_to_legacy(

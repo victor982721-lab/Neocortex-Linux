@@ -15,6 +15,7 @@ from neocortex.persistence.sqlite_connection import (
     SQLiteWriterPragmas,
     connect_sqlite,
 )
+from neocortex.persistence.sqlite_immutable import SQLiteSnapshotBudgetExceeded
 
 from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
@@ -444,29 +445,37 @@ def text_database(
 def initialize_text_state(path: Path) -> None:
     prior: int | None = None
     if path.is_file():
-        with text_database(path, readonly=True) as connection:
-            prior = read_metadata_schema_version(connection, label="text")
-            if prior is not None and prior > TEXT_SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"text schema {prior} is newer than supported schema {TEXT_SCHEMA_VERSION}"
-                )
-            if prior == TEXT_SCHEMA_VERSION:
-                validate_sqlite_schema_contract(
-                    connection,
-                    text_schema_contract(),
-                    label="text",
-                    exact=True,
-                )
-                return
-            if prior == 1:
-                validate_sqlite_schema_contract(
-                    connection,
-                    _text_v1_schema_contract(),
-                    label="text schema 1 migration source",
-                    exact=True,
-                )
-            elif prior not in {None, 0}:
-                raise RuntimeError(f"unsupported text migration start: {prior}")
+        try:
+            with text_database(path, readonly=True) as connection:
+                prior = read_metadata_schema_version(connection, label="text")
+                if prior is not None and prior > TEXT_SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"text schema {prior} is newer than supported schema {TEXT_SCHEMA_VERSION}"
+                    )
+                if prior == TEXT_SCHEMA_VERSION:
+                    validate_sqlite_schema_contract(
+                        connection,
+                        text_schema_contract(),
+                        label="text",
+                        exact=True,
+                    )
+                    return
+                if prior == 1:
+                    validate_sqlite_schema_contract(
+                        connection,
+                        _text_v1_schema_contract(),
+                        label="text schema 1 migration source",
+                        exact=True,
+                    )
+                elif prior not in {None, 0}:
+                    raise RuntimeError(f"unsupported text migration start: {prior}")
+        except SQLiteSnapshotBudgetExceeded as exc:
+            if exc.reason != "temporary_bytes":
+                raise
+            # A large pre-existing WAL cannot be copied into the bounded
+            # snapshot budget. Continue to the coordinated writer probe
+            # below: BEGIN IMMEDIATE revalidates the schema against the live
+            # owner without copying or deleting its sidecars.
     with text_database(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
