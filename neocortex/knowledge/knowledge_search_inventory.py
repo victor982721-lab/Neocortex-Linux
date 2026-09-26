@@ -69,10 +69,6 @@ def _head_sql_values(head: InventoryHead | Sequence[int]) -> tuple[int, int, int
     return values
 
 
-def _issue_sql_values(issue: InventoryPlanIssue) -> tuple[int, str | None]:
-    return issue.scan_id, issue.scope
-
-
 InventoryChoice = tuple[str, InventoryIdentity]
 InventoryRow = sqlite3.Row
 _Connection = Any

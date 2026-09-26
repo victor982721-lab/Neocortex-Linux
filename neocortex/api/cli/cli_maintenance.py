@@ -104,21 +104,6 @@ def maintenance_root(args: argparse.Namespace, scope: str) -> Path:
     return state / "scratch" / scope
 
 
-def _registered_artifact_registry_root(scratch_root: Path) -> Path:
-    """Return the state-owned registry root for a registered scratch scope.
-
-    The Framework orchestrator composes registered scratch with the sibling
-    ``state/artifacts`` owner.  The direct maintenance leaf must use the same
-    lexical state root; deriving it from the already-selected scratch scope
-    avoids accepting another user path or resolving symlinks as a side effect.
-    The ``ScratchManager`` keeps this root lazy, so a read-only query still
-    does not create either owner when the roots are absent.
-    """
-
-    state_root = scratch_root.parent.parent
-    return Path(os.path.abspath(os.fspath(state_root))) / "artifacts"
-
-
 def _historical_scope(scope: str) -> bool:
     return scope == HISTORICAL_AUDIT_SCOPE
 

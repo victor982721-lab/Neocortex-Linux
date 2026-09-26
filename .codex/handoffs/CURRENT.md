@@ -1,5 +1,24 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-OPT-20260926.
+**Alcance:** segunda pasada de simplificación de código privado inalcanzable y
+reducción de trabajo repetido, con equivalencia funcional y E2E aislado.
+
+Se conservan las comprobaciones físicas pre/post efecto, las publicaciones
+completas, los contratos de lectura y los puntos de compatibilidad. La revisión
+independiente descarta optimizaciones que cambian resultados o no benefician
+un consumidor real; menos líneas o menos tiempo aislado no acreditan la entrega.
+
+Matriz, comparaciones, propuestas descartadas, validación integrada y estado
+exacto de publicación/instalación/rollback se consultan en
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-26-segunda-pasada-01a0dbb9/`.
+El SSOT conserva los gates vigentes. La ronda no procesa el corpus real, no
+abre sus owners operativos y no reanuda experimentos pausados.
+
+---
+
+# Handoff anterior — NeoCortex
+
 **Ronda:** NEO-AUD-20260925.
 **Alcance:** auditoría correctiva del flujo integrado, publicación Semantic,
 admisión de formatos, identidad y efectos, con pruebas de aplicación y replay

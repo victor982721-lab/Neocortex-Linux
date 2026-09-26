@@ -307,10 +307,6 @@ def _registered_pdf_recovery_workspace(
 # The child never opens SQLite; only the parent promotes streamed results atomically.
 
 
-def _normalized_length(text: str) -> int:  # pyright: ignore[reportUnusedFunction]
-    return len(" ".join(text.casefold().split()))
-
-
 def _source_matches(snapshot: FileSnapshot) -> bool:
     stat = os.stat(snapshot.path, follow_symlinks=False)
     return stat_matches_snapshot(snapshot, stat)

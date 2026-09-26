@@ -400,6 +400,10 @@ def test_real_knowledge_inventory_query_uses_both_v10_identity_indexes(
     with sqlite3.connect(database) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA automatic_index=OFF")
+        # The fixture is deliberately tiny. Refresh its private planner
+        # statistics so this contract observes the identity indexes rather
+        # than an arbitrary small-table primary-key choice.
+        connection.execute("ANALYZE")
         query_plan: list[sqlite3.Row] = []
 
         class ExplainingConnection:

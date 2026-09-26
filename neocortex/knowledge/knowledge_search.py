@@ -128,6 +128,7 @@ _LEXICAL_OWNER_FORMATS: dict[str, frozenset[str]] = {
 _IMAGE_FORMATS = frozenset(
     {"avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp"}
 )
+_IMAGE_ONLY_SOURCE_KINDS = frozenset({"image", "image_ocr"})
 def _duration_ns(clock_ns: Callable[[], int], started_ns: int) -> int:
     finished_ns = clock_ns()
     if (
@@ -670,6 +671,20 @@ def _planned(plan: KnowledgePlan, channel: str) -> bool:
     return any(step.channel == channel for step in plan.steps)
 
 
+def _can_skip_optional_lexical(plan: KnowledgePlan) -> bool:
+    """Skip only an explicit, image/OCR-exclusive optional lexical scope."""
+
+    if any(step.channel == "lexical" and step.required for step in plan.steps):
+        return False
+    source_kinds = frozenset(value.casefold() for value in plan.source_kinds)
+    formats = frozenset(value.casefold().lstrip(".") for value in plan.formats)
+    if not source_kinds and not formats:
+        return False
+    return source_kinds.issubset(_IMAGE_ONLY_SOURCE_KINDS) and formats.issubset(
+        _IMAGE_FORMATS
+    )
+
+
 def _required_lexical_ranking_names(
     plan: KnowledgePlan,
     snapshot: KnowledgeSnapshot,
@@ -789,6 +804,12 @@ def _new_search_execution(
 @knowledge_phase
 def _run_lexical_phase(execution: _SearchExecution) -> None:
     execution.check_cancelled()
+    # Image-only scopes deliberately make owner FTS optional: their textual
+    # evidence comes from Semantic OCR/title channels, and document/audio FTS
+    # candidates would be rejected by the explicit source filter afterwards.
+    # Do not open every lexical owner just to discard that work post-filter.
+    if _can_skip_optional_lexical(execution.plan):
+        return
     cancellation = SQLiteCancellationBridge(execution.cancellation_check)
     try:
         rankings, reports = _lexical_rankings(

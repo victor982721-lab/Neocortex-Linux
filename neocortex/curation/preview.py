@@ -975,19 +975,6 @@ def _digest_duplicate_groups(
     return count
 
 
-def _iter_duplicate_items(
-    connection: sqlite3.Connection, scan_id: int, digest: Any, verification_mode: VerificationMode,
-) -> Iterator[tuple[_SortKey, CurationItem]]:
-    projection = _duplicate_group_projection(connection)
-    rows = connection.execute(
-        f"SELECT {projection} FROM planned_duplicate_groups WHERE scan_id=? "
-        "ORDER BY reclaimable_bytes DESC,keep_path COLLATE BINARY,group_id", (scan_id,),
-    )
-    for row in rows:
-        item = _duplicate_item(connection, scan_id, row, digest, verification_mode)
-        yield (0, -int(row[4]), str(row[2]), int(row[0])), item
-
-
 def _empty_file_summary(connection: sqlite3.Connection, scan_id: int) -> int:
     return int(
         connection.execute(

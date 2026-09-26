@@ -269,62 +269,6 @@ class PdfRouteTests(unittest.TestCase):
         automatic_limit_patcher.start()
         self.addCleanup(automatic_limit_patcher.stop)
 
-    def test_active_page_progress_reads_only_durable_staging_rows(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            state_path = root / "pdf.sqlite3"
-            snapshot = FileSnapshot(str(root / "active.pdf"), 1, 2, 100, 3, 4)
-            config = PdfRouteConfig(
-                state_path,
-                ocr_mode="never",
-                workers=1,
-                page_start=3,
-                page_end=8,
-            )
-            with DedupIndex(root / "dedup.sqlite3") as index:
-                route = PdfRoute(config, index, _State(), 1, 1)
-                key = f"{snapshot.volume_id:032x}:{snapshot.file_id:032x}"
-                with closing(sqlite3.connect(state_path)) as connection:
-                    connection.row_factory = sqlite3.Row
-                    connection.execute(
-                        """INSERT INTO documents(
-                        file_key,path,size,mtime_ns,birthtime_ns,
-                        processing_signature,status,page_count,updated_ns)
-                        VALUES(?,?,?,?,?,?,'processing',10,1)""",
-                        (
-                            key,
-                            snapshot.path,
-                            snapshot.size,
-                            snapshot.mtime_ns,
-                            snapshot.birthtime_ns,
-                            config.processing_signature,
-                        ),
-                    )
-                    for page_number, source in (
-                        (2, "native"),
-                        (3, "native"),
-                        (4, "ocr"),
-                        (5, "error"),
-                    ):
-                        connection.execute(
-                            """INSERT INTO page_staging(
-                            file_key,processing_signature,page_number,source,
-                            text_zlib,text_chars) VALUES(?,?,?,?,?,?)""",
-                            (
-                                key,
-                                config.processing_signature,
-                                page_number,
-                                source,
-                                zlib.compress(b"text"),
-                                4,
-                            ),
-                        )
-                    connection.commit()
-
-                    progress = route._active_page_progress(connection, (snapshot,))
-
-            self.assertEqual(progress, "3/6")
-
     def test_child_stops_after_bounded_consecutive_page_failures(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "broken-page-tree.pdf"

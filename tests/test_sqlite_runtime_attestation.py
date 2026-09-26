@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import shlex
+import shutil
 import sys
 from pathlib import Path
 
@@ -22,7 +23,20 @@ pytestmark = [pytest.mark.capability("base", "platform"),
 def release_root(tmp_path: Path) -> Path:
     root = tmp_path / "candidate"
     (root / "bin").mkdir(parents=True)
-    (root / "bin" / "python").symlink_to(sys.executable)
+    # Probe ``-I`` through a real venv-shaped candidate.  A copied executable
+    # with only ``bin/python`` is treated as a standalone prefix and cannot
+    # discover the standard library (notably ``encodings``); a symlink merely
+    # delegates prefix discovery to the host venv.  Keep the fixture small and
+    # bind it to the actual native runtime used by this test process.
+    executable = root / "bin" / "python"
+    shutil.copy2(sys.executable, executable)
+    executable.chmod(0o755)
+    (root / "pyvenv.cfg").write_text(
+        f"home = {Path(sys.base_prefix) / 'bin'}\n"
+        "include-system-site-packages = false\n"
+        f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n",
+        encoding="utf-8",
+    )
     return root
 
 
@@ -77,7 +91,11 @@ def test_real_probe_uses_candidate_python_owned_temporary_and_no_user_state(
     assert kwargs["env"]["HOME"] == kwargs["cwd"] == kwargs["env"]["TMPDIR"]
     assert "PYTHONPATH" not in kwargs["env"]
     assert not Path(kwargs["cwd"]).exists(), "probe scratch must be removed after explicit closes"
-    assert sorted(path.relative_to(release_root).as_posix() for path in release_root.rglob("*")) == ["bin", "bin/python"]
+    assert sorted(path.relative_to(release_root).as_posix() for path in release_root.rglob("*")) == [
+        "bin",
+        "bin/python",
+        "pyvenv.cfg",
+    ]
     assert result["capabilities"] == dict.fromkeys(native.CAPABILITIES, True)
     assert result["sqlite"]["source_id"]
     assert result["sqlite"]["compile_options"] == sorted(result["sqlite"]["compile_options"])

@@ -18,7 +18,7 @@ import queue
 import sqlite3
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import Future
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, replace
 from importlib import import_module
@@ -57,7 +57,6 @@ from .pdf_isolation import (
 )
 from neocortex.safety.ocr_profiles import native_text_quality, resolve_ocr_profile
 from .pdf_runtime import (
-    PdfResourceError,
     PdfResourceGate,
     PdfResourceLimits,
 )
@@ -131,7 +130,6 @@ TEXT_BATCH_PAGES = 4
 TEXT_DUPLICATE_ACTION_BATCH_SIZE = 256
 PDF_INVENTORY_BATCH = 1000
 TRANSIENT_RETRIES_PER_RUN = 1
-PAGE_PROGRESS_POLL_SECONDS = 1.0
 PDF_REVIEW_REASON_CODES = frozenset(
     {
         "pdf_child_exit",
@@ -249,11 +247,9 @@ class _ExtractionRuntime:
     expected_total: int
     stats: _ExtractionStats = field(default_factory=_ExtractionStats)
     pending: set[Future[_DocumentResult]] = field(default_factory=set)
-    pending_snapshots: dict[Future[_DocumentResult], FileSnapshot] = field(default_factory=dict)
     cache_touches: list[FileSnapshot] = field(default_factory=list)
     exhausted: bool = False
     active_page_progress: str | int = 0
-    last_page_progress_poll: float = 0.0
 
 
 @dataclass(slots=True)
@@ -995,43 +991,6 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         finally:
             self._flush_cache_touches(runtime, cache_connection, interrupted=interrupted)
 
-    def _fill_extraction_queue(
-        self,
-        runtime: _ExtractionRuntime,
-        cache_connection: sqlite3.Connection,
-        executor: ThreadPoolExecutor,
-        max_pending: int,
-    ) -> None:
-        while not runtime.exhausted and len(runtime.pending) < max_pending:
-            self.cancellation.checkpoint()
-            try:
-                snapshot = next(runtime.iterator)
-            except StopIteration:
-                runtime.exhausted = True
-                break
-            runtime.stats.total += 1
-            cache_decision = self._is_cache_hit(
-                snapshot,
-                connection=cache_connection,
-                touch=False,
-            )
-            if cache_decision:
-                self._consume_cache_hit(
-                    runtime,
-                    cache_connection,
-                    snapshot,
-                    cache_decision,
-                )
-            else:
-                self._submit_extraction(
-                    runtime,
-                    executor,
-                    snapshot,
-                    cache_decision,
-                    cache_connection,
-                )
-            self._report_extraction(runtime)
-
     def _consume_cache_hit(
         self,
         runtime: _ExtractionRuntime,
@@ -1116,73 +1075,6 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         return self._owner_call(
             lambda connection: self._worker_context_from_connection(snapshot, connection)
         )
-
-    def _submit_extraction(
-        self,
-        runtime: _ExtractionRuntime,
-        executor: ThreadPoolExecutor,
-        snapshot: FileSnapshot,
-        decision: CacheDecision,
-        cache_connection: sqlite3.Connection,
-    ) -> None:
-        runtime.stats.register_cache_miss(decision)
-        worker_context = self._prepare_worker_context(snapshot, cache_connection)
-        binary_digest = binary_fingerprint(
-            self.index,
-            snapshot,
-            required=self.config.cache_validation == "full",
-        )
-        future = executor.submit(self._process_document, snapshot, binary_digest, worker_context)
-        runtime.pending.add(future)
-        runtime.pending_snapshots[future] = snapshot
-
-    def _poll_extraction_queue(
-        self,
-        runtime: _ExtractionRuntime,
-        cache_connection: sqlite3.Connection,
-    ) -> None:
-        done, runtime.pending = wait(
-            runtime.pending,
-            timeout=0.1,
-            return_when=FIRST_COMPLETED,
-        )
-        now = time.monotonic()
-        if done or now - runtime.last_page_progress_poll >= PAGE_PROGRESS_POLL_SECONDS:
-            runtime.active_page_progress = self._active_page_progress(
-                cache_connection,
-                tuple(runtime.pending_snapshots[future] for future in runtime.pending),
-            )
-            runtime.last_page_progress_poll = now
-            if not done:
-                self._report_extraction(runtime)
-        for future in done:
-            self._consume_extraction_future(runtime, future)
-            self._report_extraction(runtime)
-
-    def _consume_extraction_future(
-        self,
-        runtime: _ExtractionRuntime,
-        future: Future[_DocumentResult],
-    ) -> None:
-        snapshot = runtime.pending_snapshots.pop(future)
-        runtime.stats.processed += 1
-        try:
-            result = future.result()
-        except (CancellationRequested, PdfResourceError):
-            raise
-        except Exception as exc:
-            self._record_event(
-                "pdf-extraction-worker",
-                "Fallo no controlado en trabajador PDF",
-                {
-                    "path": snapshot.path,
-                    "error_type": type(exc).__name__,
-                    "detail": str(exc)[:2000],
-                },
-                level="error",
-            )
-            raise
-        runtime.stats.register_result(result)
 
     def _flush_cache_touches(
         self,
@@ -1754,8 +1646,8 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         self.cancellation.checkpoint()
         if worker_context is None:
             # Direct callers of this private compatibility seam still build a
-            # context lazily.  Production extraction always supplies the
-            # coordinator-owned context from ``_submit_extraction``.
+            # context lazily.  Production extraction supplies the
+            # coordinator-owned context before invoking the worker.
             resumable_pages = self._resumable_pages(snapshot)
             worker_context = _PdfWorkerContext(
                 timeout_seconds=self._effective_document_timeout(snapshot),
@@ -3175,41 +3067,6 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 group_has_redundant = group_has_redundant or stored > 0
                 groups += int(group_has_redundant)
         return groups, candidates, trashed, skips
-
-    def _active_page_progress(
-        self,
-        connection: sqlite3.Connection,
-        snapshots: tuple[FileSnapshot, ...],
-    ) -> str | int:
-        """Return aggregate durable page progress for active PDF workers."""
-
-        if not snapshots:
-            return 0
-        keys = tuple(dict.fromkeys(_file_key(snapshot) for snapshot in snapshots))
-        placeholders = ",".join("?" for _key in keys)
-        rows = connection.execute(
-            f"""SELECT d.file_key,d.page_count,COUNT(s.page_number) AS staged_pages
-            FROM documents d LEFT JOIN page_staging s
-              ON s.file_key=d.file_key
-             AND s.processing_signature=d.processing_signature
-             AND s.source<>'error'
-            WHERE d.file_key IN ({placeholders})
-            GROUP BY d.file_key,d.page_count""",
-            keys,
-        ).fetchall()
-        completed = total = 0
-        for row in rows:
-            page_count = int(row["page_count"] or 0)
-            if page_count <= 0:
-                continue
-            start = max(0, (self.config.page_start or 1) - 1)
-            end = min(page_count, self.config.page_end or page_count)
-            if self.config.max_pages is not None:
-                end = min(end, start + self.config.max_pages)
-            selected_pages = max(0, end - start)
-            total += selected_pages
-            completed += min(selected_pages, int(row["staged_pages"] or 0))
-        return f"{completed}/{total}" if total else 0
 
     def _report(
         self,

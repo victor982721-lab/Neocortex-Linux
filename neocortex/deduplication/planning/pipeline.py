@@ -458,16 +458,9 @@ class PlanningSession:
             raise TypeError("keeper_validation must be callable")
         self._keeper_validation = keeper_validation
         self._counters = _PlanCounters()
-        candidate_count = (
-            index.size_candidate_file_count(scan_id)
-            if self._max_file_bytes is None
-            else index.size_candidate_file_count(
-                scan_id, max_file_bytes=self._max_file_bytes,
-            )
-        )
         self._work = _PlanningProgress(
             progress,
-            candidate_count,
+            0,
         )
         self._groups = _PlanAccumulator(
             index,
@@ -480,16 +473,20 @@ class PlanningSession:
     def run(self) -> DedupPlan:
         if self._checkpoint is not None:
             self._checkpoint()
-        self._work.start()
         self._index.begin_planning_fingerprints()
-        sizes = (
-            self._index.size_collision_sizes(self._scan_id)
-            if self._max_file_bytes is None
-            else self._index.size_collision_sizes(
-                self._scan_id, max_file_bytes=self._max_file_bytes,
-            )
-        )
-        for size, _raw_count in sizes:
+        sizes = iter(self._index._iter_planning_size_buckets(
+            self._scan_id,
+            max_file_bytes=self._max_file_bytes,
+        ))
+        first = next(sizes, None)
+        candidate_count = 0 if first is None else first[2]
+        self._work.total = candidate_count
+        self._work.start()
+        if first is not None:
+            if self._checkpoint is not None:
+                self._checkpoint()
+            self._plan_size(first[0])
+        for size, _raw_count, _candidate_count in sizes:
             if self._checkpoint is not None:
                 self._checkpoint()
             self._plan_size(size)

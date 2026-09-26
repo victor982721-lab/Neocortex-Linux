@@ -16,7 +16,7 @@ import unicodedata
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .document_catalog_replay import catalog_sql_cancellation
 
@@ -519,8 +519,11 @@ def _plan_catalog_document(
             mutation_guard=mutation_guard,
             source_scope=source_scope,
             corpus_policy=corpus_policy,
+            binding=assessment.binding,
         )
-    binding = parse_resource_binding(row["resource_binding_json"])
+    binding = assessment.binding
+    if binding is None:  # pragma: no cover - included assessments carry a binding
+        raise ValueError("organization resource binding is missing after scope assessment")
     managed_source = (
         binding["representation_kind"] == "physical_file"
         and (
@@ -546,6 +549,7 @@ def _plan_catalog_document(
             mutation_guard=mutation_guard,
             source_scope=source_scope,
             corpus_policy=corpus_policy,
+            binding=binding,
         )
     destination, status, reason = _proposed_destination(
         row,
@@ -594,6 +598,7 @@ def _plan_catalog_document(
         mutation_guard=mutation_guard,
         source_scope=source_scope,
         corpus_policy=corpus_policy,
+        binding=binding,
     )
 
 
@@ -641,6 +646,7 @@ def _persist_catalog_plan(
     mutation_guard: CorpusMutationGuard | None,
     source_scope: OrganizationInputScope,
     corpus_policy: OrganizationCorpusPolicy,
+    binding: Mapping[str, Any] | None = None,
 ) -> str:
     try:
         _insert_plan(
@@ -653,6 +659,7 @@ def _persist_catalog_plan(
             reason,
             source_scope=source_scope,
             corpus_policy=corpus_policy,
+            binding=binding,
         )
         return status
     except sqlite3.IntegrityError:
@@ -676,6 +683,7 @@ def _persist_catalog_plan(
                     protected_reason,
                     source_scope=source_scope,
                     corpus_policy=corpus_policy,
+                    binding=binding,
                 )
                 return "blocked"
             _insert_plan(
@@ -688,6 +696,7 @@ def _persist_catalog_plan(
                 "classification_above_threshold_with_identity_disambiguation",
                 source_scope=source_scope,
                 corpus_policy=corpus_policy,
+                binding=binding,
             )
             return status
         _insert_plan(
@@ -700,6 +709,7 @@ def _persist_catalog_plan(
             "destination_conflict_with_another_plan",
             source_scope=source_scope,
             corpus_policy=corpus_policy,
+            binding=binding,
         )
         return "blocked"
 
@@ -1046,8 +1056,10 @@ def _insert_plan(
     *,
     source_scope: OrganizationInputScope,
     corpus_policy: OrganizationCorpusPolicy,
+    binding: Mapping[str, Any] | None = None,
 ) -> None:
-    binding = parse_resource_binding(row["resource_binding_json"])
+    if binding is None:
+        binding = parse_resource_binding(row["resource_binding_json"])
     try:
         classification = json.loads(str(row["classification_json"]))
     except (TypeError, ValueError):

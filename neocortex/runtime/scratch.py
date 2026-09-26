@@ -1618,7 +1618,15 @@ class ScratchManager:
             # Persist one bounded lifecycle observation in the workspace
             # manifest.  A later payload change is then a recovery boundary,
             # not silently disposable material.
-            updated["payload_size_bytes"] = _directory_size(path, profile=record.payload_profile)
+            # ``_record_for_path`` has already observed the same pre-effect
+            # payload under the owner lock.  Reuse only that accounting value;
+            # the post-effect observation below remains independent and is the
+            # one that validates the returned record.
+            if not record.size_complete:
+                raise ScratchSecurityError(
+                    f"scratch size observation is incomplete: {record.issue}"
+                )
+            updated["payload_size_bytes"] = record.size_bytes
         if reason is not None:
             updated["reason"] = _bounded_text(reason, label="scratch reason")
         promoted_seal = _seal_mapping(seal) if seal is not None else _seal_from_lifecycle_reason(updated.get("reason"))
@@ -1641,7 +1649,28 @@ class ScratchManager:
         _write_json_atomic(manifest_path, updated)
         if preserved_observation is not None:
             self._restore_workspace_observation(path, preserved_observation)
-        return self._record_from_payload(path, updated, size_bytes=_directory_size(path, profile=record.payload_profile))
+        # Keep one independent physical observation after the manifest and
+        # optional registry publication.  Feed that observation into the
+        # record parser instead of making it walk the same tree again through
+        # ``_workspace_payload_issue``; this is not a cache across lifecycle
+        # boundaries and does not replace the pre-effect observation above.
+        final_observation = _bounded_payload_observation(
+            path,
+            _ScratchScanBudget(None, None, None),
+            profile=record.payload_profile,
+        )
+        if not final_observation.size_complete:
+            raise ScratchSecurityError(
+                f"scratch size observation is incomplete: {final_observation.issue}"
+            )
+        return self._record_from_payload(
+            path,
+            updated,
+            size_bytes=final_observation.size_bytes,
+            observation_issue=final_observation.issue,
+            payload_observed=True,
+            size_complete=final_observation.size_complete,
+        )
 
     @_scratch_write_locked
     def _retire_record(

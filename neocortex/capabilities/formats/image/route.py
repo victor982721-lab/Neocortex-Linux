@@ -375,16 +375,6 @@ class ImageRoute:
             deletion_candidates=int(failure.disposition == "deletion_candidate"),
         )
 
-    @staticmethod
-    def _cached_batch_ready(
-        delta: _ImageCounterDelta,
-        review_batch: list[ReviewCandidate],
-        reconciliations: list[ReviewCandidateReconciliation],
-    ) -> bool:
-        if delta.cache_hits:
-            return len(review_batch) + len(reconciliations) >= RESULT_BATCH_SIZE
-        return len(review_batch) >= RESULT_BATCH_SIZE
-
     def _analysis_result_delta(
         self,
         result: _AnalysisResult,

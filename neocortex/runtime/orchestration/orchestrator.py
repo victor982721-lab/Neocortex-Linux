@@ -41,7 +41,7 @@ from neocortex.runtime.control.global_resources import (
 )
 from neocortex.integrations.inventory.inventory_boundary import (
     NormalInventoryBoundary,  # noqa: F401 - historical module export
-    build_normal_inventory_boundary,
+    build_normal_inventory_boundary,  # noqa: F401 - historical module export
     initialize_authorized_state_directory,  # noqa: F401 - historical module export
 )
 from neocortex.runtime.models import FrameworkConfig
@@ -366,16 +366,6 @@ class FrameworkOrchestrator(
         if os.name == "nt" and not root.drive:
             raise ValueError(f"framework root is not on a drive-letter volume: {root}")
         return root
-
-    def _effective_excluded_paths(self, root: Path) -> tuple[Path, ...]:
-        """Return one exclusion policy shared by portable scan and actions."""
-
-        boundary = build_normal_inventory_boundary(
-            root,
-            self.config.state_directory,
-            observe_regenerable_artifacts=bool(self.selected_routes),
-        )
-        return tuple(Path(path) for path in boundary.exclusion_policy.explicit_roots)
 
     def _resource_coordinator(self) -> GlobalResourceCoordinator:
         if self._active_coordinator is not None:

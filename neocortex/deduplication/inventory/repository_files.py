@@ -83,6 +83,38 @@ class FileRepositoryMixin:
 
     _connection: sqlite3.Connection
 
+    def _iter_planning_size_buckets(
+        self,
+        scan_id: int,
+        *,
+        max_file_bytes: int | None = None,
+    ) -> Iterator[tuple[int, int, int]]:
+        """Stream duplicate-size metadata and its candidate total once.
+
+        The planner needs both the candidate total for progress and the
+        ordered size buckets for its per-size identity/fingerprint stages.
+        Computing those values independently used to execute the same
+        ``GROUP BY size`` over the immutable inventory twice. The window
+        aggregate carries the total beside each bucket, so no bucket list or
+        temporary table is materialized in Python and the physical
+        identity/content validation later remains unchanged.
+        """
+
+        scan_id = resolve_scan_id(self._connection, scan_id)
+        max_file_bytes = validate_max_file_bytes(max_file_bytes)
+        size_clause = "AND size <= ?" if max_file_bytes is not None else ""
+        size_parameters: tuple[int, ...] = () if max_file_bytes is None else (max_file_bytes,)
+        rows = self._connection.execute(
+            "SELECT size,COUNT(*) AS candidate_count,"
+            "SUM(COUNT(*)) OVER () AS total_candidates "
+            "FROM files WHERE scan_id=? AND size>0 "
+            + size_clause
+            + " GROUP BY size HAVING COUNT(*)>1 ORDER BY size",
+            (scan_id, *size_parameters),
+        )
+        for size, count, total in rows:
+            yield int(size), int(count), int(total)
+
     def snapshots(self, scan_id: int) -> Iterator[FileSnapshot]:
         scan_id = resolve_scan_id(self._connection, scan_id)
         rows = self._connection.execute(

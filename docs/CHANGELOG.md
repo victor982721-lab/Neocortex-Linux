@@ -4,6 +4,25 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-26 — Menos trabajo repetido y retiro de rutas privadas obsoletas
+
+- Scratch consolida observaciones repetidas dentro de una transición, sin
+  reutilizar una observación anterior para validar el árbol después del efecto.
+  Conserva la detección de cambios físicos, observaciones incompletas y errores.
+- La planificación de duplicados obtiene tamaños y total de candidatos con una
+  sola agregación SQL, manteniendo el recorrido incremental, los checkpoints y
+  la comprobación de identidad/contenido. Organización reutiliza el binding ya
+  interpretado sin omitir la evaluación de ámbito junto a la persistencia.
+- La proyección de protección de candidatos y el reporting CLI evitan releer
+  valores idénticos dentro de la misma operación; no cambian receipts, decisiones
+  de recuperación, salidas públicas ni fronteras de efecto.
+- Knowledge omite consultas FTS opcionales sólo cuando los filtros demuestran
+  un ámbito exclusivamente de imagen/OCR. Los planes históricos o personalizados
+  con evidencia textual siguen consultando sus owners y conservan hits y citas.
+- Se retiran helpers privados y cadenas de extracción antiguas sin consumidores
+  activos. Permanecen las rutas por lotes, los límites, los lectores históricos
+  y los puntos de compatibilidad que sí tienen contrato.
+
 ## 2026-09-25 — Fiabilidad del flujo integrado y de sus efectos
 
 - La publicación y recuperación integradas de Semantic proyectan sólo sus

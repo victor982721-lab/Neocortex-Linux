@@ -484,8 +484,12 @@ def _print_catalog_reports(result) -> None:
               f"candidates={candidates if candidates is not None else 'no_verificado'} "
               f"cache_hits={cache_hits if cache_hits is not None else 'no_verificado'} "
               f"new_work={new_work if new_work is not None else 'no_verificado'} evidence={replay_evidence}")
-        issues = {name: value for name in _strict_route_error_fields(route, summary)
-                  for value in (_optional_counter(summary, name),) if value}
+        issues = {
+            name: value
+            for name in _strict_route_error_fields(route, summary)
+            for value in (_optional_counter(summary, name),)
+            if value
+        }
         if issues:
             print(f"ROUTE_COVERAGE route={sanitize_untrusted_text(route, limit=32)} complete=0 "
                   f"issues={json.dumps(issues, sort_keys=True, separators=(',', ':'))} "
@@ -493,10 +497,15 @@ def _print_catalog_reports(result) -> None:
         observed = _field_value(summary, "catalog_complete")
         if not observed[0] or observed[1] is None:
             continue
+        # Read each optional catalog counter once.  Route summaries are often
+        # Mapping adapters over a durable result, and the previous filter plus
+        # formatter performed the same lookup twice per field without changing
+        # the rendered contract.
+        catalog_values = tuple(
+            (name, _optional_counter(summary, name)) for name in _CATALOG_FIELDS
+        )
         counters = " ".join(
-            f"{name}={_optional_counter(summary, name)}"
-            for name in _CATALOG_FIELDS
-            if _optional_counter(summary, name) is not None
+            f"{name}={value}" for name, value in catalog_values if value is not None
         )
         print(f"ROUTE_CATALOG route={route} complete={int(bool(observed[1]))} {counters}")
     for route, reason in getattr(result, "route_failures", {}).items():
@@ -637,9 +646,11 @@ def _route_review_value(summary: object) -> int | None:
         "review_candidates_stored",
         "catalog_review_required",
     )
-    if not any(_optional_counter(summary, field) is not None for field in fields):
+    values = tuple(_optional_counter(summary, field) for field in fields)
+    if not any(value is not None for value in values):
         return None
-    return _route_review_count(summary)
+    direct = max(values[0] or 0, values[1] or 0)
+    return direct + (values[2] or 0)
 
 
 def _route_issue_details(label: str, summary: object) -> tuple[str, ...]:
@@ -720,11 +731,12 @@ def _route_replay_view(
     if candidates == 0:
         # Zero candidates is an observed empty selection, not complete coverage.
         return candidates, cache_hits, 0, "sin_candidatos"
+    replay_counters_valid = _has_valid_counters(summary, _REPLAY_FIELDS[:4])
     explicit_new_work = _optional_counter(summary, "new_work")
     new_work: int | None
     if explicit_new_work is not None:
         new_work = explicit_new_work
-    elif _has_valid_counters(summary, _REPLAY_FIELDS[:4]):
+    elif replay_counters_valid:
         new_work = _counter_value(route_replay_metrics(route_name, summary).get("new_work"))
     else:
         new_work = None
@@ -732,7 +744,7 @@ def _route_replay_view(
         cache_hits is None
         or cached_errors is None
         or new_work is None
-        or not _has_valid_counters(summary, _REPLAY_FIELDS[:4])
+        or not replay_counters_valid
     ):
         return candidates, cache_hits, new_work, "no_verificado"
     if new_work + cache_hits + cached_errors == 0:

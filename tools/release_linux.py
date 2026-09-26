@@ -2064,10 +2064,6 @@ def _staging_marker_status(marker: Path) -> str:
     return "active" if _proc_starttime(pid) == starttime else "stale"
 
 
-def _staging_marker_active(marker: Path) -> bool:
-    return _staging_marker_status(marker) == "active"
-
-
 def _write_gc_marker(
     transaction: Path,
     *,

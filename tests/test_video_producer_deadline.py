@@ -75,8 +75,15 @@ def test_batch_hashes_validated_capture_without_rereading_each_raster(tmp_path, 
         payload = stream.getvalue()
     monkeypatch.setattr(frames, "run_bounded_capture", lambda command, **_kwargs:
                         subprocess.CompletedProcess(command, 0, payload, b"pts_time:0\n"))
-    monkeypatch.setattr(frames, "_frame_content_digest", lambda *_args:
-                        pytest.fail("captured raster was reopened solely for its digest"))
+    expected_digest = sha256.sha256_128(payload).hexdigest()
+    original_hash = frames.sha256.sha256_128
+    hash_inputs = []
+
+    def observe_hash(data):
+        hash_inputs.append(data)
+        return original_hash(data)
+
+    monkeypatch.setattr(frames.sha256, "sha256_128", observe_hash)
     result = frames._extract_frames(
         tmp_path / "input.mkv", tmp_path,
         plan=(frames.VideoFrameCandidate(0, ("interval",)),),
@@ -84,5 +91,8 @@ def test_batch_hashes_validated_capture_without_rereading_each_raster(tmp_path, 
         timeout_seconds=2, memory_limit_bytes=GIB,
     )
     assert len(result) == 1
+    assert len(hash_inputs) == 1
+    assert isinstance(hash_inputs[0], memoryview)
+    assert bytes(hash_inputs[0]) == payload
     assert result[0].path.read_bytes() == payload
-    assert result[0].content_xxh3_128 == sha256.sha256_128(payload).hexdigest()
+    assert result[0].content_xxh3_128 == expected_digest

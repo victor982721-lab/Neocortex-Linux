@@ -85,7 +85,12 @@ def _pytest(directory: Path, *arguments: str) -> subprocess.CompletedProcess[str
     environment.pop("PYTHONPATH", None)
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", *arguments],
+        [
+            sys.executable, "-m", "pytest", "-q",
+            "--basetemp", str(directory / "pytest-temp"),
+            "-o", f"cache_dir={directory / 'pytest-cache'}",
+            *arguments,
+        ],
         cwd=directory,
         env=environment,
         text=True,

@@ -931,15 +931,6 @@ def _open_directory_child(parent_fd: int, name: str, *, create: bool) -> int:
         raise
 
 
-def _assert_real_directory(path: Path, *, label: str) -> None:
-    try:
-        metadata = path.lstat()
-    except OSError as exc:
-        raise ZipIntakeError("dependency", f"{label}_missing", str(exc)) from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise ZipIntakeError("unsafe", f"{label}_not_directory")
-
-
 def _assert_destination_parent(destination: Path) -> tuple[int, int]:
     if not destination.is_absolute() or "\x00" in os.fspath(destination):
         raise ZipIntakeError("unsafe", "destination_invalid")

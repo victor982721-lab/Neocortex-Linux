@@ -614,30 +614,6 @@ class VideoRoute:
         limit = self.config.max_file_bytes
         return limit is not None and snapshot.size > limit
 
-    def _handle_candidate(
-        self,
-        connection: sqlite3.Connection,
-        snapshot: FileSnapshot,
-        mime: str,
-        signature: str,
-        ocr_runtime: _OcrRuntime,
-        metrics: _VideoMetrics,
-    ) -> None:
-        store_video_inventory(connection, snapshot, mime, self.run_id)
-        cached = cached_video_document(connection, snapshot, signature)
-        if self._can_reuse_cached(cached, snapshot):
-            assert cached is not None
-            if self._consume_cached(connection, snapshot, mime, cached, metrics):
-                return
-        self._process_candidate(
-            connection,
-            snapshot,
-            mime,
-            signature,
-            ocr_runtime,
-            metrics,
-        )
-
     def _can_reuse_cached(self, cached: sqlite3.Row | None, snapshot: FileSnapshot) -> bool:
         if cached is None:
             return False

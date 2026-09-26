@@ -463,104 +463,6 @@ def _discover_timestamps(
     return parse_showinfo_timestamps(result.stderr, duration_seconds=duration_seconds)
 
 
-def _extract_frame(
-    source: Path,
-    destination: Path,
-    *,
-    executable: str,
-    stream_index: int,
-    timestamp_ms: int,
-    width: int,
-    height: int,
-    timeout_seconds: float,
-    memory_limit_bytes: int,
-) -> ExtractedVideoFrame:
-    threads, _resources = _native_resources()
-    command = (
-        executable,
-        "-hide_banner",
-        "-nostdin",
-        "-nostats",
-        "-loglevel",
-        "error",
-        "-threads",
-        threads,
-        "-filter_threads",
-        "1",
-        "-ss",
-        f"{timestamp_ms / 1000:.3f}",
-        "-i",
-        str(source),
-        "-map",
-        f"0:{stream_index}",
-        "-an",
-        "-sn",
-        "-frames:v",
-        "1",
-        "-vf",
-        f"scale={width}:{height}:force_original_aspect_ratio=decrease",
-        "-threads",
-        "1",
-        "-f",
-        "image2",
-        "-y",
-        str(destination),
-    )
-    result = _run_frame_extraction(
-        command,
-        timestamp_ms=timestamp_ms,
-        timeout_seconds=timeout_seconds,
-        memory_limit_bytes=memory_limit_bytes,
-    )
-    frame_width, frame_height = _validate_extracted_frame(result, destination, timestamp_ms)
-    return ExtractedVideoFrame(
-        index=-1,
-        timestamp_ms=timestamp_ms,
-        reasons=(),
-        path=destination,
-        width=frame_width,
-        height=frame_height,
-        content_xxh3_128=_frame_content_digest(destination),
-    )
-
-
-def _run_frame_extraction(
-    command: tuple[str, ...],
-    *,
-    timestamp_ms: int,
-    timeout_seconds: float,
-    memory_limit_bytes: int,
-) -> subprocess.CompletedProcess[bytes]:
-    creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
-    _threads, resources = _native_resources()
-    try:
-        return run_bounded_capture(
-            command,
-            timeout_seconds=timeout_seconds,
-            stdout_limit_bytes=MAX_VIDEO_FFMPEG_DIAGNOSTIC_BYTES,
-            stderr_limit_bytes=MAX_VIDEO_FFMPEG_DIAGNOSTIC_BYTES,
-            creationflags=creation_flags,
-            memory_limit_bytes=memory_limit_bytes,
-            **resources,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise VideoProcessingError(
-            "video_frame_timeout",
-            f"FFmpeg timed out extracting frame at {timestamp_ms} ms",
-            recommendation="retry",
-            retryable=True,
-            evidence={"timestamp_ms": timestamp_ms},
-        ) from exc
-    except SubprocessOutputLimitError as exc:
-        raise VideoProcessingError(
-            "video_frame_output_limit",
-            f"FFmpeg {exc.stream} exceeded its diagnostic output bound",
-            recommendation="manual_review",
-            retryable=False,
-            evidence={"timestamp_ms": timestamp_ms},
-        ) from exc
-
-
 def _validate_extracted_frame(
     result: subprocess.CompletedProcess[bytes],
     destination: Path,
@@ -595,14 +497,6 @@ def _validate_extracted_frame(
         )
     assert png.width is not None and png.height is not None
     return png.width, png.height
-
-
-def _frame_content_digest(path: Path) -> str:
-    digest = sha256.sha256_128()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _png_payloads(payload: bytes) -> Iterator[memoryview]:

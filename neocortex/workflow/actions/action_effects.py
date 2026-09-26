@@ -980,13 +980,24 @@ class EffectsActionsMixin:
         ] = []
         filtered_protected = 0
         mutation_guard = mutation_guard or self._effective_mutation_guard()
+        # ``protected_path_reason`` may inspect filesystem metadata.  Compute
+        # it once per candidate: the previous guard-path projection and the
+        # admission loop each repeated the same observation before any ledger
+        # row was created.  Keep the original order so the guard receives the
+        # same non-legacy-denied paths and revalidation remains unchanged.
+        legacy_reasons = tuple(
+            _protected_path_reason(path) for path, _evidence in batch
+        )
         guard_paths = tuple(
-            path for path, _evidence in batch if _protected_path_reason(path) is None
+            path
+            for (path, _evidence), reason in zip(batch, legacy_reasons, strict=True)
+            if reason is None
         )
         guard_reasons = iter(mutation_guard.mutation_path_protection_reasons(*guard_paths))
-        for item, planned, reference in zip(batch, expected, references, strict=True):
+        for (item, planned, reference), reason in zip(
+            zip(batch, expected, references, strict=True), legacy_reasons, strict=True
+        ):
             path, _evidence = item
-            reason = _protected_path_reason(path)
             guard_reason = None if reason is not None else next(guard_reasons)
             # Keep lexical out-of-root candidates outside the action ledger.
             # The later physical validation still handles symlink/reparse
