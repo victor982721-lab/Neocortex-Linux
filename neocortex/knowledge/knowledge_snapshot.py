@@ -808,7 +808,15 @@ def _capture_available_owner(
                 if after_version != observed_version:
                     after = before
                 elif between_observations is None and immutable_fence is not None:
-                    if capture_sqlite_immutable_fence(path) != immutable_fence:
+                    # The strict reader itself owns the main/SHM descriptors
+                    # and its OFD guard while this second observation runs.
+                    # Requiring a *new* quiescence probe here sees our own
+                    # reader as an active owner and falsely rejects the
+                    # residual WAL/SHM layout.  The held strict connection
+                    # already pins the view; compare only the filesystem
+                    # fence now and perform the lock/quiescence check after
+                    # closing the connection in the finalizer below.
+                    if capture_sqlite_read_fence(path) != immutable_fence:
                         raise ImmutableSQLiteUnavailable("SQLite owner changed before reused observation")
                     after = before
                 else:

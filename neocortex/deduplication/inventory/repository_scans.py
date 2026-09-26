@@ -699,6 +699,34 @@ class ScanCheckpointRepositoryMixin:
                 AND size=? AND mtime_ns=? AND algorithm=?"""
             ),
         )
+        # ``fingerprint_content_evidence`` was added as a side table without a
+        # foreign key so legacy fingerprint rows could be migrated unchanged.
+        # It therefore does not cascade when the cache row above is pruned.
+        # Remove orphaned content proofs using the same retained-file reachability
+        # boundary; otherwise an old generation leaks durable cache evidence even
+        # though its corresponding fingerprint has been discarded.
+        _delete_batches(
+            self._connection,
+            select_sql=(
+                """SELECT volume_id,file_id,size,mtime_ns,birthtime_ns,algorithm
+                FROM fingerprint_content_evidence WHERE NOT EXISTS(
+                    SELECT 1 FROM files f
+                    WHERE f.scan_id IN ("""
+                + retained_scans
+                + """)
+                      AND f.volume_id=fingerprint_content_evidence.volume_id
+                      AND f.file_id=fingerprint_content_evidence.file_id
+                      AND f.size=fingerprint_content_evidence.size
+                      AND f.mtime_ns=fingerprint_content_evidence.mtime_ns
+                      AND f.birthtime_ns=fingerprint_content_evidence.birthtime_ns)
+                LIMIT ?"""
+            ),
+            delete_sql=(
+                """DELETE FROM fingerprint_content_evidence
+                WHERE volume_id=? AND file_id=? AND size=? AND mtime_ns=?
+                AND birthtime_ns=? AND algorithm=?"""
+            ),
+        )
         return removed
 
 

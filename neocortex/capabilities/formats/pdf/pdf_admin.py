@@ -79,7 +79,7 @@ def doctor_pdf_runtime(
     checks: list[PdfCheck] = []
 
     try:
-        import fitz  # type: ignore[import-untyped]
+        import pymupdf as fitz
 
         detail = getattr(fitz, "VersionBind", "available")
         checks.append(PdfCheck("pymupdf", True, str(detail)))

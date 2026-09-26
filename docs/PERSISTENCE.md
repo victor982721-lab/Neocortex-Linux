@@ -160,6 +160,29 @@ no un modo genérico que esta clase pueda abrir. Un snapshot temporal ya validad
 queda desligado de escrituras posteriores del origen; no promete capturar un
 owner que cambia continuamente mientras se copian sus bytes.
 
+En el lifecycle integrado, que ya mantiene el lock de Framework y está
+autorizado a escribir estado, la observación de heads Semantic usa una lease
+privada del owner existente y una proyección acotada de esos metadatos. No
+copia vectores, texto ni el WAL completo, no crea un owner ausente, no migra su
+schema y no hace checkpoint implícito. La lease valida identidad al abrir,
+durante la proyección y al cerrar, y comparte cancelación/deadline con la
+operación. El bookkeeping de SHM de esa conexión coordinada no se anuncia como
+una lectura byte-neutral. Un owner vacío sin sidecars conserva el baseline
+vacío; los layouts ambiguos no se asimilan a ausencia.
+
+La indexación Text/Image usa esa autoridad de writer también para consultar
+metadatos de replay y generaciones existentes, evitando otra copia íntegra del
+owner antes de indexar. La selección es interna al contexto que conserva el lock
+de Framework; no es un opt-in de consultas públicas ni una ampliación de su
+presupuesto. Knowledge compara bytes/fence mientras retiene su guardia de
+lectura y comprueba quiescencia al liberar la conexión, sin considerar su propia
+guardia como prueba de un writer externo.
+
+Esta frontera no se ofrece a consultas públicas: éstas conservan los modos
+seguros y los límites de `SQLiteReadSession`. No se autentica una conexión
+arbitraria por tener una ruta o una clase compatible, ni se usa el journal de
+publicación como sustituto de observar los heads del owner.
+
 Los candidatos del pipeline integrado usan una publicación específica del writer
 Framework, no ese modo genérico; véase [concurrencia](ARCHITECTURE.md#concurrencia-y-recuperación).
 

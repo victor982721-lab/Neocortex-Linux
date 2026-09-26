@@ -145,4 +145,4 @@ def test_unknown_binary_or_ambiguous_payload_has_explicit_unknown_decision(
 
 
 def test_detector_version_is_bumped_for_structural_text_behavior() -> None:
-    assert DETECTOR_VERSION == "content-types-v4"
+    assert DETECTOR_VERSION == "content-types-v5"

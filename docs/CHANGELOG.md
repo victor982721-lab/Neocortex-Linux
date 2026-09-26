@@ -4,6 +4,42 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-25 — Fiabilidad del flujo integrado y de sus efectos
+
+- La publicación y recuperación integradas de Semantic proyectan sólo sus
+  cabeceras desde una conexión coordinada del owner existente. No copian toda
+  la base/WAL para leer esos metadatos ni amplían el presupuesto de snapshots.
+  Conservan identidad, lectura consistente, cancelación y ausencia de migración.
+  El replay de metadatos Text/Image usa también la coordinación del writer
+  durante indexación, sin cambiar los límites de las consultas públicas.
+- ZIP ancla staging, extracción, publicación y rollback a descriptores e
+  identidades físicas; rechaza sustituciones del destino y conserva recuperación
+  ante efectos inciertos. Se retira el memo de replay no ligado al contenido.
+- Los efectos Trash se confirman sólo con evidencia física ligada a la fuente,
+  tanto durante aplicación como recuperación. La cancelación cierra intents no
+  invocados y conserva como pendientes de recuperación las transiciones inciertas.
+- CLI/API conservan códigos y resultados incompletos de Semantic, ZIP y
+  cancelación; la salida JSON de cancelación mantiene el código 130. PDF usa el
+  módulo público `pymupdf`, sin advertencias de su alias obsoleto en stdout JSON.
+- Organización distingue `advisory_blocked` de bloqueos inválidos o inciertos.
+  Las propuestas verificadas pero no ejecutables siguen visibles y no se
+  presentan como movimientos; tampoco convierten por sí solas un run completo
+  en un fallo de ejecución.
+- El detector v5 incorpora firmas acotadas de AAC, AIFF, CAF, WMA/ASF y AMR-NB,
+  invalidando la caché de identificación anterior sin depender de la extensión.
+- Un contenedor válido con sólo audio se procesa como Audio y queda
+  `not_applicable` en Video, sin inventar frames ni bloquear Semantic. Los
+  contenedores corruptos o sin streams audiovisuales conservan su error tipado.
+- Los planes de duplicados comprueban que sus miembros pertenecen al inventario
+  y la retención concilia la evidencia de fingerprints. Catálogo rechaza anchors
+  que escapen del ámbito por symlink.
+- Knowledge no confunde su propia guardia de lectura con un writer activo y
+  no mezcla miembros históricos con un plan de duplicados vacío del scan actual.
+  La búsqueda conserva cobertura completa y referencias a la evidencia vigente.
+- La frontera de mutación comprueba la identidad de la raíz también en modo
+  normal; los códigos OCR no pueden formar rutas arbitrarias. El progreso
+  publica reinicios y cambios de total en vez de conservar contadores obsoletos.
+
 ## 2026-09-20 — Identify paralelo y reducción estructural
 
 - Identify consulta la cache de tipos por lotes acotados, observa misses en

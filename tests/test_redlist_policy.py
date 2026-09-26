@@ -17,27 +17,32 @@ from neocortex.runtime.models import FrameworkConfig
 from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 from neocortex.runtime.orchestration.route_registry import RouteAdapter
 from tests.internal_paths_test_support import begin_signed_normal_run
-import json
+from tests.test_framework_actions import _fixture_trash_receipt
 from pathlib import Path
 
 import pytest
 
 
 class _MetadataOnlyBackend:
-    def __init__(self) -> None:
+    def __init__(self, trash_root: Path | None = None) -> None:
         self.calls = 0
+        self.trash_root = trash_root
 
     def apply_many_snapshots(self, items, *, root: Path):
         del root
         outcomes = []
-        for snapshot, _binding in items:
+        for snapshot, binding in items:
             self.calls += 1
-            Path(snapshot.path).unlink()
             outcomes.append(
                 BackendOutcome(
                     "applied",
                     "fixture_verified",
-                    receipt_json=json.dumps({"schema": "fixture-redlist/v1"}),
+                    receipt_json=_fixture_trash_receipt(
+                        snapshot,
+                        binding,
+                        self.trash_root
+                        or Path(snapshot.path).parent.parent / ".fixture-trash",
+                    ),
                 )
             )
         return tuple(outcomes)

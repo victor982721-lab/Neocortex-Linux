@@ -176,7 +176,7 @@ def _geometry(
 
 def _visual_grid(page: Any) -> tuple[list[int], str, str, str, str | None]:
     try:
-        import fitz  # type: ignore[import-untyped]
+        import pymupdf as fitz
 
         pixmap = page.get_pixmap(
             matrix=fitz.Matrix(VISUAL_SCALE, VISUAL_SCALE),

@@ -107,7 +107,20 @@ def run_external_maintenance(args) -> int:
             f"scanned={scanned} "
             f"truncated={payload.get('truncated', False)}"
         )
-    return 0
+    status = str(payload.get("status", "unknown")).casefold()
+    # A bounded diagnostic may legitimately report findings and remain exit 0,
+    # but an owner boundary that is blocked/failed/incomplete is not a
+    # completed observation.  Do not let an omitted owner exit_code imply
+    # success.
+    return 2 if status in {
+        "blocked",
+        "error",
+        "failed",
+        "partial",
+        "recovery_required",
+        "recovery-required",
+        "unavailable",
+    } else 0
 
 
 __all__ = ["run_external_maintenance"]

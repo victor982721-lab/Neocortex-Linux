@@ -2625,7 +2625,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         document = None
         prepared = False
         try:
-            import fitz  # type: ignore[import-untyped]
+            import pymupdf as fitz
 
             fitz.TOOLS.mupdf_display_errors(False)
             fitz.TOOLS.mupdf_display_warnings(False)

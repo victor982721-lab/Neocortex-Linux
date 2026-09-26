@@ -732,7 +732,7 @@ class PdfDerivedIndexer:
                 return stored
 
             if self.profile_timeout_seconds is None and self.workers == 1:
-                import fitz  # type: ignore[import-untyped]
+                import pymupdf as fitz
 
                 fitz.TOOLS.mupdf_display_errors(False)
                 fitz.TOOLS.mupdf_display_warnings(False)

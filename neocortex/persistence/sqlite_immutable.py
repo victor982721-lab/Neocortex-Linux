@@ -622,24 +622,138 @@ def _identity_from_stat(
     )
 
 
+def _open_sqlite_file_nofollow(
+    path: Path,
+    *,
+    label: str,
+) -> tuple[int, os.stat_result]:
+    """Open one SQLite owner/sidecar without following parent symlinks."""
+
+    selected = Path(os.path.abspath(os.fspath(path)))
+    parent_descriptor: int | None = None
+    descriptor: int | None = None
+    try:
+        # ``O_NOFOLLOW`` must be applied to every parent component, not only
+        # the endpoint.  A lexical ``lstat`` of the owner rejects an endpoint
+        # symlink but otherwise lets ``/trusted/link/owner.sqlite3`` escape
+        # into an unrelated state root when the immutable reader or bounded
+        # copier later opens the path normally.
+        parts = selected.parts
+        if not selected.is_absolute() or len(parts) < 2:
+            raise ImmutableSQLiteUnavailable(f"{label} path is not absolute: {selected}")
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        parent_descriptor = os.open(os.sep, directory_flags)
+        for component in parts[1:-1]:
+            next_descriptor = os.open(component, directory_flags, dir_fd=parent_descriptor)
+            os.close(parent_descriptor)
+            parent_descriptor = next_descriptor
+        endpoint = os.stat(parts[-1], dir_fd=parent_descriptor, follow_symlinks=False)
+        if stat.S_ISLNK(endpoint.st_mode):
+            raise ImmutableSQLiteUnavailable(
+                f"{label} is a symlink and not a stable regular file: {selected.name}"
+            )
+        descriptor = os.open(
+            parts[-1],
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=parent_descriptor,
+        )
+        value = os.fstat(descriptor)
+    except FileNotFoundError as exc:
+        # Keep the full owner path on ENOENT; callers use it to distinguish a
+        # missing main owner from a sidecar that disappeared during a bounded
+        # snapshot retry.
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise FileNotFoundError(exc.errno, exc.strerror, os.fspath(selected)) from exc
+    except OSError as exc:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ImmutableSQLiteUnavailable(
+                f"{label} path contains a symlink or non-directory: {selected}"
+            ) from exc
+        raise ImmutableSQLiteUnavailable(f"{label} cannot be inspected: {selected.name}") from exc
+    finally:
+        if parent_descriptor is not None:
+            try:
+                os.close(parent_descriptor)
+            except OSError:
+                pass
+    assert descriptor is not None
+    return descriptor, value
+
+
+def _stat_sqlite_file_nofollow(
+    path: Path,
+    *,
+    label: str,
+) -> os.stat_result:
+    """Stat an owner without opening its endpoint and disturbing SQLite locks."""
+
+    selected = Path(os.path.abspath(os.fspath(path)))
+    parent_descriptor: int | None = None
+    try:
+        parts = selected.parts
+        if not selected.is_absolute() or len(parts) < 2:
+            raise ImmutableSQLiteUnavailable(f"{label} path is not absolute: {selected}")
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        parent_descriptor = os.open(os.sep, directory_flags)
+        for component in parts[1:-1]:
+            next_descriptor = os.open(component, directory_flags, dir_fd=parent_descriptor)
+            os.close(parent_descriptor)
+            parent_descriptor = next_descriptor
+        endpoint = os.stat(parts[-1], dir_fd=parent_descriptor, follow_symlinks=False)
+        if stat.S_ISLNK(endpoint.st_mode):
+            raise ImmutableSQLiteUnavailable(
+                f"{label} is a symlink and not a stable regular file: {selected.name}"
+            )
+        return endpoint
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(exc.errno, exc.strerror, os.fspath(selected)) from exc
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ImmutableSQLiteUnavailable(
+                f"{label} path contains a symlink or non-directory: {selected}"
+            ) from exc
+        raise ImmutableSQLiteUnavailable(f"{label} cannot be inspected: {selected.name}") from exc
+    finally:
+        if parent_descriptor is not None:
+            try:
+                os.close(parent_descriptor)
+            except OSError:
+                pass
+
+
 def _file_identity(
     path: Path,
     *,
     label: str,
     allow_empty: bool = False,
 ) -> SQLiteFileIdentity:
-    try:
-        # ``lstat`` is deliberate: following an endpoint symlink would make
-        # the fence refer to a file outside the published owner root.
-        value = path.lstat()
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
-        raise ImmutableSQLiteUnavailable(f"{label} cannot be inspected: {path.name}") from exc
+    value = _stat_sqlite_file_nofollow(path, label=label)
     return _identity_from_stat(
         value,
         label=label,
-        name=path.name,
+        name=Path(path).name,
         allow_empty=allow_empty,
     )
 
@@ -1297,7 +1411,15 @@ def _copy_regular_file(
 ) -> None:
     """Copy one already-fenced file without following a changed symlink."""
 
-    source_fd = os.open(os.fspath(source), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    source_fd, source_metadata = _open_sqlite_file_nofollow(
+        source,
+        label="SQLite snapshot source",
+    )
+    if not stat.S_ISREG(source_metadata.st_mode):
+        os.close(source_fd)
+        raise ImmutableSQLiteUnavailable(
+            f"SQLite snapshot source is not a regular file: {source.name}"
+        )
     try:
         with (
             os.fdopen(source_fd, "rb", closefd=True) as source_stream,

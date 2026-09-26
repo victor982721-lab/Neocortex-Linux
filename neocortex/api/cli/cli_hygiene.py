@@ -296,13 +296,32 @@ def _payload(
     if payload.get("mode") not in {"plan", "preview", "verify"}:
         payload["mode"] = requested_mode
     payload.setdefault("status", "planned")
-    raw_exit_code = payload.get("exit_code", 0)
-    payload["exit_code"] = (
-        raw_exit_code
-        if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool)
+    raw_exit_code = payload.get("exit_code")
+    status = str(payload.get("status", "planned")).casefold()
+    failure_status = status in {
+        "blocked",
+        "cancelled",
+        "error",
+        "failed",
+        "partial",
+        "recovery_required",
+        "recovery-required",
+        "unavailable",
+    }
+    if failure_status and raw_exit_code in (None, 0):
+        exit_code = 130 if status == "cancelled" else 2
+    elif (
+        isinstance(raw_exit_code, int)
+        and not isinstance(raw_exit_code, bool)
         and 0 <= raw_exit_code <= 255
-        else 0
-    )
+    ):
+        exit_code = raw_exit_code
+    else:
+        # Owner adapters are allowed to omit a numeric code, but a blocked,
+        # failed, partial or recovery result must not become an apparent
+        # successful plan merely because the projection supplied a default.
+        exit_code = 130 if status == "cancelled" else 2 if failure_status else 0
+    payload["exit_code"] = exit_code
     return payload
 
 

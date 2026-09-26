@@ -52,7 +52,15 @@ def run_models_prepare(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"ERROR models-prepare {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-    return 0
+    # Preparation is successful only when every requested model is actually
+    # available.  ``prepare_models`` deliberately returns a report for
+    # missing/offline resources instead of raising, so treating every report
+    # as exit 0 used to publish a false completion to scripts and --all
+    # callers.
+    status = str(report.get("status", "")).casefold()
+    if status in {"blocked", "cancelled", "error", "failed", "partial", "unavailable"}:
+        return 130 if status == "cancelled" else 2
+    return 0 if report.get("all_prepared") is True else 2
 
 
 def _model_options(args: argparse.Namespace) -> dict:

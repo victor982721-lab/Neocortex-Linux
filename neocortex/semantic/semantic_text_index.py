@@ -173,6 +173,7 @@ def _published_text_source_delta(
     replay_entry: Mapping[str, object],
     selected_sources: Sequence[str],
     current_heads: Sequence[SemanticSourceHead],
+    writer_coordinated: bool = False,
 ) -> _PublishedTextDelta | None:
     """Return unchanged sources from the ready base, or abstain fail-closed.
 
@@ -184,7 +185,7 @@ def _published_text_source_delta(
     if not database.is_file():
         return None
     try:
-        with semantic_database(database, readonly=True) as connection:
+        with semantic_database(database, readonly=not writer_coordinated) as connection:
             row = connection.execute(
                 """SELECT g.generation_id,g.status,g.provenance_json
                 FROM published_embedding_heads head
@@ -274,11 +275,13 @@ def _published_text_source_delta(
 def _candidate_base_generation_id(
     database: Path,
     generation_id: int,
+    *,
+    writer_coordinated: bool = False,
 ) -> int | None:
     """Read the candidate's pinned base, abstaining on any state error."""
 
     try:
-        with semantic_database(database, readonly=True) as connection:
+        with semantic_database(database, readonly=not writer_coordinated) as connection:
             row = connection.execute(
                 "SELECT base_generation_id FROM embedding_generations WHERE generation_id=?",
                 (generation_id,),
@@ -914,6 +917,7 @@ def index_text_embeddings(
     generation_runner: GenerationRunner,
     work_budget: SemanticWorkBudget | None = None,
     progress: ProgressCallback | None = None,
+    writer_coordinated: bool = False,
 ) -> SemanticIndexResult:
     """Incrementally embed extracted text; source files are never rescanned."""
 
@@ -945,7 +949,11 @@ def index_text_embeddings(
     content_compatible_replay = False
     if all(head.complete for head in source_heads) and not (
         budget.preserve_existing_generations
-        and has_building_embedding_generation(database, model_signature=selected_model.model_signature)
+        and has_building_embedding_generation(
+            database,
+            model_signature=selected_model.model_signature,
+            writer_coordinated=writer_coordinated,
+        )
     ):
         def source_head_compatibility(
             connection: sqlite3.Connection,
@@ -974,7 +982,7 @@ def index_text_embeddings(
             # Keep the whole generation/compatibility validation under the
             # reader's source fence. Its receipt stores that exact fence;
             # it must never certify a later writer view of the same owner.
-            writer_coordinated=False,
+            writer_coordinated=writer_coordinated,
             source_head_compatibility=(
                 source_head_compatibility
                 if "text" in selected_sources
@@ -1027,6 +1035,7 @@ def index_text_embeddings(
         replay_entry=replay_entry,
         selected_sources=selected_sources,
         current_heads=source_heads,
+        writer_coordinated=writer_coordinated,
     )
     source_head_ledger = merge_source_head_ledger(
         published_source_head_ledger(
@@ -1086,6 +1095,7 @@ def index_text_embeddings(
     if published_delta is not None and _candidate_base_generation_id(
         database,
         generation_id,
+        writer_coordinated=writer_coordinated,
     ) != published_delta.generation_id:
         # Do not compare current items with a stale base if another writer
         # advanced the published head between delta planning and candidate

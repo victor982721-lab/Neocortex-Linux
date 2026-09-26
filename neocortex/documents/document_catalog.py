@@ -1243,6 +1243,20 @@ def _source_document_is_in_scope(document: SourceDocument, root: Path) -> bool:
             value=document.file_key,
             code="source_scope_unresolved",
         )
+    # A lexical prefix is not physical containment: a symlink below the
+    # selected root can point to a file outside it.  ``verify_source_paths``
+    # may be disabled for a producer-cache replay, but that option cannot
+    # promote an unresolved or non-canonical anchor into the selected scope.
+    anchor_path = Path(anchor)
+    try:
+        metadata = anchor_path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or anchor_path.resolve(strict=True) != anchor_path
+        ):
+            return False
+    except (OSError, RuntimeError, ValueError):
+        return False
     return _catalog_path_in_scope(anchor, root)
 
 

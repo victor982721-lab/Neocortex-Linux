@@ -44,7 +44,7 @@ from neocortex.workflow.actions.action_policy import (
 )
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
 from neocortex.workflow.mutations import BackendOutcome
-from neocortex.safety.kio_trash import metadata_binding
+from neocortex.safety.kio_trash import metadata_binding, verify_trash_receipt_evidence
 
 
 def _files_equal_exact(*args, **kwargs):
@@ -104,6 +104,7 @@ class EffectsActionsMixin:
             batch.clear()
 
         for candidate in candidates:
+            self._checkpoint()
             batch.append(candidate)
             if len(batch) >= TRASH_BATCH_SIZE:
                 flush()
@@ -165,6 +166,7 @@ class EffectsActionsMixin:
         for directory in _postorder_directories(
             root, self._exclusion_policy, traversal_error_count
         ):
+            self._checkpoint()
             directory_snapshot = self._empty_directory_snapshot(
                 directory,
                 logical_child_counts,
@@ -386,6 +388,19 @@ class EffectsActionsMixin:
 
         batch_apply = self._optional_trash_batch_backend()
         if batch_apply is not None:
+            try:
+                self._checkpoint()
+            except (CancellationRequested, RunBudgetExceeded, KeyboardInterrupt) as exc:
+                self._finish_uninvoked_trash_actions(
+                    ready,
+                    detail=(
+                        "kio_cancelled_before_effect"
+                        if not isinstance(exc, RunBudgetExceeded)
+                        else "kio_budget_exhausted_before_effect"
+                    ),
+                    original_error=exc,
+                )
+                raise
             return self._apply_trash_backend_batch(
                 action_type,
                 ready,
@@ -399,7 +414,20 @@ class EffectsActionsMixin:
         applied = 0
         failed = preflight_failures
         applied_paths: list[str] = []
-        for action_id, path, planned, reference, _current_stat in ready:
+        for position, (action_id, path, planned, reference, _current_stat) in enumerate(ready):
+            try:
+                self._checkpoint()
+            except (CancellationRequested, RunBudgetExceeded, KeyboardInterrupt) as exc:
+                self._finish_uninvoked_trash_actions(
+                    ready[position:],
+                    detail=(
+                        "kio_cancelled_before_effect"
+                        if not isinstance(exc, RunBudgetExceeded)
+                        else "kio_budget_exhausted_before_effect"
+                    ),
+                    original_error=exc,
+                )
+                raise
             if planned is None:
                 self._state.finish_file_action(
                     action_id,
@@ -454,6 +482,20 @@ class EffectsActionsMixin:
                 if not isinstance(outcome, BackendOutcome):
                     raise RuntimeError("trash backend returned an unsupported outcome")
                 if outcome.status == "applied" and outcome.receipt_json is not None:
+                    try:
+                        self._validate_trash_receipt(
+                            outcome.receipt_json,
+                            expected=planned,
+                            source_digest=source_digest,
+                        )
+                    except (OSError, RuntimeError, TypeError, ValueError, FileChangedError) as exc:
+                        self._best_effort_require_recovery((action_id,), str(exc), exc)
+                        failed += 1
+                        if action_type == "trash_redlist":
+                            self._record_redlist_batch_diagnostic(
+                                "recovery_required", exc, path
+                            )
+                        continue
                     self._state.confirm_file_actions_applied(
                         ((action_id, outcome.receipt_json),)
                     )
@@ -480,17 +522,22 @@ class EffectsActionsMixin:
                 elif outcome.status == "blocked":
                     # A backend block is a pre-effect policy result, not an
                     # uncertain syscall.  Keep it out of recovery.  The
-                    # persistence owner may reject this transition on older
-                    # schemas; in that case retain the bounded diagnostic and
-                    # let the owner repair the terminal-state contract rather
-                    # than manufacturing a false recovery claim.
+                    # If persisting that pre-effect terminal state fails,
+                    # preserve uncertainty instead of leaving an open intent.
                     try:
                         self._state.finish_file_action(action_id, "skipped", detail)
                     except BaseException as exc:
+                        self._best_effort_require_recovery(
+                            (action_id,),
+                            f"blocked outcome persistence failed: {type(exc).__name__}: {exc}",
+                            exc,
+                        )
+                        failed += 1
                         if action_type == "trash_redlist":
                             self._record_redlist_batch_diagnostic(
-                                "failed_pre_effect", exc, path
+                                "recovery_required", exc, path
                             )
+                        continue
                     if action_type == "trash_redlist":
                         self._record_redlist_batch_diagnostic("blocked", detail, path)
                     else:
@@ -504,6 +551,15 @@ class EffectsActionsMixin:
                         )
             except (CancellationRequested, RunBudgetExceeded, KeyboardInterrupt) as exc:
                 self._best_effort_require_recovery((action_id,), str(exc), exc)
+                self._finish_uninvoked_trash_actions(
+                    ready[position + 1 :],
+                    detail=(
+                        "kio_cancelled_before_effect"
+                        if not isinstance(exc, RunBudgetExceeded)
+                        else "kio_budget_exhausted_before_effect"
+                    ),
+                    original_error=exc,
+                )
                 if action_type == "trash_redlist":
                     self._record_redlist_batch_diagnostic(
                         "recovery_required", exc, path
@@ -682,8 +738,8 @@ class EffectsActionsMixin:
         for (
             action_id,
             path,
-            _snapshot,
-            _source_digest,
+            snapshot,
+            source_digest,
             _expected,
         ), outcome in zip(prepared, outcomes, strict=True):
             if not isinstance(outcome, BackendOutcome):
@@ -708,23 +764,16 @@ class EffectsActionsMixin:
                     failed += 1
                     continue
                 try:
-                    receipt_value = json.loads(outcome.receipt_json)
-                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    self._validate_trash_receipt(
+                        outcome.receipt_json,
+                        expected=snapshot,
+                        source_digest=source_digest,
+                    )
+                except (OSError, RuntimeError, TypeError, ValueError, FileChangedError) as exc:
                     self._best_effort_require_recovery((action_id,), str(exc), exc)
                     if action_type == "trash_redlist":
                         self._record_redlist_batch_diagnostic(
                             "recovery_required", exc, path
-                        )
-                    failed += 1
-                    continue
-                if not isinstance(receipt_value, dict):
-                    detail = "trash backend returned a non-object effect receipt"
-                    self._best_effort_require_recovery(
-                        (action_id,), detail, RuntimeError(detail)
-                    )
-                    if action_type == "trash_redlist":
-                        self._record_redlist_batch_diagnostic(
-                            "recovery_required", detail, path
                         )
                     failed += 1
                     continue
@@ -734,16 +783,22 @@ class EffectsActionsMixin:
             detail = outcome.detail or outcome.reason
             if outcome.status == "blocked":
                 # The backend explicitly says no physical effect was started.
-                # Do not turn a policy/preflight block into recovery.  Older
-                # state owners may reject applying->skipped; keep the bounded
-                # diagnostic and leave reconciliation to the owner contract.
+                # Do not turn a policy/preflight block into recovery unless
+                # persisting the terminal skip itself fails.
                 try:
                     self._state.finish_file_action(action_id, "skipped", detail)
                 except BaseException as exc:
+                    self._best_effort_require_recovery(
+                        (action_id,),
+                        f"blocked outcome persistence failed: {type(exc).__name__}: {exc}",
+                        exc,
+                    )
+                    failed += 1
                     if action_type == "trash_redlist":
                         self._record_redlist_batch_diagnostic(
-                            "failed_pre_effect", exc, path
+                            "recovery_required", exc, path
                         )
+                    continue
                 if action_type == "trash_redlist":
                     self._record_redlist_batch_diagnostic("blocked", detail, path)
                 else:
@@ -774,6 +829,18 @@ class EffectsActionsMixin:
                             "recovery_required", exc, path
                         )
                 failed += len(confirmations)
+            except BaseException as exc:
+                # Cancellation/interrupts can arrive while the confirmation
+                # transaction is being committed.  The physical batch may
+                # already be complete; preserve recovery for every member
+                # before propagating the control-flow interruption.
+                for action_id, _receipt, path in confirmations:
+                    self._best_effort_require_recovery((action_id,), str(exc), exc)
+                    if action_type == "trash_redlist":
+                        self._record_redlist_batch_diagnostic(
+                            "recovery_required", exc, path
+                        )
+                raise
             else:
                 applied = len(confirmations)
                 applied_paths.extend(path for _action_id, _receipt, path in confirmations)
@@ -803,6 +870,76 @@ class EffectsActionsMixin:
                 "file action remains in applying state because recovery marking "
                 f"failed: {type(persistence_error).__name__}: {persistence_error}"
             )
+
+    def _finish_uninvoked_trash_actions(
+        self,
+        ready: list[
+            tuple[
+                int,
+                str,
+                FileSnapshot | None,
+                FileSnapshot | None,
+                os.stat_result,
+            ]
+        ],
+        *,
+        detail: str,
+        original_error: BaseException,
+    ) -> None:
+        """Close ready intents that were never handed to a physical backend."""
+
+        action_ids = tuple(action_id for action_id, *_rest in ready)
+        if not action_ids:
+            return
+        try:
+            self._state.finish_file_actions(action_ids, "skipped", detail)
+        except BaseException as persistence_error:
+            recovery_detail = (
+                f"{detail}; terminal skip persistence failed: "
+                f"{type(persistence_error).__name__}: {persistence_error}"
+            )
+            try:
+                self._state.require_file_action_recovery(action_ids, recovery_detail)
+            except BaseException as recovery_error:
+                original_error.add_note(
+                    "uninvoked file action recovery transition failed after skip "
+                    f"failure: {type(recovery_error).__name__}: {recovery_error}"
+                )
+            else:
+                original_error.add_note(
+                    "uninvoked file actions were moved to recovery after skip "
+                    f"persistence failed: {type(persistence_error).__name__}: "
+                    f"{persistence_error}"
+                )
+
+    @staticmethod
+    def _validate_trash_receipt(
+        receipt_json: str,
+        *,
+        expected: FileSnapshot,
+        source_digest: str,
+    ) -> None:
+        """Require source-bound physical Trash evidence before ledger success."""
+
+        try:
+            receipt = json.loads(receipt_json)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("trash backend returned invalid effect receipt JSON") from exc
+        if not isinstance(receipt, dict):
+            raise ValueError("trash backend returned a non-object effect receipt")
+        source_path = receipt.get("source_path")
+        if (
+            receipt.get("schema_version") != 1
+            or receipt.get("receipt_type") != "successful_return_and_observation"
+            or receipt.get("operation") != "trash"
+            or receipt.get("source_absent") is not True
+            or receipt.get("target_path") is not None
+            or receipt.get("source_digest") != source_digest
+            or not isinstance(source_path, str)
+            or _path_key(source_path) != _path_key(expected.path)
+        ):
+            raise ValueError("trash backend receipt is not source-bound Trash evidence")
+        verify_trash_receipt_evidence(receipt.get("trash"), expected, source_digest)
 
     @staticmethod
     def _normalize_trash_snapshots(
@@ -1206,6 +1343,7 @@ class EffectsActionsMixin:
         completed = 0
         after_path = ""
         while True:
+            self._checkpoint()
             page = self._index.snapshots_by_size_page(
                 plan.scan_id,
                 0,
@@ -1393,6 +1531,7 @@ class EffectsActionsMixin:
             report()
 
         for group in self._index.iter_duplicate_groups(plan.scan_id):
+            self._checkpoint()
             # The planner normally receives the same admission contract, but
             # keep the effect owner fail-closed for direct callers and stale
             # plans.  Do this before keeper validation, full hashing, exact

@@ -53,6 +53,7 @@ from .frames import (
 from .models import (
     VIDEO_ROUTE_VERSION,
     VideoMediaProbe,
+    VideoNotApplicable,
     VideoProcessingError,
     VideoRuntimeUnavailableError,
     VideoRouteSummary,
@@ -70,6 +71,7 @@ from .state import (
     search_video_state,
     store_video_error,
     store_video_inventory,
+    store_video_not_applicable,
     store_video_success,
     video_database,
 )
@@ -358,6 +360,7 @@ class _VideoMetrics:
     reviews: int = 0
     deletion_candidates: int = 0
     retryable_errors: int = 0
+    not_applicable: int = 0
     pruned: int = 0
 
 
@@ -521,6 +524,7 @@ class VideoRoute:
             complete=metrics.complete,
             partial=metrics.partial,
             errors=metrics.errors,
+            not_applicable=metrics.not_applicable,
             visual_only=metrics.visual_only,
             frames_sampled=metrics.frames,
             scene_frames=metrics.scene_frames,
@@ -582,10 +586,10 @@ class VideoRoute:
         def inspect(item):
             snapshot, mime = item
             local = _VideoMetrics()
-            outcome: tuple[VideoMediaProbe, tuple[VideoFrameEvidence, ...], tuple[str, ...]] | VideoProcessingError | OSError
+            outcome: tuple[VideoMediaProbe, tuple[VideoFrameEvidence, ...], tuple[str, ...]] | VideoNotApplicable | VideoProcessingError | OSError
             try:
                 outcome = self._inspect(snapshot, ocr_runtime, local, admitted=True)
-            except (VideoProcessingError, OSError) as exc:
+            except (VideoNotApplicable, VideoProcessingError, OSError) as exc:
                 outcome = exc
             return snapshot, mime, outcome, local
 
@@ -644,7 +648,7 @@ class VideoRoute:
             # Let the normal processing boundary record the typed retryable error.
             return False
         status = str(cached["status"])
-        if status in {"complete", "partial"}:
+        if status in {"complete", "partial", "not_applicable"}:
             return True
         return status == "error" and (
             not self.config.retry_errors
@@ -671,9 +675,21 @@ class VideoRoute:
     ) -> bool:
         prior_audio = cached["audio_status"]
         status = str(cached["status"])
+        if status == "not_applicable":
+            link = find_published_audio_link(self.config.audio_state_path, snapshot)
+            refresh_cached_video(connection, snapshot, mime, self.run_id, link)
+            metrics.cache_hits += 1
+            metrics.not_applicable += 1
+            metrics.audio_links += int(link is not None)
+            return True
         if status == "partial" and self._claim_recoverable_partial_retry(cached, snapshot):
             return False
         if status == "error":
+            # A pre-existing visual-route error for a valid audio-only
+            # container must be re-probed under the current contract.  This is
+            # deliberately narrower than retrying all manual-review errors.
+            if str(cached["error_type"] or "") == "media_without_video_stream":
+                return False
             if self.config.retry_errors:
                 return False
             if self._claim_recoverable_retry(cached, snapshot):
@@ -779,6 +795,20 @@ class VideoRoute:
         *, prepared=None,
     ) -> None:
         try:
+            if isinstance(prepared, VideoNotApplicable):
+                link = find_published_audio_link(self.config.audio_state_path, snapshot)
+                store_video_not_applicable(
+                    connection,
+                    snapshot,
+                    mime,
+                    signature,
+                    prepared.probe,
+                    link,
+                    self.run_id,
+                )
+                metrics.not_applicable += 1
+                metrics.audio_links += int(link is not None)
+                return
             if isinstance(prepared, Exception):
                 raise prepared
             probe, frames, warnings = (
@@ -851,6 +881,8 @@ class VideoRoute:
                 ffprobe_path=self.config.ffprobe_path,
                 timeout_seconds=self.config.probe_timeout_seconds,
             )
+            if probe.video_streams == 0:
+                raise VideoNotApplicable(probe)
             if probe.duration_seconds > self.config.max_duration_seconds:
                 raise VideoProcessingError(
                     "video_duration_limit",

@@ -48,6 +48,7 @@ from .document_organization_models import (
     _begin_organization_run,
     _complete_organization_run,
     _fail_organization_run,
+    is_advisory_organization_block,
 )
 from .document_organization_planning import (
     _reject_state_destination,
@@ -72,6 +73,7 @@ class _OrganizationApplyCounters:
     failed: int = 0
     cache_synced: int = 0
     cache_pending: int = 0
+    advisory_blocked: int = 0
 
     def record(self, outcome: _ApplyRowOutcome) -> None:
         if outcome.cache_synced:
@@ -83,6 +85,8 @@ class _OrganizationApplyCounters:
             self.stale += 1
         elif outcome.status == "blocked":
             self.blocked += 1
+            if outcome.advisory_blocked:
+                self.advisory_blocked += 1
         else:
             self.failed += 1
 
@@ -94,6 +98,7 @@ class _OrganizationApplyCounters:
             blocked=self.blocked,
             failed=self.failed,
             cache_synced=self.cache_synced,
+            advisory_blocked=self.advisory_blocked,
         )
 
     def summary(
@@ -112,6 +117,7 @@ class _OrganizationApplyCounters:
             failed=self.failed,
             cache_synced=self.cache_synced,
             cache_pending=self.cache_pending,
+            advisory_blocked=self.advisory_blocked,
             remaining=remaining,
         )
 
@@ -431,7 +437,10 @@ def _record_protected_organization_plan(
         WHERE plan_id=?""",
         (detail, time.time_ns(), row["plan_id"]),
     )
-    return _ApplyRowOutcome("blocked")
+    return _ApplyRowOutcome(
+        "blocked",
+        advisory_blocked=is_advisory_organization_block(detail),
+    )
 
 
 def _apply_selected_organization_plan(
@@ -547,7 +556,7 @@ def apply_all_document_organization(
     mutation_guard.reject_run_mutation()
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
-    selected = applied = stale = blocked = failed = cache_synced = 0
+    selected = applied = stale = blocked = failed = cache_synced = advisory_blocked = 0
     batches = 0
     last_run_id = 0
     remaining = 0
@@ -562,6 +571,7 @@ def apply_all_document_organization(
         blocked=0,
         failed=0,
         cache_synced=0,
+        advisory_blocked=0,
         remaining=total,
     )
     while True:
@@ -571,6 +581,7 @@ def apply_all_document_organization(
         blocked_before = blocked
         failed_before = failed
         cache_synced_before = cache_synced
+        advisory_blocked_before = advisory_blocked
         report_batch = _organization_apply_batch_reporter(
             progress,
             operation=progress_operation,
@@ -581,6 +592,7 @@ def apply_all_document_organization(
             blocked_before=blocked_before,
             failed_before=failed_before,
             cache_synced_before=cache_synced_before,
+            advisory_blocked_before=advisory_blocked_before,
         )
 
         current = apply_document_organization(
@@ -598,6 +610,7 @@ def apply_all_document_organization(
         blocked += current.blocked
         failed += current.failed
         cache_synced += current.cache_synced
+        advisory_blocked += current.advisory_blocked
         remaining = current.remaining
         finalized = current.applied + current.stale + current.blocked + current.failed
         if remaining == 0 or current.selected == 0:
@@ -615,6 +628,7 @@ def apply_all_document_organization(
         blocked=blocked,
         failed=failed,
         cache_synced=cache_synced,
+        advisory_blocked=advisory_blocked,
         cache_pending=remaining,
         batches=batches,
         remaining=remaining,
@@ -629,6 +643,7 @@ def apply_all_document_organization(
         blocked=blocked,
         failed=failed,
         cache_synced=cache_synced,
+        advisory_blocked=advisory_blocked,
         remaining=remaining,
         finished=True,
     )
@@ -646,6 +661,7 @@ def _organization_apply_batch_reporter(
     blocked_before: int,
     failed_before: int,
     cache_synced_before: int,
+    advisory_blocked_before: int,
 ) -> OrganizationApplyProgressCallback:
     def report_batch(current: OrganizationApplyProgress) -> None:
         current_selected = selected_before + current.selected
@@ -659,6 +675,7 @@ def _organization_apply_batch_reporter(
             blocked=blocked_before + current.blocked,
             failed=failed_before + current.failed,
             cache_synced=cache_synced_before + current.cache_synced,
+            advisory_blocked=advisory_blocked_before + current.advisory_blocked,
             remaining=max(0, total - current_selected),
         )
 
@@ -694,10 +711,11 @@ def _emit_organization_apply_progress(
     blocked: int,
     failed: int,
     cache_synced: int,
+    advisory_blocked: int,
     remaining: int,
     finished: bool = False,
 ) -> None:
-    unresolved = stale + blocked + failed + remaining
+    unresolved = stale + max(0, blocked - advisory_blocked) + failed + remaining
     description = (
         "Organización técnica aplicada"
         if finished and not unresolved
@@ -722,6 +740,7 @@ def _emit_organization_apply_progress(
                 ProgressMetric("cache_synced", cache_synced),
                 ProgressMetric("stale", stale),
                 ProgressMetric("blocked", blocked),
+                ProgressMetric("advisory_blocked", advisory_blocked),
                 ProgressMetric("errors", failed),
                 ProgressMetric("remaining", remaining),
             ),

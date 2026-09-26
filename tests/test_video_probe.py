@@ -74,19 +74,19 @@ def test_audio_and_multiple_video_tracks_are_counted_without_guessing() -> None:
     assert [stream.index for stream in result.video] == [0, 1]
 
 
-def test_non_video_media_fails_with_a_specific_reviewable_reason() -> None:
-    with pytest.raises(VideoProcessingError) as raised:
-        decode_video_probe(
-            {
-                "format": {"duration": "3"},
-                "streams": [{"index": 0, "codec_type": "audio", "codec_name": "opus"}],
-                "chapters": [],
-            }
-        )
+def test_audio_only_media_is_valid_without_inventing_video_streams() -> None:
+    result = decode_video_probe(
+        {
+            "format": {"duration": "3"},
+            "streams": [{"index": 0, "codec_type": "audio", "codec_name": "opus"}],
+            "chapters": [],
+        }
+    )
 
-    assert raised.value.code == "media_without_video_stream"
-    assert raised.value.recommendation == "manual_review"
-    assert not raised.value.retryable
+    assert result.duration_seconds == 3
+    assert result.audio_streams == 1
+    assert result.video_streams == 0
+    assert result.video == ()
 
 
 @pytest.mark.parametrize(

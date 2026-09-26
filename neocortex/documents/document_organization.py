@@ -29,6 +29,7 @@ from .document_organization_models import (
     OrganizationPlanSummary,
     OrganizationPlanView,
     default_organization_root,
+    organization_apply_has_unresolved,
     list_organization_plans,
 )
 from .document_organization_planning import plan_document_organization
@@ -56,6 +57,7 @@ __all__ = (
     "capture_organization_input_scope",
     "default_organization_root",
     "list_organization_plans",
+    "organization_apply_has_unresolved",
     "plan_document_organization",
 )
 # endregion [02]

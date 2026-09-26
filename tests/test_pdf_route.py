@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-import fitz  # type: ignore[import-untyped]
+import pymupdf as fitz  # type: ignore[import-untyped]
 
 from neocortex.deduplication import DedupIndex, FileSnapshot, snapshot_path
 from neocortex.runtime.control.cancellation import CancellationToken
@@ -348,7 +348,7 @@ class PdfRouteTests(unittest.TestCase):
                 def close():
                     return None
 
-            with patch("fitz.open", return_value=BrokenPageTree()):
+            with patch("pymupdf.open", return_value=BrokenPageTree()):
                 _extract_child(
                     snapshot,
                     _isolated_config(),
@@ -410,7 +410,7 @@ class PdfRouteTests(unittest.TestCase):
                 structural_recovery_reason="legacy page sequence failure",
             )
             with (
-                patch("fitz.open", return_value=BrokenPageTree()),
+                patch("pymupdf.open", return_value=BrokenPageTree()),
                 patch(
                     "neocortex.capabilities.formats.pdf.pdf_isolation._qpdf_repaired_copy",
                     return_value=nullcontext(("repaired.pdf", {"engine": "qpdf+pymupdf"})),
@@ -1481,7 +1481,7 @@ class PdfRouteTests(unittest.TestCase):
 
             with DedupIndex(root / "dedup.sqlite3") as index:
                 scan = index.scan(root, excluded_paths=())
-                with patch("fitz.open", side_effect=FailingDocument):
+                with patch("pymupdf.open", side_effect=FailingDocument):
                     summary = PdfRoute(
                         PdfRouteConfig(root / "pdf.sqlite3", ocr_mode="never", workers=1),
                         index,
@@ -2044,7 +2044,7 @@ class PdfRouteTests(unittest.TestCase):
             with DedupIndex(root / "dedup.sqlite3") as index:
                 scan = index.scan(root, excluded_paths=())
                 snapshots = list(index.snapshots(scan.scan_id))
-                with patch("fitz.open", side_effect=FailingDocument):
+                with patch("pymupdf.open", side_effect=FailingDocument):
                     first = PdfRoute(
                         PdfRouteConfig(root / "pdf.sqlite3", ocr_mode="never", workers=1),
                         index,
@@ -2190,7 +2190,7 @@ class PdfRouteTests(unittest.TestCase):
                     1,
                     scan.scan_id,
                 )
-                with patch("fitz.open", side_effect=RuntimeError("forced primary failure")):
+                with patch("pymupdf.open", side_effect=RuntimeError("forced primary failure")):
                     summary = route.run()
                 self.assertEqual(summary.extracted, 1)
                 self.assertEqual(summary.errors, 0)

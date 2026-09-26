@@ -48,10 +48,79 @@ from neocortex.semantic.semantic_state import (
     semantic_database,
 )
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
+from neocortex.runtime.scratch import ScratchManager
+from neocortex.semantic.semantic_plan_scratch import REGISTERED_SCRATCH_OWNER
 
 
 TEST_CAPABILITIES = ("base", 'inference')
 pytestmark = pytest.mark.capability("base", 'inference')
+
+
+def _assert_retired_scratch(scratch: Path) -> None:
+    """Require no payload while preserving the registered control journal."""
+
+    entries = tuple(scratch.iterdir())
+    assert {entry.name for entry in entries} == {".scratch-control"}
+    assert len(entries) == 1
+    control = entries[0]
+    assert control.is_dir()
+    assert not control.is_symlink()
+    assert control.stat().st_mode & 0o077 == 0
+    for entry in control.iterdir():
+        assert entry.is_file()
+        assert not entry.is_symlink()
+        assert entry.stat().st_mode & 0o077 == 0
+    assert ScratchManager(
+        scratch,
+        owner=REGISTERED_SCRATCH_OWNER,
+        create_root=False,
+    ).records() == ()
+
+
+def _assert_failed_retained_scratch(scratch: Path) -> None:
+    """Require one private, owner-bound failed workspace and no loose payload."""
+
+    entries = tuple(scratch.iterdir())
+    workspaces = tuple(entry for entry in entries if entry.name.startswith("workspace-"))
+    assert len(workspaces) == 1
+    assert {entry.name for entry in entries} <= {".scratch-control", workspaces[0].name}
+    control = scratch / ".scratch-control"
+    if control.exists():
+        assert control.is_dir()
+        assert not control.is_symlink()
+        assert control.stat().st_mode & 0o077 == 0
+        for entry in control.iterdir():
+            assert entry.is_file()
+            assert not entry.is_symlink()
+            assert entry.stat().st_mode & 0o077 == 0
+    workspace = workspaces[0]
+    assert workspace.is_dir()
+    assert not workspace.is_symlink()
+    assert workspace.stat().st_mode & 0o077 == 0
+    payload_entries = tuple(workspace.iterdir())
+    assert {entry.name for entry in payload_entries} == {
+        "manifest.json",
+        "content-keys.sqlite3",
+    }
+    for entry in payload_entries:
+        assert entry.is_file()
+        assert not entry.is_symlink()
+        assert entry.stat().st_mode & 0o077 == 0
+    manager = ScratchManager(
+        scratch,
+        owner=REGISTERED_SCRATCH_OWNER,
+        create_root=False,
+    )
+    records = manager.records()
+    assert len(records) == 1
+    record = records[0]
+    assert record.status == "failed-retained"
+    assert record.owner == REGISTERED_SCRATCH_OWNER
+    assert record.path == workspace
+    assert record.payload_profile == "strict"
+    assert record.metadata["component"] == REGISTERED_SCRATCH_OWNER
+    assert record.metadata["operation"] == "plan_semantic_index"
+    assert record.reason
 
 
 # region [01] Temporary owner fixtures
@@ -287,7 +356,7 @@ def test_text_plan_is_deterministic_bounded_and_creates_no_state(
     assert first.scratch_storage_bytes <= first.max_scratch_bytes
     assert len(first.source_plans[0].snapshot_xxh3_128) == 32
     assert len(first.semantic_snapshot_xxh3_128) == 32
-    assert list(scratch.iterdir()) == []
+    _assert_retired_scratch(scratch)
     assert source.read_bytes() == source_before
     assert not (tmp_path / "semantic.sqlite3").exists()
     assert not (tmp_path / "framework.lock").exists()
@@ -463,7 +532,7 @@ def test_plan_cancellation_cleans_scratch_and_preserves_owner(tmp_path: Path) ->
             cancellation_check=cancel,
         )
 
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert source.read_bytes() == source_before
     assert not (tmp_path / "semantic.sqlite3").exists()
 
@@ -645,7 +714,7 @@ def test_scratch_quota_is_inclusive_hard_bounded_and_observable(
             scratch_directory=scratch,
             max_scratch_bytes=peak - 1,
         )
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert source.read_bytes() == source_before
     assert not (tmp_path / "semantic.sqlite3").exists()
 
@@ -729,7 +798,7 @@ def test_sqlite_full_during_reuse_mark_is_translated_and_cleans_scratch(
                 scratch_directory=scratch,
             )
 
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 def test_sql_progress_cancellation_is_re_raised_and_cleans_scratch(
@@ -769,7 +838,7 @@ def test_sql_progress_cancellation_is_re_raised_and_cleans_scratch(
         )
 
     assert sql_callbacks == 1
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert source.read_bytes() == source_before
 
 
@@ -817,7 +886,7 @@ def test_locked_owner_retry_is_short_and_cancellable(tmp_path: Path) -> None:
 
     assert retry_checkpoints == 2
     assert elapsed < 1.0
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 def test_keyboard_interrupt_cleans_private_scratch(tmp_path: Path) -> None:
@@ -841,7 +910,7 @@ def test_keyboard_interrupt_cleans_private_scratch(tmp_path: Path) -> None:
             cancellation_check=interrupt,
         )
 
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
 
 
@@ -1326,7 +1395,7 @@ def test_missing_image_owner_is_a_domain_block_without_state_creation(
             scratch_directory=scratch,
         )
 
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "image.sqlite3").exists()
     assert not (tmp_path / "semantic.sqlite3").exists()
     assert not (tmp_path / "framework.lock").exists()
@@ -1550,7 +1619,7 @@ def test_arbitrary_planner_fault_cleans_scratch(tmp_path: Path) -> None:
                 scratch_directory=scratch,
             )
 
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
 
 
@@ -1584,7 +1653,7 @@ def test_semantic_sql_progress_cancellation_is_bridged_exactly(
             cancellation_check=cancel_in_semantic_sql,
         )
 
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 # endregion [06]
@@ -1654,7 +1723,7 @@ def test_image_plan_attach_is_readonly_query_only_and_detaches_on_success(
     assert len(aliases_after_detach) == 1
     assert "dedup" not in aliases_after_detach[0]
     assert close_events == [None]
-    assert list(scratch.iterdir()) == []
+    _assert_retired_scratch(scratch)
 
 
 def test_attach_failure_is_controlled_closes_owner_and_cleans_scratch(
@@ -1704,7 +1773,7 @@ def test_attach_failure_is_controlled_closes_owner_and_cleans_scratch(
             )
 
     assert events == ["attach", "close"]
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
 
 
@@ -1746,7 +1815,7 @@ def test_image_data_version_fence_blocks_mid_plan_mutation(tmp_path: Path) -> No
                 scratch_directory=scratch,
             )
 
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
 
 
@@ -1796,7 +1865,7 @@ def test_attached_dedup_data_version_fence_blocks_mid_plan_mutation(
                 scratch_directory=scratch,
             )
 
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
 
 
@@ -1837,7 +1906,7 @@ def test_dedup_schema_is_revalidated_between_probe_and_attach(
                 scratch_directory=scratch,
             )
 
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
 
 
@@ -1889,7 +1958,7 @@ def test_late_cancellation_before_scratch_commit_is_exact_and_cleans_scratch(
 
     assert raised.value is primary
     assert source.read_bytes() == source_before
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
 
 
@@ -1944,7 +2013,7 @@ def test_final_cancellation_after_scratch_close_is_exact_and_cleans_scratch(
     assert raised.value is primary
     assert close_events == [None]
     assert source.read_bytes() == source_before
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
 
 
@@ -2028,7 +2097,7 @@ def test_detach_failure_does_not_mask_exact_cancellation(tmp_path: Path) -> None
     assert getattr(primary, "__notes__", ()) == [
         "semantic planner dedup detach cleanup failed: OperationalError: forced detach failure"
     ]
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 def test_detach_failure_does_not_mask_primary_projection_error(
@@ -2100,7 +2169,7 @@ def test_detach_failure_does_not_mask_primary_projection_error(
     assert getattr(primary, "__notes__", ()) == [
         "semantic planner dedup detach cleanup failed: OperationalError: secondary detach failure"
     ]
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 def test_detach_failure_without_primary_is_controlled_and_closes_owner(
@@ -2159,7 +2228,7 @@ def test_detach_failure_without_primary_is_controlled_and_closes_owner(
 
     assert raised.value.__cause__ is detach_error
     assert events == ["attach", "detach", "close"]
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 @pytest.mark.parametrize(
@@ -2233,7 +2302,7 @@ def test_accumulator_rollback_failure_does_not_mask_primary_sqlite_error(
         "semantic planner scratch rollback cleanup failed: "
         "RuntimeError: secondary scratch rollback failure"
     ]
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 def test_scratch_create_close_failure_does_not_mask_primary_setup_error(
@@ -2283,7 +2352,7 @@ def test_scratch_create_close_failure_does_not_mask_primary_setup_error(
         "semantic planner scratch setup close cleanup failed: "
         "RuntimeError: secondary scratch close failure"
     ]
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 @pytest.mark.parametrize("primary_present", (True, False), ids=("primary", "unique"))
@@ -2361,7 +2430,7 @@ def test_readonly_owner_close_failure_preserves_primary_or_surfaces_unique(
 
     assert close_events == [None]
     assert source.read_bytes() == source_before
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 @pytest.mark.parametrize("primary_present", (True, False), ids=("primary", "unique"))
@@ -2443,7 +2512,7 @@ def test_final_scratch_close_failure_preserves_primary_or_surfaces_unique(
 
     assert close_events == [None]
     assert source.read_bytes() == source_before
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
 
 
@@ -2564,7 +2633,7 @@ def test_snapshot_rollback_failure_preserves_primary_or_surfaces_unique(
 
     assert rollback_events == [owner_kind]
     assert owner_path.read_bytes() == owner_before
-    assert list(scratch.iterdir()) == []
+    _assert_failed_retained_scratch(scratch)
 
 
 # endregion [08]
@@ -2624,7 +2693,7 @@ def test_plan_orchestrator_resolves_modularization_seams_dynamically(
         "_freeze_workload": 2,
         "_plan_payload_for_signature": 1,
     }
-    assert list(scratch.iterdir()) == []
+    _assert_retired_scratch(scratch)
 
 
 # endregion [09]

@@ -537,7 +537,8 @@ def test_resume_observes_pending_apply_without_repeating_effect_or_plan(
 @pytest.mark.parametrize(
     ("outcome", "must_recover"),
     (
-        ({"blocked": 1}, False),
+        ({"blocked": 1, "advisory_blocked": 1}, False),
+        ({"blocked": 1}, True),
         ({"stale": 1}, True),
         ({"failed": 1}, True),
         ({"cache_pending": 1}, True),

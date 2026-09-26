@@ -830,6 +830,39 @@ def restore_curation_action(
                     )
                 return outcome
             detail = outcome.detail or outcome.reason
+            if outcome.status == "blocked":
+                # A restore backend block is a pre-effect result.  Keep the
+                # separate restore intent terminal only when the original
+                # source-bound Trash evidence is still intact.  The backend is
+                # injectable, so a textual ``blocked`` result cannot by itself
+                # prove that no copy/move crossed the physical frontier.
+                try:
+                    _verify_trash_candidate(candidate)
+                except (OSError, RuntimeError, ValueError, FileChangedError) as exc:
+                    effective_state.require_file_action_recovery(
+                        (restore_id,),
+                        f"blocked restore evidence changed: {type(exc).__name__}: {exc}",
+                    )
+                    return RestoreOutcome(
+                        restore_id,
+                        "recovery_required",
+                        "blocked_restore_evidence_changed",
+                        str(exc),
+                    )
+                try:
+                    effective_state.finish_file_action(restore_id, "skipped", detail)
+                except BaseException as exc:
+                    effective_state.require_file_action_recovery(
+                        (restore_id,),
+                        f"blocked restore transition failed: {type(exc).__name__}: {exc}",
+                    )
+                    return RestoreOutcome(
+                        restore_id,
+                        "recovery_required",
+                        "blocked_restore_persistence_failed",
+                        str(exc),
+                    )
+                return RestoreOutcome(restore_id, "blocked", outcome.reason, detail)
             effective_state.require_file_action_recovery((restore_id,), detail)
             return RestoreOutcome(restore_id, "recovery_required", outcome.reason, detail)
     finally:

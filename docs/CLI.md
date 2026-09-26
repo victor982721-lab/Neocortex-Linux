@@ -705,6 +705,19 @@ estado terminal diferencia `complete`, `partial`, `unavailable`, `blocked`,
 `cancelled` y `recovery_required`; terminar una ruta no acredita completar el
 run.
 
+Las propuestas de organización no ejecutables se informan por separado como
+`organization_apply.advisory_blocked`, dentro del total `blocked`. Sólo se
+clasifican así después de verificar su ámbito y cuando corresponden al contrato
+advisory o a la ausencia del backend autorizado de organización. No representan
+archivos movidos ni conceden autorización. Esas abstenciones terminales no
+cambian por sí solas el éxito del procesamiento; contratos inválidos, fuentes
+stale, bloqueos no clasificados, efectos inciertos y trabajo pendiente conservan
+el resultado incompleto. CLI y lifecycle aplican el mismo criterio.
+
+En modo `--json`, una cancelación devuelve también JSON válido, con
+`status=cancelled`, `completion=incomplete` y `exit_code=130`. Un código no cero
+de Semantic no puede dejar Framework declarado como completado.
+
 Consulta y reanudación usan el mismo identificador durable:
 
 ```bash

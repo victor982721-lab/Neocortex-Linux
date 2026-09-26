@@ -117,6 +117,15 @@ def _emit(payload: dict[str, object], *, json_output: bool) -> None:
     print(f"agent-activity status={status}")
 
 
+def _activity_result_exit_code(result: object) -> int:
+    """Keep durable failed/recovery states out of the successful CLI path."""
+
+    state = getattr(result, "state", None)
+    if state in {"failed-retained", "recovery_required", "recovery-required"}:
+        return 2
+    return 0
+
+
 def _require_id(args: argparse.Namespace) -> str:
     value = getattr(args, "agent_activity_id", None)
     if not isinstance(value, str) or not value.strip():
@@ -212,8 +221,13 @@ def run_agent_activity(args: argparse.Namespace) -> int:
             "read_only": action in {"status", "reconcile"} and getattr(args, "agent_reconcile_action", "resume") == "resume",
             "result": result,
         }
+        exit_code = _activity_result_exit_code(result)
+        if exit_code:
+            payload["status"] = "blocked"
+            payload["code"] = "activity_recovery_required"
+            payload["exit_code"] = exit_code
         _emit(payload, json_output=json_output)
-        return 0
+        return exit_code
     except KeyboardInterrupt:
         raise
     except (AgentActivityError, OSError, ValueError) as exc:

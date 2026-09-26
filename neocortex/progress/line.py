@@ -18,6 +18,7 @@ class _LineProgressState:
     started_completed: int
     emitted_at: float
     completed: int
+    total: int | None
     description: str
     status: object
     errors: object
@@ -42,6 +43,7 @@ def _new_state(
         started_completed=event.completed,
         emitted_at=now,
         completed=event.completed,
+        total=event.total,
         description=event.description,
         status=metrics.get("status"),
         errors=metrics.get("errors"),
@@ -67,6 +69,12 @@ def _should_emit(
     )
     return bool(
         event.finished
+        # ProgressEvent carries absolute counters.  A retry/replay may move
+        # the counter backwards or change its total without changing the
+        # description; suppressing that update leaves a stale machine stream
+        # and can make a failed/restarted phase look complete.
+        or event.completed < state.completed
+        or event.total != state.total
         or event.description != state.description
         or metrics.get("status") != state.status
         or metrics.get("errors") != state.errors
@@ -86,6 +94,7 @@ def _refresh_state(
 ) -> None:
     state.emitted_at = now
     state.completed = event.completed
+    state.total = event.total
     state.description = event.description
     state.status = metrics.get("status")
     state.errors = metrics.get("errors")

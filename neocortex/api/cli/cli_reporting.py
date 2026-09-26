@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, cast
 
 from neocortex.deduplication.domain.models import DuplicateGroup
+from neocortex.documents.document_organization_models import organization_apply_has_unresolved
 from neocortex.runtime.orchestration.replay_metrics import route_replay_metrics
 from neocortex.api.read_contract import sanitize_untrusted_text
 
@@ -376,6 +377,7 @@ def _print_organization_report(result) -> None:
             f"organization_applied={applied.applied} "
             f"organization_stale={applied.stale} "
             f"organization_blocked={applied.blocked} "
+            f"organization_advisory_blocked={getattr(applied, 'advisory_blocked', 0)} "
             f"organization_failed={applied.failed} "
             f"organization_cache_synced={applied.cache_synced} "
             f"organization_cache_pending={applied.cache_pending} "
@@ -393,13 +395,7 @@ def has_organization_errors(result) -> bool:
         (plan is not None and plan.blocked)
         or (
             applied is not None
-            and (
-                applied.stale
-                or applied.blocked
-                or applied.failed
-                or applied.cache_pending
-                or applied.remaining
-            )
+            and organization_apply_has_unresolved(applied)
         )
     )
 
@@ -902,6 +898,28 @@ def print_professional_summary(
         == "no_verificado"
         for label, summary in route_rows
     )
+    route_status_issues = any(
+        isinstance(status, str)
+        and status.casefold()
+        in {
+            "blocked",
+            "cancelled",
+            "error",
+            "failed",
+            "incomplete",
+            "interrupted",
+            "partial",
+            "recovery_required",
+            "recovery-required",
+            "unavailable",
+        }
+        for summary in getattr(result, "route_results", {}).values()
+        for status in (
+            summary.get("status")
+            if isinstance(summary, Mapping)
+            else getattr(summary, "status", None),
+        )
+    )
     action_errors = _optional_counter(getattr(result, "actions", None), "errors") or 0
     semantic_totals = _semantic_totals(semantic_results)
     semantic_issues = (
@@ -915,6 +933,7 @@ def print_professional_summary(
     has_attention = bool(
         route_issues
         or route_failures
+        or route_status_issues
         or catalog_unknown
         or route_replay_unknown
         or action_errors
@@ -1270,6 +1289,8 @@ STRICT_ROUTE_ERROR_FIELDS = (
     "safety_issues",
     "retryable_errors",
     "manual_review_errors",
+    "recovery_required",
+    "recovery_required_actions",
 )
 
 
@@ -1277,6 +1298,24 @@ def has_strict_route_errors(result) -> bool:
     """Return whether any completed route reported incomplete content work."""
 
     for route_name, summary in result.route_results.items():
+        status = (
+            summary.get("status")
+            if isinstance(summary, Mapping)
+            else getattr(summary, "status", None)
+        )
+        if isinstance(status, str) and status.casefold() in {
+            "blocked",
+            "cancelled",
+            "error",
+            "failed",
+            "incomplete",
+            "interrupted",
+            "partial",
+            "recovery_required",
+            "recovery-required",
+            "unavailable",
+        }:
+            return True
         for field in _strict_route_error_fields(route_name, summary):
             value = (
                 summary.get(field, 0)

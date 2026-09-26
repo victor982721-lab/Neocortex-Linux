@@ -1,5 +1,27 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-AUD-20260925.
+**Alcance:** auditoría correctiva del flujo integrado, publicación Semantic,
+admisión de formatos, identidad y efectos, con pruebas de aplicación y replay
+sobre corpus sintético acotado.
+
+La observación integrada de heads usa una proyección coordinada del owner
+existente, no una copia completa de su base y WAL. Las lecturas públicas
+conservan sus fences y límites. ZIP y Trash requieren identidad/evidencia junto
+al efecto; una publicación o un efecto incierto no se presentan como éxito.
+Organización diferencia propuestas advisory no ejecutables de errores reales.
+
+La evidencia vigente, el resultado de la suite, las canarias de formatos y de
+owner grande, el SHA publicado y la verificación de instalación/rollback se
+consultan en `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-25-auditoria-codigo-01a0dbb9/`.
+Este cambio no procesa, reinicia ni repara por inferencia el corpus o el estado
+productivos: los ejercicios usan HOME/XDG/owners/caches privados. El estado de
+entrega lo gobiernan ese expediente y el SSOT, no este puntero.
+
+---
+
+# Handoff anterior — NeoCortex
+
 **Ronda:** NEO-CURACION-AUTONOMA-20260919.
 **Alcance:** admisión granular del corpus y Papelera de terceros regenerables con prueba local, más hotfixes del ZIP aportado.
 

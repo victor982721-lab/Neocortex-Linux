@@ -299,8 +299,22 @@ def _video_row_coverage(
 ) -> tuple[VideoCoverage, str | None]:
     """Return coverage and a stable reason for one Video document."""
 
-    if str(row["status"]) != "complete":
+    source_status = str(row["status"])
+    if source_status == "not_applicable":
+        # Audio-only containers are valid route inputs but intentionally do not
+        # publish visual Video evidence.  Keep the owner head complete while
+        # carrying an explicit exclusion reason; Semantic generation accepts
+        # this route-level no-op and never sees a duplicate transcript.
+        return "complete", "video_source_status_not_applicable"
+    if source_status == "partial":
         return "partial", "video_source_status_partial"
+    if source_status == "error":
+        return "partial", "video_source_status_error"
+    if source_status != "complete":
+        # The Video schema keeps status extensible at the SQL boundary.  An
+        # unknown/future/corrupt value is never allowed to fall through to a
+        # complete head simply because it is not named ``partial``/``error``.
+        return "partial", "video_source_status_unknown"
     if int(row["audio_streams"] or 0) <= 0:
         return "complete", None
     audio_key = row["audio_file_key"]
@@ -556,6 +570,7 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
     row_count = 0
     statuses: set[str] = set()
     coverage_reasons: set[str] = set()
+    excluded_not_applicable = False
     coverage: VideoCoverage
     reason: str | None
     try:
@@ -583,7 +598,9 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
                 # metadata, not a read failure; preserve the historical
                 # ``reason=None`` contract while the explicit coverage field
                 # carries the publication guard.
-                if row_reason is not None and row_reason != "video_source_status_partial":
+                if row_reason == "video_source_status_not_applicable":
+                    excluded_not_applicable = True
+                elif row_reason is not None and row_reason != "video_source_status_partial":
                     coverage_reasons.add(row_reason)
                 source_read_checkpoint()
                 digest.update(
@@ -648,12 +665,12 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
         reason = type(exc).__name__
         source_status = "blocked"
     else:
-        coverage = (
-            "partial"
-            if "partial" in statuses or "error" in statuses or coverage_reasons
-            else "complete"
+        coverage = "partial" if coverage_reasons or statuses.intersection(
+            {"partial", "error"}
+        ) else "complete"
+        reason = sorted(coverage_reasons)[0] if coverage_reasons else (
+            "video_source_status_not_applicable" if excluded_not_applicable else None
         )
-        reason = sorted(coverage_reasons)[0] if coverage_reasons else None
         source_status = "complete" if coverage == "complete" else "partial"
     return VideoSourceHead(
         source_kind=VIDEO_SOURCE_KIND,

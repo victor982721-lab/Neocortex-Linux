@@ -143,7 +143,15 @@ def decode_video_probe(payload: Any) -> VideoMediaProbe:
         limit=MAX_VIDEO_STREAMS,
     )
     streams = tuple(item for item in raw_streams if isinstance(item, dict))
-    raw_video = _video_streams(streams)
+    raw_video = tuple(item for item in streams if item.get("codec_type") == "video")
+    audio_streams = sum(item.get("codec_type") == "audio" for item in streams)
+    if not raw_video and not audio_streams:
+        raise VideoProcessingError(
+            "media_without_video_stream",
+            "the media container has no visual video stream",
+            recommendation="manual_review",
+            retryable=False,
+        )
     video = tuple(_decode_video_stream(item) for item in raw_video)
     subtitles = tuple(
         _decode_subtitle_stream(item) for item in streams if item.get("codec_type") == "subtitle"
@@ -156,10 +164,10 @@ def decode_video_probe(payload: Any) -> VideoMediaProbe:
     raw_format = payload.get("format")
     format_values = raw_format if isinstance(raw_format, dict) else {}
     return VideoMediaProbe(
-        duration_seconds=_media_duration(format_values, raw_video),
+        duration_seconds=_media_duration(format_values, streams),
         format_name=str(format_values.get("format_name") or "unknown")[:200],
         video=video,
-        audio_streams=sum(item.get("codec_type") == "audio" for item in streams),
+        audio_streams=audio_streams,
         subtitles=subtitles,
         chapters=len(raw_chapters),
     )
@@ -179,27 +187,13 @@ def _bounded_probe_array(
     return values
 
 
-def _video_streams(
-    streams: tuple[dict[str, object], ...],
-) -> tuple[dict[str, object], ...]:
-    video = tuple(item for item in streams if item.get("codec_type") == "video")
-    if video:
-        return video
-    raise VideoProcessingError(
-        "media_without_video_stream",
-        "the media container has no visual video stream",
-        recommendation="manual_review",
-        retryable=False,
-    )
-
-
 def _media_duration(
     format_values: Mapping[str, object],
-    video_streams: tuple[dict[str, object], ...],
+    streams: tuple[dict[str, object], ...],
 ) -> float:
     candidates = (
         _finite_nonnegative_float(format_values.get("duration")),
-        *(_finite_nonnegative_float(item.get("duration")) for item in video_streams),
+        *(_finite_nonnegative_float(item.get("duration")) for item in streams),
     )
     durations = tuple(value for value in candidates if value is not None)
     if durations:

@@ -310,7 +310,7 @@ CAPABILITY_SPECS: Mapping[str, RuntimeCapabilitySpec] = MappingProxyType(
                 _distribution(
                     "pymupdf",
                     "PyMuPDF",
-                    "fitz",
+                    "pymupdf",
                     required=True,
                     missing_reason="pdf_extractor_unavailable",
                     extra="documents",

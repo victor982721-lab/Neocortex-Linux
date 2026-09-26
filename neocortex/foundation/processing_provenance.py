@@ -44,6 +44,7 @@ _ARTIFACT_READ_BYTES = 1024 * 1024
 _VERSION_OUTPUT_MAX_BYTES = 256 * 1024
 _LANGUAGE_OUTPUT_MAX_BYTES = 1024 * 1024
 _SAFE_SEGMENT = re.compile(r"[^a-zA-Z0-9_.-]+")
+_LANGUAGE_CODE = re.compile(r"[A-Za-z0-9_]+\Z")
 
 
 _PROVENANCE_REVISION = 0
@@ -599,7 +600,24 @@ def resolve_tesseract_runtime(
 ) -> TesseractRuntimeProvenance:
     """Resolve Tesseract, selected languages and traineddata fingerprints once."""
 
-    requested = tuple(part for part in language.split("+") if part)
+    if not isinstance(language, str):
+        raise ValueError("Tesseract language must be a string")
+    requested_values: list[str] = []
+    seen: set[str] = set()
+    for raw in language.split("+"):
+        value = raw.strip()
+        if not value:
+            continue
+        # The value becomes a filename below (``<language>.traineddata``).
+        # Keep this boundary aligned with the public OCR parser and reject
+        # separators/traversal rather than allowing a direct caller to probe
+        # arbitrary files below or outside tessdata.
+        if _LANGUAGE_CODE.fullmatch(value) is None:
+            raise ValueError(f"invalid Tesseract language code: {value!r}")
+        if value not in seen:
+            seen.add(value)
+            requested_values.append(value)
+    requested = tuple(requested_values)
     if not requested:
         raise ValueError("Tesseract language must not be blank")
     if timeout_seconds <= 0:

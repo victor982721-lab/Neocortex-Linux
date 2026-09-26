@@ -19,6 +19,7 @@ from neocortex.deduplication import (
     DedupIndex,
     DedupPlanner,
     InventoryExclusionPolicy,
+    FileSnapshot,
     snapshot_path,
 )
 from neocortex.deduplication.io import native_io_path
@@ -37,6 +38,46 @@ def _framework_database(base: Path) -> Path:
     state_directory = base / "state"
     state_directory.mkdir(exist_ok=True)
     return state_directory / "framework.sqlite3"
+
+
+def _fixture_trash_receipt(
+    snapshot: FileSnapshot,
+    source_digest: str,
+    trash_root: Path,
+) -> str:
+    """Move one fixture source and return the typed source-bound receipt."""
+
+    trash_path = trash_root / "files" / Path(snapshot.path).name
+    info_path = trash_root / "info" / f"{Path(snapshot.path).name}.trashinfo"
+    trash_path.parent.mkdir(parents=True, exist_ok=True)
+    info_path.parent.mkdir(parents=True, exist_ok=True)
+    Path(snapshot.path).replace(trash_path)
+    info_path.write_text(
+        f"[Trash Info]\nPath={snapshot.path}\nDeletionDate=2026-09-25T00:00:00\n",
+        encoding="utf-8",
+    )
+    return json.dumps(
+        {
+            "operation": "trash",
+            "receipt_type": "successful_return_and_observation",
+            "schema_version": 1,
+            "source_absent": True,
+            "source_digest": source_digest,
+            "source_path": snapshot.path,
+            "target_path": None,
+            "trash": {
+                "digest": source_digest,
+                "file_id": f"{snapshot.file_id:x}",
+                "info_path": str(info_path),
+                "size": snapshot.size,
+                "trash_path": str(trash_path),
+                "trash_root": str(trash_root),
+                "volume_id": f"{snapshot.volume_id:x}",
+            },
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 class ContentTypeTests(unittest.TestCase):
@@ -691,9 +732,10 @@ class ActionTests(unittest.TestCase):
         class BatchBackend:
             name = "fixture-batch"
 
-            def __init__(self) -> None:
+            def __init__(self, trash_root: Path) -> None:
                 self.batch_calls: list[tuple[tuple[object, ...], Path]] = []
                 self.individual_calls = 0
+                self.trash_root = trash_root
 
             def apply_many_snapshots(
                 self,
@@ -706,9 +748,13 @@ class ActionTests(unittest.TestCase):
                     BackendOutcome(
                         "applied",
                         "fixture_batch_applied",
-                        receipt_json='{"schema":"fixture-receipt"}',
+                        receipt_json=_fixture_trash_receipt(
+                            snapshot,
+                            source_digest,
+                            self.trash_root,
+                        ),
                     )
-                    for _item in items
+                    for snapshot, source_digest in items
                 )
 
             def apply_snapshot(self, *_args: object, **_kwargs: object) -> BackendOutcome:
@@ -734,7 +780,7 @@ class ActionTests(unittest.TestCase):
                     preview_limit=0,
                 )
                 run_id = begin_signed_normal_run(state, corpus)
-                backend = BatchBackend()
+                backend = BatchBackend(base / "trash")
                 actions = FrameworkActions(
                     index,
                     state,
@@ -785,6 +831,7 @@ class ActionTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls = 0
                 self.asserted_items: tuple[tuple[object, str], ...] = ()
+                self.trash_root: Path | None = None
 
             def apply_many_snapshots(
                 self,
@@ -795,11 +842,17 @@ class ActionTests(unittest.TestCase):
                 del root
                 self.calls += 1
                 self.asserted_items = tuple(items)
+                assert self.trash_root is not None
+                first_snapshot, first_digest = items[0]
                 return (
                     BackendOutcome(
                         "applied",
                         "fixture_batch_applied",
-                        receipt_json='{"schema":"fixture-receipt"}',
+                        receipt_json=_fixture_trash_receipt(
+                            first_snapshot,
+                            first_digest,
+                            self.trash_root,
+                        ),
                     ),
                     BackendOutcome("recovery_required", "fixture_ambiguous", "inspect fixture"),
                     BackendOutcome("blocked", "fixture_blocked", "fixture refused"),
@@ -824,6 +877,7 @@ class ActionTests(unittest.TestCase):
                 )
                 run_id = begin_signed_normal_run(state, corpus)
                 backend = MixedBatchBackend()
+                backend.trash_root = base / "trash"
                 actions = FrameworkActions(
                     index,
                     state,
@@ -870,8 +924,9 @@ class ActionTests(unittest.TestCase):
         class BatchBackend:
             name = "fixture-batch"
 
-            def __init__(self) -> None:
+            def __init__(self, trash_root: Path) -> None:
                 self.calls: list[int] = []
+                self.trash_root = trash_root
 
             def apply_many_snapshots(
                 self,
@@ -885,9 +940,13 @@ class ActionTests(unittest.TestCase):
                     BackendOutcome(
                         "applied",
                         "fixture_batch_applied",
-                        receipt_json='{"schema":"fixture-receipt"}',
+                        receipt_json=_fixture_trash_receipt(
+                            snapshot,
+                            source_digest,
+                            self.trash_root,
+                        ),
                     )
-                    for _item in items
+                    for snapshot, source_digest in items
                 )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -909,7 +968,7 @@ class ActionTests(unittest.TestCase):
                     preview_limit=0,
                 )
                 run_id = begin_signed_normal_run(state, corpus)
-                backend = BatchBackend()
+                backend = BatchBackend(base / "trash")
                 summary = FrameworkActions(
                     index,
                     state,
@@ -1090,19 +1149,21 @@ class ActionTests(unittest.TestCase):
 
     def test_extensionless_executable_redlist_uses_metadata_trash_binding(self) -> None:
         class Backend:
+            def __init__(self, trash_root: Path) -> None:
+                self.trash_root = trash_root
+
             def apply_many_snapshots(self, items, *, root):
                 del root
                 outcomes = []
                 for snapshot, source_digest in items:
-                    Path(snapshot.path).unlink()
                     outcomes.append(
                         BackendOutcome(
                             "applied",
                             "fixture_verified",
-                            receipt_json=json.dumps(
-                                {"digest": source_digest},
-                                sort_keys=True,
-                                separators=(",", ":"),
+                            receipt_json=_fixture_trash_receipt(
+                                snapshot,
+                                source_digest,
+                                self.trash_root,
                             ),
                         )
                     )
@@ -1127,7 +1188,7 @@ class ActionTests(unittest.TestCase):
                     run_id,
                     scan.scan_id,
                     apply=True,
-                    trash_backend=Backend(),  # type: ignore[arg-type]
+                    trash_backend=Backend(base / "trash"),  # type: ignore[arg-type]
                 ).execute(plan, cleanup_empty_directories=False)
                 row = state._connection.execute(
                     "SELECT action_type,status,evidence FROM file_actions"

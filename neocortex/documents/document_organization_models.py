@@ -25,6 +25,18 @@ DEFAULT_ORGANIZATION_DIRECTORY_NAME = "Consulta_Tecnica_Organizada"
 ORGANIZATION_APPLY_BATCH_SIZE = 100
 ORGANIZATION_PROGRESS_INTERVAL = 10
 ORGANIZATION_FILENAME_LIMIT = 240
+ADVISORY_ORGANIZATION_BLOCK_REASONS = frozenset(
+    {
+        "organization_plan_advisory_only",
+        "organization_authorized_backend_unavailable",
+    }
+)
+
+
+def is_advisory_organization_block(reason: str) -> bool:
+    """Return whether one validated denial is an effect-free advisory abstention."""
+
+    return reason in ADVISORY_ORGANIZATION_BLOCK_REASONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +67,21 @@ class OrganizationApplySummary:
     cache_pending: int = 0
     batches: int = 1
     remaining: int = 0
+    advisory_blocked: int = 0
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.advisory_blocked) is not int
+            or self.advisory_blocked < 0
+            or self.advisory_blocked > self.blocked
+        ):
+            raise ValueError("advisory_blocked must be between zero and blocked")
+
+    @property
+    def has_unresolved(self) -> bool:
+        """Whether outcomes still require recovery, validation, or authority."""
+
+        return organization_apply_has_unresolved(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +92,15 @@ class OrganizationApplyProgress:
     blocked: int = 0
     failed: int = 0
     cache_synced: int = 0
+    advisory_blocked: int = 0
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.advisory_blocked) is not int
+            or self.advisory_blocked < 0
+            or self.advisory_blocked > self.blocked
+        ):
+            raise ValueError("advisory_blocked must be between zero and blocked")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +123,23 @@ class _ApplyRowOutcome:
     status: str
     cache_synced: bool = False
     cache_pending: bool = False
+    advisory_blocked: bool = False
+
+    def __post_init__(self) -> None:
+        if self.advisory_blocked and self.status != "blocked":
+            raise ValueError("advisory_blocked outcomes must have blocked status")
+
+
+def organization_apply_has_unresolved(summary: OrganizationApplySummary) -> bool:
+    """Exclude only validated advisory blocks from the unresolved gate."""
+
+    return bool(
+        summary.stale
+        or summary.failed
+        or summary.cache_pending
+        or summary.remaining
+        or summary.blocked > summary.advisory_blocked
+    )
 
 
 OrganizationApplyProgressCallback = Callable[[OrganizationApplyProgress], None]

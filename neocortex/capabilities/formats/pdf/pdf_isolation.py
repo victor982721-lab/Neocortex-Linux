@@ -936,7 +936,7 @@ class _ChildExtractionSession:
             self.document = None
 
     def _initialize_engine(self) -> None:
-        import fitz  # type: ignore[import-untyped]
+        import pymupdf as fitz
 
         self.fitz = fitz
         fitz.TOOLS.mupdf_display_errors(False)
@@ -1232,7 +1232,7 @@ def _profile_child(path: str, page_numbers: Sequence[int], channel) -> None:
             channel.put(("warnings", warning_count, tuple(warning_samples)))
 
     try:
-        import fitz
+        import pymupdf as fitz
 
         fitz.TOOLS.mupdf_display_errors(False)
         fitz.TOOLS.mupdf_display_warnings(False)

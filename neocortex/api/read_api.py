@@ -275,6 +275,16 @@ def _error_entry(binding: ScopeBinding, exc: BaseException) -> dict[str, object]
     }
 
 
+def _budget_exit_code(error: KnowledgeReadBudgetExceeded) -> KnowledgeExitCode:
+    """Preserve explicit user cancellation instead of relabeling it partial."""
+
+    return (
+        KnowledgeExitCode.CANCELLED
+        if error.reason == "cancelled"
+        else KnowledgeExitCode.PARTIAL
+    )
+
+
 def _snapshot_exit_code(snapshot: KnowledgeSnapshot) -> KnowledgeExitCode:
     states = {owner.state for owner in snapshot.owners}
     if OwnerAvailability.CORRUPT in states:
@@ -312,6 +322,11 @@ def federated_exit_code(entries: Sequence[dict[str, object]]) -> int:
     ]
     if not codes:
         return int(KnowledgeExitCode.FATAL)
+    # Cancellation is an explicit caller decision, not an owner failure or a
+    # successful/empty federated read. Preserve it even when another scope
+    # had already produced a result before the cancellation checkpoint.
+    if int(KnowledgeExitCode.CANCELLED) in codes:
+        return int(KnowledgeExitCode.CANCELLED)
     if all(code == int(KnowledgeExitCode.SUCCESS) for code in codes):
         return int(KnowledgeExitCode.SUCCESS)
     if all(code == int(KnowledgeExitCode.NO_RESULTS) for code in codes):
@@ -595,11 +610,12 @@ def search_payload(
                 }
             )
         except KnowledgeReadBudgetExceeded as exc:
+            code = _budget_exit_code(exc)
             entries.append({
                 "scope": binding.scope.value,
                 "state_directory": str(binding.state_directory),
-                "status": "partial",
-                "exit_code": int(KnowledgeExitCode.PARTIAL),
+                "status": _status_for_exit_code(int(code)),
+                "exit_code": int(code),
                 "error": {
                     "code": exc.reason,
                     "message": sanitize_untrusted_text(str(exc)),
@@ -690,11 +706,12 @@ def knowledge_search_projection_payload(
                 }
             )
         except KnowledgeReadBudgetExceeded as exc:
+            code = _budget_exit_code(exc)
             entries.append({
                 "scope": binding.scope.value,
                 "state_directory": str(binding.state_directory),
-                "status": "partial",
-                "exit_code": int(KnowledgeExitCode.PARTIAL),
+                "status": _status_for_exit_code(int(code)),
+                "exit_code": int(code),
                 "error": {
                     "code": exc.reason,
                     "message": sanitize_untrusted_text(str(exc)),
@@ -793,6 +810,20 @@ def context_payload(
                     "context": bundle.to_dict(),
                 }
             )
+        except KnowledgeReadBudgetExceeded as exc:
+            code = _budget_exit_code(exc)
+            entries.append(
+                {
+                    "scope": binding.scope.value,
+                    "state_directory": str(binding.state_directory),
+                    "status": _status_for_exit_code(int(code)),
+                    "exit_code": int(code),
+                    "error": {
+                        "code": exc.reason,
+                        "message": sanitize_untrusted_text(str(exc)),
+                    },
+                }
+            )
         except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append(_error_entry(binding, exc))
     return _finalize_read_payload(
@@ -871,13 +902,14 @@ def _context_payload_v2(
             entries.append({"scope": binding.scope.value, "result": evidence_projection,
                             "exit_code": int(knowledge_search_exit_code(result))})
         except KnowledgeReadBudgetExceeded as exc:
+            code = _budget_exit_code(exc)
             entries.append({
                 "scope": binding.scope.value,
                 "error": {
                     "code": exc.reason,
                     "message": sanitize_untrusted_text(str(exc)),
                 },
-                "exit_code": int(KnowledgeExitCode.PARTIAL),
+                "exit_code": int(code),
             })
         except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append({"scope": binding.scope.value, "error": {

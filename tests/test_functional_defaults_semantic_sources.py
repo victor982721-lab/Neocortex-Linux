@@ -20,10 +20,33 @@ from neocortex.semantic.semantic_sources import (
     semantic_source_heads,
 )
 from neocortex.semantic.video_source import VideoSourceBlocked
+from neocortex.runtime.scratch import ScratchManager
+from neocortex.semantic.semantic_plan_scratch import REGISTERED_SCRATCH_OWNER
 
 
 TEST_CAPABILITIES = ("base", "inference")
 pytestmark = pytest.mark.capability("base", "inference")
+
+
+def _assert_retired_scratch(scratch: Path) -> None:
+    """Require no payload while preserving the registered control journal."""
+
+    entries = tuple(scratch.iterdir())
+    assert {entry.name for entry in entries} == {".scratch-control"}
+    assert len(entries) == 1
+    control = entries[0]
+    assert control.is_dir()
+    assert not control.is_symlink()
+    assert control.stat().st_mode & 0o077 == 0
+    for entry in control.iterdir():
+        assert entry.is_file()
+        assert not entry.is_symlink()
+        assert entry.stat().st_mode & 0o077 == 0
+    assert ScratchManager(
+        scratch,
+        owner=REGISTERED_SCRATCH_OWNER,
+        create_root=False,
+    ).records() == ()
 
 
 def _create_video_owner(root: Path, *, audio_key: str | None = None) -> Path:
@@ -143,7 +166,7 @@ def test_public_planner_consumes_video_records_without_models_or_state_mutation(
     assert plan.jobs_created == 0
     assert plan.state_mutated is False
     assert owner.read_bytes() == owner_before
-    assert list(scratch.iterdir()) == []
+    _assert_retired_scratch(scratch)
     assert not (tmp_path / "semantic.sqlite3").exists()
     assert not (tmp_path / "framework.lock").exists()
 

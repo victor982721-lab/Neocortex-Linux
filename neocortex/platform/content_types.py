@@ -16,6 +16,7 @@ import re
 import struct
 import csv
 import json
+import math
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -35,7 +36,16 @@ HEADER_LIMIT = 64 * 1024
 ZIP_MEMBER_LIMIT = 4096
 ZIP_STRUCTURE_MEMBER_LIMIT = 10_000
 ZIP_MIMETYPE_LIMIT = 256
-DETECTOR_VERSION = "content-types-v4"
+DETECTOR_VERSION = "content-types-v5"
+
+# Media parsers below intentionally operate on the already bounded prefix read
+# by ``detect_content_type``.  These limits keep malformed container metadata
+# from turning Identify into an unbounded parser while still covering the
+# small headers emitted by local media encoders.
+MAX_MEDIA_CHUNKS = 4096
+MAX_ASF_HEADER_OBJECTS = 4096
+MAX_AMR_FRAMES = 4096
+_AMR_NB_FRAME_BYTES = (12, 13, 15, 17, 19, 20, 26, 31, 5)
 
 _TEXT_EXTENSIONS = frozenset(
     {
@@ -317,6 +327,287 @@ def _detect_iso_bmff(header: bytes) -> DetectedType | None:
     return _type("video/mp4", ".mp4", (".mp4", ".m4v"), "isobmff:mp4")
 
 
+def _detect_adts(header: bytes) -> DetectedType | None:
+    """Identify a bounded raw AAC/ADTS stream without using its suffix.
+
+    The MPEG audio sync word is shared by several families, so the ADTS layer
+    bits, sampling-frequency index, and a complete non-empty frame are checked
+    before returning ``audio/aac``.  Only the prefix already owned by Identify
+    is inspected; no decoder or subprocess is involved.
+    """
+
+    if len(header) < 7:
+        return None
+    offset = 0
+    valid_frames = 0
+    while valid_frames < 2 and len(header) - offset >= 7:
+        first = header[offset]
+        second = header[offset + 1]
+        # Twelve sync bits, layer == 0; ID and CRC-present remain variable.
+        if first != 0xFF or second & 0xF6 != 0xF0:
+            break
+        protection_absent = second & 0x01
+        header_size = 7 if protection_absent else 9
+        third = header[offset + 2]
+        sampling_frequency_index = (third >> 2) & 0x0F
+        if sampling_frequency_index >= 13:
+            return None
+        frame_length = (
+            ((header[offset + 3] & 0x03) << 11)
+            | (header[offset + 4] << 3)
+            | (header[offset + 5] >> 5)
+        )
+        # An ADTS frame must contain payload bytes in addition to its header.
+        if frame_length < header_size + 2 or frame_length > len(header) - offset:
+            return None
+        valid_frames += 1
+        offset += frame_length
+        if offset == len(header):
+            break
+    if valid_frames == 0:
+        return None
+    return _type("audio/aac", ".aac", (".aac",), "adts:aac")
+
+
+def _aiff_sample_rate(header: bytes, offset: int) -> float | None:
+    """Decode the bounded positive 80-bit AIFF sample-rate field."""
+
+    if offset + 10 > len(header):
+        return None
+    exponent = struct.unpack_from(">H", header, offset)[0]
+    mantissa = int.from_bytes(header[offset + 2 : offset + 10], "big")
+    if exponent & 0x8000 or not mantissa:
+        return None
+    try:
+        value = math.ldexp(mantissa / float(1 << 63), (exponent & 0x7FFF) - 16383)
+    except (OverflowError, ValueError):
+        return None
+    return value if math.isfinite(value) and 0 < value <= 384_000 else None
+
+
+def _detect_aiff(header: bytes) -> DetectedType | None:
+    """Identify structurally valid bounded AIFF/AIFC containers."""
+
+    if len(header) < 12 or header[:4] != b"FORM" or header[8:12] not in {b"AIFF", b"AIFC"}:
+        return None
+    form_size = struct.unpack_from(">I", header, 4)[0]
+    if form_size < 4:
+        return None
+    container_end = form_size + 8
+    available_end = min(len(header), container_end)
+    offset = 12
+    chunks = 0
+    saw_comm = False
+    saw_ssnd = False
+    while offset + 8 <= available_end and chunks < MAX_MEDIA_CHUNKS:
+        chunk_id = header[offset : offset + 4]
+        chunk_size = struct.unpack_from(">I", header, offset + 4)[0]
+        data_start = offset + 8
+        chunk_end = data_start + chunk_size
+        padded_end = chunk_end + (chunk_size & 1)
+        if chunk_end > container_end or padded_end > container_end:
+            return None
+        if chunk_id == b"COMM":
+            if saw_comm or chunk_size < 18 or data_start + 18 > len(header):
+                return None
+            channels, frames, sample_size = struct.unpack_from(">H I H", header, data_start)
+            if not (
+                0 < channels <= 256
+                and frames > 0
+                and 0 < sample_size <= 64
+                and _aiff_sample_rate(header, data_start + 8) is not None
+            ):
+                return None
+            if header[8:12] == b"AIFC":
+                if chunk_size < 22 or data_start + 22 > len(header):
+                    return None
+                compression = header[data_start + 18 : data_start + 22]
+                if not all(0x20 <= value < 0x7F for value in compression):
+                    return None
+            saw_comm = True
+        elif chunk_id == b"SSND":
+            if saw_ssnd or chunk_size < 8:
+                return None
+            saw_ssnd = True
+        chunks += 1
+        if padded_end > len(header):
+            # A valid SSND header may precede payload beyond the bounded
+            # prefix; no later structural evidence is available to inspect.
+            break
+        offset = padded_end
+        if offset >= container_end:
+            break
+    if not (saw_comm and saw_ssnd):
+        return None
+    return _type("audio/x-aiff", ".aiff", (".aiff", ".aif", ".aifc"), "iff:aiff")
+
+
+def _detect_caf(header: bytes) -> DetectedType | None:
+    """Identify a bounded Core Audio Format stream from its ``desc`` chunk."""
+
+    if len(header) < 8 or header[:4] != b"caff":
+        return None
+    version, _flags = struct.unpack_from(">HH", header, 4)
+    if version not in {1, 2}:
+        return None
+    offset = 8
+    chunks = 0
+    saw_desc = False
+    saw_data = False
+    while offset + 12 <= len(header) and chunks < MAX_MEDIA_CHUNKS:
+        chunk_id = header[offset : offset + 4]
+        chunk_size = struct.unpack_from(">Q", header, offset + 4)[0]
+        data_start = offset + 12
+        if chunk_id == b"desc":
+            if saw_desc or chunk_size != 32 or data_start + 32 > len(header):
+                return None
+            sample_rate = struct.unpack_from(">d", header, data_start)[0]
+            format_id = header[data_start + 8 : data_start + 12]
+            bytes_per_packet, frames_per_packet, channels, bits = struct.unpack_from(
+                ">IIII", header, data_start + 16
+            )
+            if not (
+                math.isfinite(sample_rate)
+                and 0 < sample_rate <= 384_000
+                and all(0x20 <= value < 0x7F for value in format_id)
+                and 0 < channels <= 256
+                and bits <= 64
+                and frames_per_packet > 0
+                and bytes_per_packet <= 0x7FFFFFFF
+            ):
+                return None
+            saw_desc = True
+        elif chunk_id == b"data":
+            if saw_data:
+                return None
+            # CAF data starts with a four-byte edit-count field.  The payload
+            # may continue past HEADER_LIMIT, but its bounded header is enough
+            # once its declared size is structurally valid.
+            if chunk_size != 0xFFFFFFFFFFFFFFFF and chunk_size < 4:
+                return None
+            if data_start + 4 > len(header):
+                return None
+            saw_data = True
+        if chunk_size == 0xFFFFFFFFFFFFFFFF:
+            break
+        chunk_end = data_start + chunk_size
+        if chunk_end > len(header):
+            break
+        chunks += 1
+        offset = chunk_end
+    if not (saw_desc and saw_data):
+        return None
+    return _type("audio/x-caf", ".caf", (".caf",), "caf:desc")
+
+
+_ASF_HEADER_GUID = bytes.fromhex("3026b2758e66cf11a6d900aa0062ce6c")
+_ASF_STREAM_PROPERTIES_GUID = bytes.fromhex("9107dcb7b7a9cf118ee600c00c205365")
+_ASF_AUDIO_STREAM_GUID = bytes.fromhex("409e69f84d5bcf11a8fd00805f5c442b")
+_ASF_VIDEO_STREAM_GUID = bytes.fromhex("c0ef19bc4d5bcf11a8fd00805f5c442b")
+_WMA_FORMAT_TAGS = frozenset({0x000A, 0x0160, 0x0161, 0x0162, 0x0163})
+
+
+def _detect_wma(header: bytes) -> DetectedType | None:
+    """Identify an audio-only ASF header carrying a WMA stream."""
+
+    if len(header) < 30 or header[:16] != _ASF_HEADER_GUID:
+        return None
+    header_size = struct.unpack_from("<Q", header, 16)[0]
+    object_count = struct.unpack_from("<I", header, 24)[0]
+    if (
+        header_size < 30
+        or header_size > len(header)
+        or object_count == 0
+        or object_count > MAX_ASF_HEADER_OBJECTS
+        or header[28:30] != b"\x01\x02"
+    ):
+        return None
+    offset = 30
+    saw_audio = False
+    saw_video = False
+    for _ in range(object_count):
+        if offset + 24 > header_size:
+            return None
+        object_guid = header[offset : offset + 16]
+        object_size = struct.unpack_from("<Q", header, offset + 16)[0]
+        if object_size < 24 or offset + object_size > header_size:
+            return None
+        payload_start = offset + 24
+        payload_size = object_size - 24
+        if object_guid == _ASF_STREAM_PROPERTIES_GUID:
+            if payload_size < 54:
+                return None
+            stream_guid = header[payload_start : payload_start + 16]
+            type_specific_size = struct.unpack_from("<I", header, payload_start + 40)[0]
+            error_correction_size = struct.unpack_from("<I", header, payload_start + 44)[0]
+            type_specific_start = payload_start + 54
+            type_specific_end = type_specific_start + type_specific_size
+            error_correction_end = type_specific_end + error_correction_size
+            if error_correction_end > offset + object_size:
+                return None
+            if stream_guid == _ASF_AUDIO_STREAM_GUID:
+                if type_specific_size < 16:
+                    return None
+                format_tag, channels, sample_rate, _avg_bytes, block_align, bits = (
+                    struct.unpack_from("<HHIIHH", header, type_specific_start)
+                )
+                if not (
+                    format_tag in _WMA_FORMAT_TAGS
+                    and 0 < channels <= 256
+                    and 0 < sample_rate <= 384_000
+                    and block_align > 0
+                    and bits <= 64
+                ):
+                    return None
+                saw_audio = True
+            elif stream_guid == _ASF_VIDEO_STREAM_GUID:
+                saw_video = True
+        offset += object_size
+    if offset != header_size or not saw_audio or saw_video:
+        return None
+    return _type("audio/x-ms-wma", ".wma", (".wma", ".asf"), "asf:wma")
+
+
+def _detect_amr(header: bytes, *, complete: bool = True) -> DetectedType | None:
+    """Identify complete bounded AMR-NB file frames after the file magic.
+
+    ``#!AMR\n`` alone is only a container label, not evidence of valid audio.
+    The detector therefore validates each available TOC byte and its bounded
+    frame length.  An incomplete final frame is accepted only when the input
+    is the 64 KiB prefix of a larger file; a complete short file must end on a
+    frame boundary.  AMR-WB is intentionally not mapped to ``audio/amr``.
+    """
+
+    magic = b"#!AMR\n"
+    if not header.startswith(magic) or len(header) == len(magic):
+        return None
+    offset = len(magic)
+    frames = 0
+    while offset < len(header) and frames < MAX_AMR_FRAMES:
+        toc = header[offset]
+        if toc & 0x03:
+            return None
+        frame_type = (toc >> 3) & 0x0F
+        if frame_type >= len(_AMR_NB_FRAME_BYTES):
+            return None
+        payload_size = _AMR_NB_FRAME_BYTES[frame_type]
+        frame_end = offset + 1 + payload_size
+        if frame_end > len(header):
+            return None if complete or frames == 0 else _type(
+                "audio/amr", ".amr", (".amr",), "magic:amr-nb"
+            )
+        frames += 1
+        offset = frame_end
+        if frames == MAX_AMR_FRAMES:
+            # The bounded prefix has enough independently valid frames to
+            # identify the stream; do not reject longer valid recordings just
+            # because the parser's evidence sample is intentionally finite.
+            return _type("audio/amr", ".amr", (".amr",), "magic:amr-nb")
+    if frames == 0 or offset != len(header):
+        return None
+    return _type("audio/amr", ".amr", (".amr",), "magic:amr-nb")
+
+
 def _detect_ebml_video(header: bytes) -> DetectedType | None:
     """Identify bounded Matroska/WebM EBML headers by their declared DocType.
 
@@ -325,7 +616,9 @@ def _detect_ebml_video(header: bytes) -> DetectedType | None:
     detector also requires the DocType element (0x4282) and one bounded ASCII
     value.  A one-byte EBML size is sufficient for the only accepted values
     (``webm`` and ``matroska``) and avoids implementing a permissive container
-    parser at the content-routing boundary.
+    parser at the content-routing boundary.  WebM remains a video route
+    candidate even when the container happens to carry only an audio track;
+    the audio route intentionally accepts that shared MIME as well.
     """
 
     if not header.startswith(b"\x1aE\xdf\xa3"):
@@ -412,7 +705,7 @@ def _detect_document_or_image(header: bytes) -> DetectedType | None:
     return None
 
 
-def _detect_media(header: bytes) -> DetectedType | None:
+def _detect_media(header: bytes, *, complete: bool = True) -> DetectedType | None:
     if len(header) >= 12 and header[:4] == b"RIFF":
         if header[8:12] == b"WEBP":
             return _type("image/webp", ".webp", (".webp",), "riff:webp")
@@ -426,6 +719,21 @@ def _detect_media(header: bytes) -> DetectedType | None:
     ebml = _detect_ebml_video(header)
     if ebml is not None:
         return ebml
+    aiff = _detect_aiff(header)
+    if aiff is not None:
+        return aiff
+    caf = _detect_caf(header)
+    if caf is not None:
+        return caf
+    wma = _detect_wma(header)
+    if wma is not None:
+        return wma
+    amr = _detect_amr(header, complete=complete)
+    if amr is not None:
+        return amr
+    adts = _detect_adts(header)
+    if adts is not None:
+        return adts
     if header.startswith(b"fLaC"):
         return _type("audio/flac", ".flac", (".flac",), "magic:flac")
     if header.startswith(b"OggS"):
@@ -706,13 +1014,12 @@ def detect_content_type(path: str | Path) -> DetectedType | None:
         header = stream.read(HEADER_LIMIT)
     if not header:
         return None
-    for detector in (
-        _detect_document_or_image,
-        _detect_media,
-    ):
-        detected = detector(header)
-        if detected is not None:
-            return detected
+    detected = _detect_document_or_image(header)
+    if detected is not None:
+        return detected
+    detected_media = _detect_media(header, complete=len(header) < HEADER_LIMIT)
+    if detected_media is not None:
+        return detected_media
     archive = _detect_archive(native, header)
     if archive is not None:
         return archive

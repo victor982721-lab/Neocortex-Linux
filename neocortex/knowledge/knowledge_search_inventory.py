@@ -1,6 +1,4 @@
 """Inventory relationship support for the Knowledge Search facade."""
-
-
 # region [00] Contexto del módulo
 # Módulo: neocortex/knowledge_search_inventory.py
 # Propósito: documentación embebida y separación visual de regiones.
@@ -25,8 +23,6 @@ from .knowledge_search_contracts import KnowledgeCandidate, RankingExecution
 from .knowledge_snapshot import KnowledgeStatePaths
 # endregion [01]
 # region [02] Implementación
-
-
 InventoryIdentity = tuple[int, int, int]
 
 
@@ -642,6 +638,8 @@ def _inventory_rows(
         SELECT f.volume_id AS file_volume_id,f.file_id AS file_id,f.birthtime_ns AS file_birthtime_ns,
         f.path AS file_path,f.size AS file_size,member.volume_id AS member_volume_id,
         member.file_id AS member_file_id,member.birthtime_ns AS member_birthtime_ns,member.member_order,CASE WHEN member.path IS NULL THEN 0 ELSE 1 END AS member_present,
+        CASE WHEN EXISTS(SELECT 1 FROM planned_duplicate_members identity_member JOIN planned_duplicate_groups identity_group ON identity_group.group_id=identity_member.group_id WHERE identity_group.scan_id=f.scan_id AND identity_member.volume_id=f.volume_id AND identity_member.file_id=f.file_id AND identity_member.birthtime_ns=f.birthtime_ns)
+        THEN CASE WHEN EXISTS(SELECT 1 FROM planned_duplicate_members identity_member JOIN planned_duplicate_groups identity_group ON identity_group.group_id=identity_member.group_id JOIN files identity_file ON identity_file.scan_id=f.scan_id AND identity_file.path=identity_member.path COLLATE {_PATH_COLLATION} AND identity_file.volume_id=identity_member.volume_id AND identity_file.file_id=identity_member.file_id AND identity_file.birthtime_ns=identity_member.birthtime_ns WHERE identity_group.scan_id=f.scan_id AND identity_member.volume_id=f.volume_id AND identity_member.file_id=f.file_id AND identity_member.birthtime_ns=f.birthtime_ns) THEN 1 ELSE 2 END ELSE 0 END AS member_identity_state,
         member.role AS member_role,member.path AS member_path,member.size AS member_size,g.size AS group_size,g.redundant_count,
         g.reclaimable_bytes AS group_reclaimable_bytes,g.full_fingerprint,keeper.volume_id AS keeper_volume_id,keeper.file_id AS keeper_file_id,
         keeper.birthtime_ns AS keeper_birthtime_ns,keeper.member_order AS keeper_member_order,keeper.role AS keeper_role,keeper.path AS keeper_path,keeper.size AS keeper_size,
@@ -657,6 +655,7 @@ def _inventory_rows(
         LEFT JOIN planned_duplicate_members member
         ON {valid_join_guard}member.path=f.path COLLATE {_PATH_COLLATION} AND member.volume_id=f.volume_id
         AND member.file_id=f.file_id AND member.birthtime_ns=f.birthtime_ns
+        AND EXISTS(SELECT 1 FROM planned_duplicate_groups member_group WHERE member_group.group_id=member.group_id AND member_group.scan_id=f.scan_id)
         LEFT JOIN planned_duplicate_groups g ON {valid_join_guard}g.group_id=member.group_id
         AND g.scan_id=f.scan_id LEFT JOIN planned_duplicate_members keeper
         ON {valid_join_guard}keeper.group_id=g.group_id AND keeper.member_order=0
@@ -703,15 +702,20 @@ def _record_inventory_row(
         member_present = (
             row["member_present"] if "member_present" in row_keys else int(member_evidence)
         )
+        member_identity_state = row["member_identity_state"] if "member_identity_state" in row_keys else 0
         if type(member_present) is not int or member_present not in (0, 1):
             raise ValueError
         if member_present != int(member_evidence):
+            raise ValueError
+        if type(member_identity_state) is not int or member_identity_state not in (0, 1, 2):
             raise ValueError
         relation = dependencies.relation_row(row) if member_present else None
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         state.invalid_identities.add(matched_identity)
         return
     if not member_present:
+        if member_identity_state == 2:
+            state.invalid_identities.add(matched_identity)
         return
     if relation is None:
         state.invalid_identities.add(matched_identity)

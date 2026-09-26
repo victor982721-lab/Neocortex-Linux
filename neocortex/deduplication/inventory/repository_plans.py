@@ -406,6 +406,25 @@ class PlanRepositoryMixin:
                     or len({member.path for member in members}) != len(members)
                 ):
                     raise InventoryError("duplicate group physical membership is inconsistent")
+                for member in members:
+                    inventory_member = self._connection.execute(
+                        """SELECT 1 FROM files
+                        WHERE scan_id=? AND path=? AND volume_id=? AND file_id=?
+                        AND size=? AND mtime_ns=? AND birthtime_ns=? LIMIT 1""",
+                        (
+                            scan_id,
+                            member.path,
+                            _id_blob(member.volume_id),
+                            _id_blob(member.file_id),
+                            member.size,
+                            member.mtime_ns,
+                            member.birthtime_ns,
+                        ),
+                    ).fetchone()
+                    if inventory_member is None:
+                        raise InventoryError(
+                            "duplicate group member is not an observed member of the inventory"
+                        )
                 if group.member_proofs and len(group.member_proofs) != 1 + len(group.redundant):
                     raise InventoryError("duplicate member proof count is inconsistent")
                 group_proof = encode_proof(group.proof)
@@ -519,6 +538,13 @@ class PlanRepositoryMixin:
                         OR m.role!=CASE WHEN m.member_order=0 THEN 'keep' ELSE 'redundant' END))
                     OR (SELECT COUNT(DISTINCT hex(volume_id)||':'||hex(file_id))
                         FROM planned_duplicate_members m WHERE m.group_id=g.group_id)!=g.redundant_count+1
+                    OR EXISTS(SELECT 1 FROM planned_duplicate_members m
+                        WHERE m.group_id=g.group_id AND NOT EXISTS(
+                            SELECT 1 FROM files f WHERE f.scan_id=g.scan_id
+                            AND f.path=m.path AND f.volume_id=m.volume_id
+                            AND f.file_id=m.file_id AND f.size=m.size
+                            AND f.mtime_ns=m.mtime_ns AND f.birthtime_ns=m.birthtime_ns
+                        ))
                 )""", (scan_id,),
             ).fetchone()[0]
             if malformed:

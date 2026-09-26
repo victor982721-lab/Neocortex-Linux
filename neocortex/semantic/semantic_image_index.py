@@ -649,6 +649,7 @@ def index_image_embeddings(
     generation_runner: GenerationRunner,
     work_budget: SemanticWorkBudget | None = None,
     progress: ProgressCallback | None = None,
+    writer_coordinated: bool = False,
 ) -> SemanticIndexResult:
     """Index visual CLIP vectors and retained OCR in separate compatible spaces."""
 
@@ -683,7 +684,11 @@ def index_image_embeddings(
     if all(head.complete for head in source_heads) and not (
         budget.preserve_existing_generations
         and any(
-            has_building_embedding_generation(database, model_signature=model.model_signature)
+            has_building_embedding_generation(
+                database,
+                model_signature=model.model_signature,
+                writer_coordinated=writer_coordinated,
+            )
             for model in ((image_model, text_model) if embed_ocr_text else (image_model,))
         )
     ):
@@ -691,12 +696,14 @@ def index_image_embeddings(
             database,
             model_signature=image_model.model_signature,
             required_source_head_ledger={image_scope: image_entry},
+            writer_coordinated=writer_coordinated,
         )
         ocr_published = (
             find_exact_published_generation(
                 database,
                 model_signature=text_model.model_signature,
                 required_source_head_ledger={ocr_scope: ocr_entry},
+                writer_coordinated=writer_coordinated,
             )
             if embed_ocr_text
             else None

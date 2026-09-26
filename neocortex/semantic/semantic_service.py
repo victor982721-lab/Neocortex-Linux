@@ -177,6 +177,23 @@ _ADMISSION_POLICY: ContextVar[ContentAdmissionPolicy | None] = ContextVar(
     "neocortex_semantic_admission_policy",
     default=None,
 )
+_WRITER_COORDINATED: ContextVar[bool] = ContextVar(
+    "neocortex_semantic_writer_coordinated",
+    default=False,
+)
+
+
+@contextmanager
+def _writer_coordinated_scope(enabled: bool) -> Iterator[None]:
+    token = _WRITER_COORDINATED.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _WRITER_COORDINATED.reset(token)
+
+
+def _writer_coordinated_enabled() -> bool:
+    return _WRITER_COORDINATED.get()
 
 
 @contextmanager
@@ -597,6 +614,7 @@ def index_text_embeddings(
                 generation_runner=partial(_run_generation, progress=progress),
                 work_budget=budget,
                 progress=progress,
+                writer_coordinated=_WRITER_COORDINATED.get(),
             )
             return result
     finally:
@@ -637,6 +655,7 @@ def index_image_embeddings(
                 generation_runner=partial(_run_generation, progress=progress),
                 work_budget=budget,
                 progress=progress,
+                writer_coordinated=_WRITER_COORDINATED.get(),
             )
     finally:
         budget.close_registered_resources()

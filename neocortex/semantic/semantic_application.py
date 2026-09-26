@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from neocortex.persistence.state_publication import StateOwnerHead
     from neocortex.semantic.semantic_models import EmbeddingModelSpec
     from neocortex.semantic.semantic_exact_index import ExactIndexHandle
+    from neocortex.semantic.semantic_publication_heads import _SemanticOwnerLease
     from neocortex.semantic.semantic_service_contracts import SemanticIndexResult
     from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
 
@@ -225,6 +226,7 @@ class _SemanticIndexExecution:
     results: list[tuple[str, SemanticIndexResult]] = field(default_factory=list)
     scope_timings: list[tuple[str, int]] = field(default_factory=list)
     unavailable_scopes: dict[str, str] = field(default_factory=dict)
+    writer_coordinated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -789,6 +791,7 @@ def run_semantic_index(
         progress=progress,
         result_sink=result_sink,
     )
+    execution.args._semantic_failure = None
     try:
         _validate_semantic_state_write(
             args.state_directory,
@@ -800,6 +803,11 @@ def run_semantic_index(
 
             _validate_integrated_publication_token(args)
             policy = getattr(args, "_semantic_admission_policy", None)
+            # Both the integrated callback and the direct Semantic path are
+            # inside FrameworkRunLock here.  Let owner-local Semantic reads
+            # reuse the coordinated writer path instead of copying a large
+            # published database through the public 256 MiB snapshot budget.
+            execution.writer_coordinated = True
             with admission_policy_scope(policy):
                 with semantic_source_read_budget(work_budget):
                     _execute_semantic_index_scopes(
@@ -838,9 +846,15 @@ def _validate_integrated_publication_token(args: argparse.Namespace) -> None:
         raise StatePublicationRecoveryRequired(view.reason or view.status)
 
 
-def _observe_integrated_heads(state_directory: Path, *, work_budget=None):
+def _observe_integrated_heads(
+    state_directory: Path,
+    *,
+    work_budget=None,
+    writer_connection: _SemanticOwnerLease | None = None,
+):
     from neocortex.semantic.semantic_publication_heads import (
         PublicationHeadsError,
+        _semantic_owner_lease,
         observe_integrated_owner_heads,
     )
 
@@ -849,14 +863,36 @@ def _observe_integrated_heads(state_directory: Path, *, work_budget=None):
         deadline = None if remaining is None else time.monotonic() + remaining
         cancellation = None if work_budget is None else work_budget.cancellation_check
 
-        def observe():
+        def lease_checkpoint() -> None:
+            if cancellation is not None:
+                decision = cancellation()
+                if decision is not None and decision is not False:
+                    raise PublicationHeadsError("Semantic owner lease was cancelled")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise PublicationHeadsError("Semantic owner lease deadline exceeded")
+
+        def observe(connection: _SemanticOwnerLease | None):
+            if connection is None:
+                return observe_integrated_owner_heads(
+                    state_directory,
+                    deadline_monotonic=deadline,
+                    cancellation_check=cancellation,
+                )
             return observe_integrated_owner_heads(
                 state_directory,
                 deadline_monotonic=deadline,
                 cancellation_check=cancellation,
+                _writer_lease=connection,
             )
 
-        return observe()
+        if writer_connection is not None:
+            return observe(writer_connection)
+        with _semantic_owner_lease(
+            state_directory,
+            checkpoint=lease_checkpoint,
+            timeout_seconds=60.0 if remaining is None else max(0.001, remaining),
+        ) as owner:
+            return observe(owner)
     except PublicationHeadsError as exc:
         raise StatePublicationRecoveryRequired(str(exc)) from exc
 
@@ -1036,10 +1072,12 @@ def _execute_semantic_text_index(
             "work_budget": execution.work_budget,
             "progress": execution.progress,
         }
-        result = operation(
-            args.state_directory,
-            **kwargs,
-        )
+        from neocortex.semantic.semantic_service import _writer_coordinated_scope
+        with _writer_coordinated_scope(execution.writer_coordinated):
+            result = operation(
+                args.state_directory,
+                **kwargs,
+            )
     finally:
         execution.scope_timings.append(("text", time.perf_counter_ns() - started))
     _record_semantic_index_result(execution, "text", result)
@@ -1063,10 +1101,12 @@ def _execute_semantic_image_index(
             "work_budget": execution.work_budget,
             "progress": execution.progress,
         }
-        result = operation(
-            args.state_directory,
-            **kwargs,
-        )
+        from neocortex.semantic.semantic_service import _writer_coordinated_scope
+        with _writer_coordinated_scope(execution.writer_coordinated):
+            result = operation(
+                args.state_directory,
+                **kwargs,
+            )
     finally:
         execution.scope_timings.append(("image", time.perf_counter_ns() - started))
     _record_semantic_index_result(execution, "image", result)
@@ -1090,6 +1130,19 @@ def _semantic_index_failure(
 ) -> int:
     from neocortex.semantic.semantic_config import SemanticModelUnavailableError
 
+    execution.args._semantic_failure = exc
+    if execution.result_sink is not None:
+        execution.result_sink(
+            "__error__",
+            {
+                "schema": "neocortex.semantic-index-failure/v1",
+                "error_type": type(exc).__name__,
+                "error": sanitize_untrusted_text(exc, limit=800),
+                "reason": sanitize_untrusted_text(getattr(exc, "reason", ""), limit=256)
+                if getattr(exc, "reason", None) is not None
+                else None,
+            },
+        )
     if print_output:
         for scope, result in execution.results:
             _print_semantic_index_result(scope, result)
@@ -1553,16 +1606,26 @@ def _observe_fresh_integrated_heads(
     state_directory: Path,
     *,
     controls: _IntegratedStartReadBudget,
+    writer_connection: _SemanticOwnerLease | None = None,
 ) -> tuple[StateOwnerHead, ...]:
     """Observe the Semantic head once through the bounded read fence."""
     from neocortex.semantic.semantic_publication_heads import (
         observe_integrated_owner_heads,
     )
+    snapshot_budget = controls.snapshot_budget()
+    if writer_connection is None:
+        return observe_integrated_owner_heads(
+            state_directory,
+            snapshot_budget=snapshot_budget,
+            deadline_monotonic=controls.deadline,
+            cancellation_check=controls._snapshot_checkpoint,
+        )
     return observe_integrated_owner_heads(
         state_directory,
-        snapshot_budget=controls.snapshot_budget(),
+        snapshot_budget=snapshot_budget,
         deadline_monotonic=controls.deadline,
         cancellation_check=controls._snapshot_checkpoint,
+        _writer_lease=writer_connection,
     )
 
 
@@ -1628,10 +1691,21 @@ def _fresh_integrated_checkpoint(
         if pre_checkpoint_hook is not None:
             pre_checkpoint_hook(args, metadata, controls)
             controls.check()
-        initial_heads = _observe_fresh_integrated_heads(
-            args.state_directory,
-            controls=controls,
-        )
+        from neocortex.semantic.semantic_publication_heads import _semantic_owner_lease
+
+        def observe_fresh_heads() -> tuple[StateOwnerHead, ...]:
+            with _semantic_owner_lease(
+                args.state_directory,
+                checkpoint=controls.check,
+                timeout_seconds=controls.remaining_seconds(),
+            ) as owner:
+                return _observe_fresh_integrated_heads(
+                    args.state_directory,
+                    controls=controls,
+                    writer_connection=owner,
+                )
+
+        initial_heads = observe_fresh_heads()
         controls.check()
         args._semantic_publication_owners = ("semantic",)
 
@@ -1641,14 +1715,7 @@ def _fresh_integrated_checkpoint(
             _validate_integrated_manifest_root(args, manifest, controls)
             # Repair only once, before sealing the checkpoint. A verifier at
             # the commit boundary observes drift; it must never repair it.
-            from neocortex.semantic.semantic_publication_heads import observe_integrated_owner_heads
-
-            return observe_integrated_owner_heads(
-                args.state_directory,
-                snapshot_budget=controls.snapshot_budget(),
-                deadline_monotonic=controls.deadline,
-                cancellation_check=controls._snapshot_checkpoint,
-            )
+            return observe_fresh_heads()
 
         checkpoint = restart_state_publication_checkpoint(
             args.state_directory,
@@ -1662,7 +1729,7 @@ def _fresh_integrated_checkpoint(
             label="fresh Semantic checkpoint owners",
         )
         controls.check()
-        if print_output:
+        if print_output and not bool(getattr(args, "json_output", False)):
             _print_console_line(
                 "SEMANTIC_CHECKPOINT status=restarted "
                 f"epoch={checkpoint.epoch}"
@@ -2257,19 +2324,33 @@ def _final_publication_owner_heads(
     try:
         budget = getattr(args, "_semantic_work_budget", None)
         remaining = None if budget is None else budget.remaining_seconds()
-        observed_generations = dict(observe_semantic_generation_heads(
+        from neocortex.semantic.semantic_publication_heads import _semantic_owner_lease
+
+        with _semantic_owner_lease(
             args.state_directory,
-            deadline_monotonic=None if remaining is None else time.monotonic() + remaining,
-            cancellation_check=None if budget is None else budget.cancellation_check,
-        ))
+            checkpoint=None if budget is None else budget.checkpoint,
+            timeout_seconds=60.0 if remaining is None else max(0.001, remaining),
+        ) as owner:
+            observed_generations = dict(observe_semantic_generation_heads(
+                args.state_directory,
+                deadline_monotonic=None if remaining is None else time.monotonic() + remaining,
+                cancellation_check=None if budget is None else budget.cancellation_check,
+                _writer_lease=owner,
+            ))
+            if any(
+                observed_generations.get(model) != generation
+                for model, generation in generations.items()
+            ):
+                raise StatePublicationRecoveryRequired(
+                    "Semantic results do not match all published model heads"
+                )
+            return _observe_integrated_heads(
+                args.state_directory,
+                work_budget=budget,
+                writer_connection=owner,
+            )
     except PublicationHeadsError as exc:
         raise StatePublicationRecoveryRequired(str(exc)) from exc
-    if any(observed_generations.get(model) != generation for model, generation in generations.items()):
-        raise StatePublicationRecoveryRequired("Semantic results do not match all published model heads")
-    return _observe_integrated_heads(
-        args.state_directory,
-        work_budget=getattr(args, "_semantic_work_budget", None),
-    )
 
 
 def _semantic_results_ready(
@@ -2633,6 +2714,12 @@ def run_integrated_all_semantic_index(
             print_output=print_output,
             framework_lock_held=framework_lock_held,
         )
+        semantic_failure = getattr(integrated_args, "_semantic_failure", None)
+        semantic_failure = (
+            semantic_failure if isinstance(semantic_failure, BaseException) else None
+        )
+        if semantic_failure is not None:
+            args._semantic_failure = semantic_failure
         args._semantic_scope_unavailable = dict(getattr(integrated_args, "_semantic_scope_unavailable", {}))
         _record_integrated_semantic_work(
             integrated_args,
@@ -2682,6 +2769,7 @@ def run_integrated_all_semantic_index(
                 selected_sources=selected_sources,
                 image_available=image_available,
                 semantic_exit_code=semantic_exit_code,
+                error=semantic_failure,
                 recovery_required=recovery_required,
                 resume_source_run_id=resume_source,
             ),

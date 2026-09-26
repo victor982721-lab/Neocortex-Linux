@@ -54,4 +54,4 @@ def test_unknown_ebml_doctype_is_not_guessed_as_video(tmp_path: Path) -> None:
 
 
 def test_video_detection_revision_is_explicit() -> None:
-    assert DETECTOR_VERSION == "content-types-v4"
+    assert DETECTOR_VERSION == "content-types-v5"

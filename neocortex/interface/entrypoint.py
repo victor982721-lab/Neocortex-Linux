@@ -156,12 +156,39 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
 
 
 def _canonical_help_requested(arguments: Sequence[str]) -> tuple[str, str] | None:
-    if len(arguments) < 2:
+    # The flat parser accepts the two global path overrides before the
+    # canonical command spelling.  Keep the help fast path aligned with the
+    # translator below; otherwise ``--root ROOT doctor platform --help`` is
+    # routed through the legacy flat parser and loses the command-specific
+    # help contract.
+    position = 0
+    while position < len(arguments):
+        option, separator, value = arguments[position].partition("=")
+        if option not in {"--root", "--state-directory"}:
+            break
+        if separator:
+            if not value:
+                return None
+            position += 1
+            continue
+        if position + 1 >= len(arguments):
+            return None
+        position += 2
+    if len(arguments) - position < 2:
         return None
-    command = (arguments[0], arguments[1])
+    command = (arguments[position], arguments[position + 1])
     if command not in _CANONICAL_COMMANDS:
         return None
-    return command if any(token in {"-h", "--help"} for token in arguments[2:]) else None
+    return command if any(token in {"-h", "--help"} for token in arguments[position + 2 :]) else None
+
+
+def _framework_json_requested(arguments: Sequence[str]) -> bool:
+    """Recognize the integrated-run JSON mode without stealing leaf contracts."""
+
+    selectors = {"--all", "--route", "--route-only", "--resume-run", "--candidate-run"}
+    return "--json" in arguments and any(
+        token.partition("=")[0] in selectors for token in arguments
+    )
 
 
 def _print_canonical_help(command: tuple[str, str]) -> None:
@@ -232,7 +259,18 @@ def entrypoint(arguments: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
+        if _framework_json_requested(forwarded):
+            from neocortex.api.cli.cli_app import _emit_json_execution_error
+
+            _emit_json_execution_error(
+                code="execution_cancelled",
+                failure=exc,
+                status="cancelled",
+                exit_code=130,
+                run_id=getattr(exc, "run_id", None),
+            )
+            return 130
         print("\nEjecución cancelada por el usuario.", file=sys.stderr)
         return 130
 

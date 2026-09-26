@@ -20,6 +20,32 @@ from .cli_operations import dispatch_direct_operation
 __all__ = ["dispatch_direct", "main", "run_framework"]
 
 
+class _SemanticStageError(RuntimeError):
+    """A non-zero Semantic lifecycle result that must fail Framework too.
+
+    The Framework orchestrator owns the lifecycle transition and therefore
+    cannot infer meaning from a callback's integer return value.  Raising this
+    typed boundary error keeps a partial/cancelled/recovery Semantic stage
+    from being followed by a durable ``complete`` Framework transition.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        exit_code: int = 2,
+        error_code: str | None = None,
+        run_id: int | None = None,
+    ) -> None:
+        self.exit_code = exit_code
+        self.run_id = run_id
+        self.error_code = error_code or (
+            "semantic_stage_partial" if exit_code == 2 else "semantic_stage_failed"
+        )
+        self.status = "partial" if exit_code == 2 else "failed"
+        super().__init__(message)
+
+
 # Optional service adapters are deliberately kept here instead of growing a
 # second duplicate engine in the CLI.  Domain owners may publish one of these
 # stable lazy modules; until then ``--dedupe`` fails closed with a bounded,
@@ -391,6 +417,7 @@ def _emit_unsuccessful_execution(
     errors: int = 1,
     cancelled: bool = False,
     failed_routes: Sequence[str] = (),
+    status: str | None = None,
 ) -> None:
     """Terminate the CLI run, not a successful subphase, before its reporter closes."""
 
@@ -413,7 +440,10 @@ def _emit_unsuccessful_execution(
             )
 
     metrics = [
-        ProgressMetric("status", "cancelled" if cancelled else "failed"),
+        ProgressMetric(
+            "status",
+            "cancelled" if cancelled else (status or "failed"),
+        ),
         ProgressMetric("completion", "incomplete"),
         ProgressMetric("exit_code", 130 if cancelled else 2),
         ProgressMetric("error_code", error_code),
@@ -448,26 +478,36 @@ def _emit_json_execution_error(
     *,
     code: str,
     failure: BaseException,
-    failed_routes: Sequence[str] = (),
+    failed_routes: Sequence[str] | None = None,
     status: str = "partial",
+    exit_code: int = 2,
+    run_id: int | None = None,
     extra: Mapping[str, object] | None = None,
 ) -> None:
     """Keep ``--json`` parseable when execution fails before a result object."""
 
     from neocortex.api.read_contract import sanitize_untrusted_payload, sanitize_untrusted_text
 
+    message = sanitize_untrusted_text(failure, limit=1_000, single_line=False)
+    if not message and status == "cancelled":
+        message = "execution cancelled"
     payload = {
         "schema": "neocortex.lifecycle-envelope/v1",
         "status": status,
         "completion": "incomplete",
-        "exit_code": 2,
+        "exit_code": exit_code,
         "error": {
             "code": code,
             "type": type(failure).__name__,
-            "message": sanitize_untrusted_text(failure, limit=1_000, single_line=False),
+            "message": message,
         },
-        "failed_routes": [sanitize_untrusted_text(item, limit=128) for item in failed_routes],
     }
+    if failed_routes is not None:
+        payload["failed_routes"] = [
+            sanitize_untrusted_text(item, limit=128) for item in failed_routes
+        ]
+    if run_id is not None:
+        payload["run_id"] = run_id
     if extra is not None:
         payload["error_code"] = code
         payload.update(extra)
@@ -758,15 +798,52 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
         def run_semantic_stage(run_id: int) -> object:
             nonlocal semantic_exit_code
-            semantic_exit_code = run_integrated_all_semantic_index(
-                args,
-                progress=progress,
-                result_sink=lambda scope, value: semantic_results.append((scope, value)),
-                print_output=not professional_output and not bool(getattr(args, "json_output", False)),
-                run_id=run_id,
-                resume_source_run_id=semantic_resume_source_run_id,
-                framework_lock_held=semantic_callback_lock_held,
-            )
+            try:
+                raw_exit_code = run_integrated_all_semantic_index(
+                    args,
+                    progress=progress,
+                    result_sink=lambda scope, value: semantic_results.append((scope, value)),
+                    print_output=not professional_output and not bool(getattr(args, "json_output", False)),
+                    run_id=run_id,
+                    resume_source_run_id=semantic_resume_source_run_id,
+                    framework_lock_held=semantic_callback_lock_held,
+                )
+            except BaseException as exc:
+                try:
+                    exc.run_id = run_id  # type: ignore[attr-defined]
+                except (AttributeError, TypeError):
+                    pass
+                raise
+            if type(raw_exit_code) is not int:
+                raise _SemanticStageError(
+                    "Semantic lifecycle stage returned a non-integer exit code",
+                    run_id=run_id,
+                )
+            semantic_exit_code = raw_exit_code
+            if raw_exit_code == 130:
+                cancelled = KeyboardInterrupt("Semantic lifecycle stage was cancelled")
+                cancelled.run_id = run_id  # type: ignore[attr-defined]
+                raise cancelled
+            if raw_exit_code != 0:
+                details: list[str] = []
+                for scope, value in semantic_results:
+                    counters = []
+                    for name in ("errors", "stale", "incomplete"):
+                        count = getattr(value, name, None)
+                        if isinstance(count, int) and count:
+                            counters.append(f"{name}={count}")
+                    reason = getattr(value, "truncation_reason", None)
+                    if isinstance(reason, str) and reason:
+                        counters.append(f"truncation_reason={reason}")
+                    if counters:
+                        details.append(f"{scope}:" + ",".join(counters))
+                detail = " (" + "; ".join(details) + ")" if details else ""
+                raise _SemanticStageError(
+                    "Semantic lifecycle stage returned exit code "
+                    f"{raw_exit_code}{detail}",
+                    exit_code=raw_exit_code,
+                    run_id=run_id,
+                )
             return semantic_exit_code
 
         semantic_stage_runner = run_semantic_stage
@@ -781,7 +858,25 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     from .cli_semantic import prepare_integrated_semantic_start
 
                     configure_runtime_cache(args.state_directory)
-                    prepare_integrated_semantic_start(args, progress=progress)
+                    preparation_exit_code = prepare_integrated_semantic_start(
+                        args, progress=progress
+                    )
+                    if preparation_exit_code is not None and type(preparation_exit_code) is not int:
+                        raise _SemanticStageError(
+                            "Semantic preparation returned a non-integer exit code"
+                        )
+                    if preparation_exit_code is not None and preparation_exit_code != 0:
+                        if preparation_exit_code == 130:
+                            raise KeyboardInterrupt("Semantic preparation was cancelled")
+                        if type(preparation_exit_code) is int:
+                            raise _SemanticStageError(
+                                "Semantic preparation returned exit code "
+                                f"{preparation_exit_code}",
+                                exit_code=preparation_exit_code,
+                            )
+                        raise _SemanticStageError(
+                            "Semantic preparation returned an invalid exit code"
+                        )
                 if semantic_stage_runner is not None:
                     # The fresh-start preflight may consume part of an explicit
                     # time cap; persist the effective remainder, not the
@@ -832,6 +927,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 RouteExecutionError,
                 ImmutableSQLiteUnavailable,
                 StatePublicationError,
+                _SemanticStageError,
                 RunBudgetExceeded,
                 RuntimeCacheConfigurationError,
                 ProtectedContentError,
@@ -845,6 +941,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     if isinstance(exc, FrameworkStateIncompatible)
                     else "recovery_required"
                     if isinstance(exc, StatePublicationError)
+                    else exc.error_code
+                    if isinstance(exc, _SemanticStageError)
                     else "protected_content_root"
                     if isinstance(exc, ProtectedContentError)
                     else "runtime_cache_configuration"
@@ -874,6 +972,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     failed_routes=tuple(exc.failures)
                     if isinstance(exc, RouteExecutionError)
                     else (),
+                    status=(exc.status if isinstance(exc, _SemanticStageError) else None),
                 )
                 raise
     except RunBudgetExceeded as exc:
@@ -882,6 +981,21 @@ def main(arguments: Sequence[str] | None = None) -> int:
             return 2
         print(
             "ERROR budget_exhausted completion=incomplete: "
+            + sanitize_untrusted_text(exc, limit=800),
+            file=sys.stderr,
+        )
+        return 2
+    except _SemanticStageError as exc:
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(
+                code=exc.error_code,
+                failure=exc,
+                status=exc.status,
+                run_id=exc.run_id,
+            )
+            return 2
+        print(
+            f"ERROR {exc.error_code} status={exc.status} completion=incomplete: "
             + sanitize_untrusted_text(exc, limit=800),
             file=sys.stderr,
         )
@@ -910,7 +1024,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 2
     except StatePublicationError as exc:
         if bool(getattr(args, "json_output", False)):
-            _emit_json_execution_error(code="recovery_required", failure=exc)
+            _emit_json_execution_error(
+                code="recovery_required",
+                failure=exc,
+                run_id=getattr(exc, "run_id", None),
+            )
             return 2
         print(
             "ERROR recovery_required status=failed completion=incomplete: "

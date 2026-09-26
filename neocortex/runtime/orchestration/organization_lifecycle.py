@@ -16,6 +16,7 @@ from neocortex.documents.document_organization_recovery import (
     capture_organization_checkpoint,
     inspect_organization_checkpoint,
 )
+from neocortex.documents.document_organization_models import organization_apply_has_unresolved
 
 if TYPE_CHECKING:
     from neocortex.persistence.framework_state_writer import FrameworkState
@@ -225,13 +226,10 @@ def run_organization_stages(
     publish("organization_apply", "running", checkpoint)
     try:
         apply_summary = apply_all_document_organization(config.document_catalog_database, organization_root, progress=checked_progress, mutation_guard=state.corpus_mutation_guard(run_id))
-        # A blocked proposal is a terminal, effect-free abstention.  In
-        # particular, the Linux organization backend records advisory/review
-        # proposals as ``blocked`` because no mutation grant-consuming backend
-        # exists; that must not turn an otherwise completed lifecycle into a
-        # recovery obligation.  Keep all non-terminal or uncertain outcomes
-        # as gates below.
-        issues = apply_summary.stale + apply_summary.failed + apply_summary.cache_pending + apply_summary.remaining
+        # Only validated advisory proposals are terminal, effect-free
+        # abstentions. Keep invalid, protected, stale and uncertain outcomes
+        # unresolved, using the same typed contract as CLI reporting.
+        issues = organization_apply_has_unresolved(apply_summary)
         reserve("organization_apply", f"organization:apply:{apply_summary.catalog_run_id}", int(apply_summary.selected))
         publish("organization_apply", "partial" if issues else "completed", checkpoint, reason="organization_apply_incomplete" if issues else None)
         if issues:

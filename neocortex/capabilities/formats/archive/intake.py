@@ -26,6 +26,7 @@ import shutil
 import stat
 import tempfile
 import time
+import uuid
 import zipfile
 import zlib
 from collections.abc import Callable, Iterable, Mapping
@@ -201,13 +202,6 @@ class SourceIdentity:
         }
 
 
-# Process-local proof for a replay in the same run owner.  It is not durable
-# archive state and never replaces the caller's action ledger; it only lets a
-# KIO fixture/replay recognize the exact inode already published by this
-# engine instead of merging into an arbitrary pre-existing destination.
-_COMPLETED_DESTINATIONS: dict[str, SourceIdentity] = {}
-
-
 def _same_physical_identity(left: SourceIdentity, right: SourceIdentity) -> bool:
     return (
         left.device == right.device
@@ -305,13 +299,36 @@ class ZipIntakeOutcome:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class PublishReceipt:
     """Evidence returned by a publisher after a no-replace publication."""
 
     destination: Path
     staged_path: Path
     published: bool = True
+    destination_identity: tuple[int, ...] | None = None
+    destination_parent_fd: int | None = None
+    destination_parent_identity: tuple[int, int] | None = None
+    staged_parent_fd: int | None = None
+    staged_parent_identity: tuple[int, int] | None = None
+
+    @property
+    def destination_name(self) -> str:
+        return self.destination.name
+
+    @property
+    def staged_name(self) -> str:
+        return self.staged_path.name
+
+    def close(self) -> None:
+        for field_name in ("destination_parent_fd", "staged_parent_fd"):
+            descriptor = getattr(self, field_name)
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                setattr(self, field_name, None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,27 +371,76 @@ class FilesystemStageFactory:
 
     def __init__(self, root: str | os.PathLike[str]):
         self.root = _private_directory(Path(root), label="staging root", create=True)
+        descriptor = _open_private_directory(self.root, label="staging root", create=False)
+        try:
+            metadata = os.fstat(descriptor)
+            self._root_identity = (int(metadata.st_dev), int(metadata.st_ino))
+        finally:
+            os.close(descriptor)
 
     def create(self, *, source: Path, metadata: Mapping[str, object]) -> StageLease:
-        path = Path(tempfile.mkdtemp(prefix=".zip-intake-", dir=os.fspath(self.root)))
-        os.chmod(path, 0o700)
-        return _FilesystemStageLease(path)
+        del source, metadata
+        parent_fd = _open_private_directory(self.root, label="staging root", create=False)
+        try:
+            parent_metadata = os.fstat(parent_fd)
+            if (int(parent_metadata.st_dev), int(parent_metadata.st_ino)) != self._root_identity:
+                raise ZipIntakeError("dependency", "staging_root_identity_changed")
+            for _attempt in range(16):
+                name = f".zip-intake-{uuid.uuid4().hex}"
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+                except FileExistsError:
+                    continue
+                child_fd = -1
+                try:
+                    child_fd = os.open(
+                        name,
+                        os.O_RDONLY
+                        | getattr(os, "O_DIRECTORY", 0)
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=parent_fd,
+                    )
+                    child_metadata = os.fstat(child_fd)
+                    if not stat.S_ISDIR(child_metadata.st_mode) or child_metadata.st_mode & 0o077:
+                        raise ZipIntakeError("dependency", "staging_workspace_not_private")
+                except BaseException:
+                    shutil.rmtree(name, dir_fd=parent_fd, ignore_errors=True)
+                    raise
+                finally:
+                    if child_fd >= 0:
+                        os.close(child_fd)
+                path = self.root / name
+                return _FilesystemStageLease(path, parent_fd, name)
+            raise ZipIntakeError("dependency", "staging_workspace_name_collision")
+        except BaseException:
+            os.close(parent_fd)
+            raise
 
 
 class _FilesystemStageLease:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, parent_fd: int, name: str):
         self.path = path
+        self._parent_fd = parent_fd
+        self._name = name
         self._closed = False
 
     def complete(self) -> None:
         if not self._closed:
-            shutil.rmtree(self.path, ignore_errors=False)
-            self._closed = True
+            try:
+                shutil.rmtree(self._name, ignore_errors=False, dir_fd=self._parent_fd)
+            finally:
+                os.close(self._parent_fd)
+                self._closed = True
 
     def fail(self, reason: str) -> None:
+        del reason
         if not self._closed:
-            shutil.rmtree(self.path, ignore_errors=True)
-            self._closed = True
+            try:
+                shutil.rmtree(self._name, ignore_errors=True, dir_fd=self._parent_fd)
+            finally:
+                os.close(self._parent_fd)
+                self._closed = True
 
 
 class ScratchStageFactory:
@@ -444,25 +510,126 @@ class FilesystemPublishHook:
     """No-replace directory publication with an explicit rollback seam."""
 
     def publish(self, staged_path: Path, destination: Path) -> PublishReceipt:
-        _assert_real_directory(staged_path, label="staged publication")
-        _assert_destination_parent(destination)
-        if os.path.lexists(destination):
-            raise ZipIntakeError("collision", "destination_collision", "destination already exists")
-        _rename_directory_noreplace(staged_path, destination)
-        _fsync_directory(destination.parent)
-        return PublishReceipt(destination=destination, staged_path=staged_path)
+        destination_parent_expected = _assert_destination_parent(destination)
+        staged_parent_fd, staged_parent_identity = _open_directory_path(
+            staged_path.parent,
+            label="staged publication parent",
+        )
+        destination_parent_fd, destination_parent_identity = _open_directory_path(
+            destination.parent,
+            label="destination parent",
+            expected_identity=destination_parent_expected,
+        )
+        try:
+            staged_metadata = os.stat(
+                staged_path.name,
+                dir_fd=staged_parent_fd,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(staged_metadata.st_mode):
+                raise ZipIntakeError("unsafe", "staged_publication_not_directory")
+            try:
+                os.stat(destination.name, dir_fd=destination_parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ZipIntakeError("collision", "destination_collision", "destination already exists")
+            _rename_directory_noreplace_fds(
+                staged_parent_fd,
+                staged_path.name,
+                destination_parent_fd,
+                destination.name,
+            )
+            try:
+                current_destination_parent = destination.parent.lstat()
+                parent_unchanged = (
+                    int(current_destination_parent.st_dev),
+                    int(current_destination_parent.st_ino),
+                ) == destination_parent_identity
+            except OSError:
+                parent_unchanged = False
+            if not parent_unchanged:
+                _rename_directory_noreplace_fds(
+                    destination_parent_fd,
+                    destination.name,
+                    staged_parent_fd,
+                    staged_path.name,
+                )
+                os.fsync(destination_parent_fd)
+                os.fsync(staged_parent_fd)
+                raise ZipIntakeError("source_changed", "destination_parent_changed_after_publish")
+            published_metadata = os.stat(
+                destination.name,
+                dir_fd=destination_parent_fd,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(published_metadata.st_mode):
+                raise ZipIntakeError("recovery_required", "published_destination_not_directory")
+            os.fsync(destination_parent_fd)
+            return PublishReceipt(
+                destination=destination,
+                staged_path=staged_path,
+                destination_identity=_directory_identity(published_metadata),
+                destination_parent_fd=destination_parent_fd,
+                destination_parent_identity=destination_parent_identity,
+                staged_parent_fd=staged_parent_fd,
+                staged_parent_identity=staged_parent_identity,
+            )
+        except BaseException:
+            os.close(staged_parent_fd)
+            os.close(destination_parent_fd)
+            raise
 
     def rollback(self, receipt: PublishReceipt) -> bool:
         try:
-            if not receipt.published or not os.path.lexists(receipt.destination):
+            if not receipt.published:
                 return True
-            if os.path.lexists(receipt.staged_path):
+            if (
+                receipt.destination_parent_fd is None
+                or receipt.staged_parent_fd is None
+                or receipt.destination_parent_identity is None
+                or receipt.staged_parent_identity is None
+                or receipt.destination_identity is None
+            ):
                 return False
-            _rename_directory_noreplace(receipt.destination, receipt.staged_path)
-            _fsync_directory(receipt.destination.parent)
+            if not _fd_identity_matches(
+                receipt.destination_parent_fd,
+                receipt.destination_parent_identity,
+            ) or not _fd_identity_matches(
+                receipt.staged_parent_fd,
+                receipt.staged_parent_identity,
+            ):
+                return False
+            destination_metadata = os.stat(
+                receipt.destination_name,
+                dir_fd=receipt.destination_parent_fd,
+                follow_symlinks=False,
+            )
+            if _directory_identity(destination_metadata) != receipt.destination_identity:
+                return False
+            try:
+                os.stat(
+                    receipt.staged_name,
+                    dir_fd=receipt.staged_parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                return False
+            _rename_directory_noreplace_fds(
+                receipt.destination_parent_fd,
+                receipt.destination_name,
+                receipt.staged_parent_fd,
+                receipt.staged_name,
+            )
+            os.fsync(receipt.destination_parent_fd)
+            os.fsync(receipt.staged_parent_fd)
             return True
         except (OSError, ZipIntakeError):
             return False
+        finally:
+            receipt.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,22 +715,220 @@ class _Deadline:
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 
 
-def _private_directory(path: Path, *, label: str, create: bool) -> Path:
+_PRIVATE_DIRECTORY_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_DIRECTORY", 0)
+    | os.O_NOFOLLOW
+    | getattr(os, "O_CLOEXEC", 0)
+)
+
+
+def _private_path_components(path: Path, *, label: str) -> tuple[str, ...]:
     if not path.is_absolute():
         raise ZipIntakeError("dependency", f"{label}_not_absolute")
     if "\x00" in os.fspath(path):
         raise ZipIntakeError("dependency", f"{label}_contains_nul")
+    if ".." in path.parts:
+        raise ZipIntakeError("dependency", f"{label}_contains_parent")
+    return path.parts
+
+
+def _open_private_directory(path: Path, *, label: str, create: bool) -> int:
+    """Open/create a private directory through descriptor-anchored components.
+
+    Every component is opened with ``O_DIRECTORY|O_NOFOLLOW`` and new
+    components are created with ``mkdir(..., dir_fd=...)``.  A path swap after
+    an ancestor is opened therefore cannot redirect creation through a symlink;
+    the identity comparison also rejects a path that changed while walking.
+    """
+
+    components = _private_path_components(path, label=label)
+    owned: list[int] = []
+    created: list[tuple[int, str]] = []
+
+    def cleanup_created() -> None:
+        for parent_fd, name in reversed(created):
+            try:
+                os.rmdir(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+
     try:
-        if create:
-            path.mkdir(parents=True, exist_ok=True, mode=0o700)
-        metadata = path.lstat()
+        root_fd = os.open(os.sep, _PRIVATE_DIRECTORY_FLAGS)
+        owned.append(root_fd)
+        for component in components[1:]:
+            parent_fd = owned[-1]
+            try:
+                child_fd = os.open(
+                    component,
+                    _PRIVATE_DIRECTORY_FLAGS,
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError as exc:
+                if not create:
+                    raise ZipIntakeError(
+                        "dependency", f"{label}_unavailable", str(exc)
+                    ) from exc
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=parent_fd)
+                    created.append((parent_fd, component))
+                except FileExistsError:
+                    pass
+                child_fd = os.open(
+                    component,
+                    _PRIVATE_DIRECTORY_FLAGS,
+                    dir_fd=parent_fd,
+                )
+            except OSError as exc:
+                raise ZipIntakeError("dependency", f"{label}_unavailable", str(exc)) from exc
+            owned.append(child_fd)
+
+        metadata = os.fstat(owned[-1])
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ZipIntakeError("dependency", f"{label}_not_directory")
+        if metadata.st_mode & 0o077:
+            raise ZipIntakeError("dependency", f"{label}_not_private")
+
+        # Ensure the lexical path still names the descriptors we opened.  This
+        # catches a controlled ancestor replacement after the anchored mkdir;
+        # cleanup remains anchored to the original descriptors.
+        current = Path(components[0])
+        for index, _component in enumerate(components[1:], start=1):
+            current /= _component
+            observed = current.lstat()
+            expected = os.fstat(owned[index])
+            if (
+                (int(observed.st_dev), int(observed.st_ino), int(observed.st_mode))
+                != (int(expected.st_dev), int(expected.st_ino), int(expected.st_mode))
+            ):
+                raise ZipIntakeError("dependency", f"{label}_identity_changed")
+
+        result = owned[-1]
+        for descriptor in owned[:-1]:
+            os.close(descriptor)
+        owned.clear()
+        return result
+    except ZipIntakeError:
+        cleanup_created()
+        raise
+    except OSError as exc:
+        cleanup_created()
+        raise ZipIntakeError("dependency", f"{label}_unavailable", str(exc)) from exc
+    finally:
+        for descriptor in owned:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _private_directory(path: Path, *, label: str, create: bool) -> Path:
+    try:
+        descriptor = _open_private_directory(path, label=label, create=create)
+    except ZipIntakeError:
+        raise
+    try:
+        return path
+    finally:
+        os.close(descriptor)
+
+
+def _open_directory_path(
+    path: Path,
+    *,
+    label: str,
+    expected_identity: tuple[int, int] | None = None,
+) -> tuple[int, tuple[int, int]]:
+    """Open an absolute directory path without following any ancestor link."""
+
+    components = _private_path_components(path, label=label)
+    owned: list[int] = []
+    try:
+        owned.append(os.open(os.sep, _PRIVATE_DIRECTORY_FLAGS))
+        for component in components[1:]:
+            try:
+                child = os.open(
+                    component,
+                    _PRIVATE_DIRECTORY_FLAGS,
+                    dir_fd=owned[-1],
+                )
+            except OSError as exc:
+                raise ZipIntakeError("dependency", f"{label}_unavailable", str(exc)) from exc
+            owned.append(child)
+        for index, _component in enumerate(components[1:], start=1):
+            # Compare the path-bound object to the descriptor we opened.  A
+            # real-directory replacement is rejected just like a symlink.
+            current = Path(components[0])
+            for item in components[1 : index + 1]:
+                current /= item
+            observed = current.lstat()
+            expected = os.fstat(owned[index])
+            if (int(observed.st_dev), int(observed.st_ino), int(observed.st_mode)) != (
+                int(expected.st_dev), int(expected.st_ino), int(expected.st_mode)
+            ):
+                raise ZipIntakeError("dependency", f"{label}_identity_changed")
+        result = owned[-1]
+        for descriptor in owned[:-1]:
+            os.close(descriptor)
+        owned.clear()
+        metadata = os.fstat(result)
+        identity = (int(metadata.st_dev), int(metadata.st_ino))
+        if expected_identity is not None and identity != expected_identity:
+            os.close(result)
+            raise ZipIntakeError("source_changed", f"{label}_identity_changed")
+        return result, identity
+    except ZipIntakeError:
+        raise
     except OSError as exc:
         raise ZipIntakeError("dependency", f"{label}_unavailable", str(exc)) from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise ZipIntakeError("dependency", f"{label}_not_directory")
-    if metadata.st_mode & 0o077:
-        raise ZipIntakeError("dependency", f"{label}_not_private")
-    return path
+    finally:
+        for descriptor in owned:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _directory_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(metadata.st_dev),
+        int(metadata.st_ino),
+        int(metadata.st_size),
+        int(metadata.st_mtime_ns),
+        int(metadata.st_ctime_ns),
+        int(metadata.st_nlink),
+        int(metadata.st_mode),
+    )
+
+
+def _open_directory_child(parent_fd: int, name: str, *, create: bool) -> int:
+    if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+        raise ZipIntakeError("unsafe", "stage_directory_name_invalid", name)
+    if create:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+    try:
+        descriptor = os.open(
+            name,
+            _PRIVATE_DIRECTORY_FLAGS,
+            dir_fd=parent_fd,
+        )
+    except FileExistsError as exc:
+        raise ZipIntakeError("collision", "stage_directory_collision", name) from exc
+    except OSError as exc:
+        raise ZipIntakeError("unsafe", "stage_directory_unavailable", str(exc)) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ZipIntakeError("unsafe", "stage_directory_not_directory", name)
+        if metadata.st_mode & 0o077:
+            os.fchmod(descriptor, 0o700)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def _assert_real_directory(path: Path, *, label: str) -> None:
@@ -575,7 +940,7 @@ def _assert_real_directory(path: Path, *, label: str) -> None:
         raise ZipIntakeError("unsafe", f"{label}_not_directory")
 
 
-def _assert_destination_parent(destination: Path) -> None:
+def _assert_destination_parent(destination: Path) -> tuple[int, int]:
     if not destination.is_absolute() or "\x00" in os.fspath(destination):
         raise ZipIntakeError("unsafe", "destination_invalid")
     parent = destination.parent
@@ -593,8 +958,13 @@ def _assert_destination_parent(destination: Path) -> None:
             raise ZipIntakeError("blocked", "destination_parent_unavailable", str(exc)) from exc
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
             raise ZipIntakeError("unsafe", "destination_parent_not_directory")
-    if not parent.is_dir():
+    try:
+        parent_metadata = parent.lstat()
+    except OSError as exc:
+        raise ZipIntakeError("blocked", "destination_parent_missing", str(exc)) from exc
+    if stat.S_ISLNK(parent_metadata.st_mode) or not stat.S_ISDIR(parent_metadata.st_mode):
         raise ZipIntakeError("blocked", "destination_parent_missing")
+    return int(parent_metadata.st_dev), int(parent_metadata.st_ino)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -605,14 +975,23 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _rename_directory_noreplace(source: Path, destination: Path) -> None:
-    """Use Linux renameat2(RENAME_NOREPLACE); refuse unsafe overwrite fallback."""
-
-    source_parent_fd: int | None = None
-    destination_parent_fd: int | None = None
+def _fd_identity_matches(descriptor: int, expected: tuple[int, int]) -> bool:
     try:
-        source_parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        destination_parent_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        metadata = os.fstat(descriptor)
+    except OSError:
+        return False
+    return (int(metadata.st_dev), int(metadata.st_ino)) == expected
+
+
+def _rename_directory_noreplace_fds(
+    source_parent_fd: int,
+    source_name: str,
+    destination_parent_fd: int,
+    destination_name: str,
+) -> None:
+    """Rename using already-pinned parent descriptors; never reopen by path."""
+
+    try:
         libc = ctypes.CDLL(None, use_errno=True)
         renameat2 = getattr(libc, "renameat2", None)
         if renameat2 is None:
@@ -621,9 +1000,9 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> None:
         renameat2.restype = ctypes.c_int
         result = renameat2(
             source_parent_fd,
-            os.fsencode(source.name),
+            os.fsencode(source_name),
             destination_parent_fd,
-            os.fsencode(destination.name),
+            os.fsencode(destination_name),
             RENAME_NOREPLACE,
         )
         if result != 0:
@@ -637,13 +1016,29 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> None:
         raise
     except OSError as exc:
         raise ZipIntakeError("dependency", "publish_rename_failed", str(exc)) from exc
+
+
+def _rename_directory_noreplace(source: Path, destination: Path) -> None:
+    """Compatibility seam that pins both parents before the rename."""
+
+    source_parent_fd, _source_identity = _open_directory_path(
+        source.parent,
+        label="staged publication parent",
+    )
+    destination_parent_fd, _destination_identity = _open_directory_path(
+        destination.parent,
+        label="destination parent",
+    )
+    try:
+        _rename_directory_noreplace_fds(
+            source_parent_fd,
+            source.name,
+            destination_parent_fd,
+            destination.name,
+        )
     finally:
-        for descriptor in (source_parent_fd, destination_parent_fd):
-            if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
+        os.close(source_parent_fd)
+        os.close(destination_parent_fd)
 
 
 def _safe_member_name(raw_name: str) -> tuple[bool, str]:
@@ -1322,32 +1717,27 @@ def _source_sha256(
     return digest.hexdigest()
 
 
-def _create_directory(path: Path) -> None:
-    if os.path.lexists(path):
-        if path.is_symlink() or not path.is_dir():
-            raise ZipIntakeError("unsafe", "stage_path_collision", os.fspath(path))
-        os.chmod(path, 0o700)
-    else:
-        path.mkdir(mode=0o700)
-    os.chmod(path, 0o700)
-
-
-def _create_directory_chain(root: Path, components: Iterable[str]) -> None:
-    """Create implicit member-directory prefixes without following links."""
-
-    current = root
-    for component in components:
-        current /= component
-        _create_directory(current)
-
-
-def _open_output(path: Path) -> int:
+def _open_member_directory(root_fd: int, components: tuple[str, ...]) -> int:
+    current_fd = os.dup(root_fd)
     try:
-        return os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-        )
+        for component in components:
+            child_fd = _open_directory_child(current_fd, component, create=True)
+            os.close(current_fd)
+            current_fd = child_fd
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+def _open_output(path: Path, *, parent_fd: int | None = None, name: str | None = None) -> int:
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        if parent_fd is None:
+            return os.open(path, flags, 0o600)
+        if name is None:
+            raise ZipIntakeError("dependency", "stage_output_name_missing")
+        return os.open(name, flags, 0o600, dir_fd=parent_fd)
     except FileExistsError as exc:
         raise ZipIntakeError("unsafe", "stage_path_collision", os.fspath(path)) from exc
     except OSError as exc:
@@ -1363,6 +1753,8 @@ def _stream_member(
     deadline: _Deadline,
     budget: _ExtractionBudget,
     disk_root: Path,
+    output_parent_fd: int | None = None,
+    output_name: str | None = None,
     progress: _ZipProgress | None = None,
 ) -> None:
     info = member.info
@@ -1370,7 +1762,7 @@ def _stream_member(
     if declared > limits.max_member_bytes or budget.total_uncompressed_bytes + declared > limits.max_total_uncompressed_bytes:
         raise ZipIntakeError("budget", "member_or_total_budget", member.relative_name)
     _check_disk(disk_root, declared, limits=limits)
-    descriptor = _open_output(output)
+    descriptor = _open_output(output, parent_fd=output_parent_fd, name=output_name)
     actual = 0
     crc = 0
     try:
@@ -1468,7 +1860,18 @@ def _extract_zip_tree(
         )
     if effective_preflight.total_uncompressed_bytes + budget.total_uncompressed_bytes > limits.max_total_uncompressed_bytes:
         raise ZipIntakeError("budget", "nested_total_uncompressed_budget")
-    _create_directory(destination)
+    destination_parent_fd, _destination_parent_identity = _open_directory_path(
+        destination.parent,
+        label="staged destination parent",
+    )
+    try:
+        destination_fd = _open_directory_child(
+            destination_parent_fd,
+            destination.name,
+            create=True,
+        )
+    finally:
+        os.close(destination_parent_fd)
     try:
         with zipfile.ZipFile(archive_path, "r") as archive:
             for member in effective_preflight.members:
@@ -1476,23 +1879,32 @@ def _extract_zip_tree(
                 components = tuple(member.relative_name.split("/"))
                 target = destination.joinpath(*components)
                 if member.is_directory:
-                    _create_directory_chain(destination, components)
+                    member_fd = _open_member_directory(destination_fd, components)
+                    os.close(member_fd)
                     continue
-                _create_directory_chain(destination, components[:-1])
-                _stream_member(
-                    archive,
-                    member,
-                    target,
-                    limits=limits,
-                    deadline=deadline,
-                    budget=budget,
-                    disk_root=destination,
-                    progress=progress,
-                )
+                member_parent_fd = _open_member_directory(destination_fd, components[:-1])
+                try:
+                    _stream_member(
+                        archive,
+                        member,
+                        target,
+                        limits=limits,
+                        deadline=deadline,
+                        budget=budget,
+                        disk_root=destination,
+                        output_parent_fd=member_parent_fd,
+                        output_name=components[-1],
+                        progress=progress,
+                    )
+                finally:
+                    os.close(member_parent_fd)
     except ZipIntakeError:
         raise
     except (zipfile.BadZipFile, OSError, RuntimeError, zlib.error) as exc:
         raise ZipIntakeError("corrupt", "zip_extraction_failed", str(exc)) from exc
+    finally:
+        os.close(destination_fd)
+    _verify_tree(destination, limits=limits, deadline=deadline, progress=progress)
     # Generic nested archives are expanded in-place before publication.  A
     # nested atomic package is left as the regular file for normal routes.
     for child in sorted(destination.rglob("*"), key=lambda item: (len(item.parts), os.fsencode(os.fspath(item)))):
@@ -1557,29 +1969,61 @@ def _verify_tree(
     deadline: _Deadline,
     progress: _ZipProgress | None = None,
 ) -> None:
-    _assert_real_directory(root, label="staged tree")
+    root_fd, _root_identity = _open_directory_path(root, label="staged tree")
     total = 0
-    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
-        deadline.check()
-        current_path = Path(current)
-        for name in directories:
-            path = current_path / name
-            metadata = path.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode) or metadata.st_mode & 0o777 != 0o700:
-                raise ZipIntakeError("unsafe", "staged_directory_permissions", os.fspath(path))
-        for name in files:
-            deadline.check()
-            path = current_path / name
-            metadata = path.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise ZipIntakeError("unsafe", "staged_special_or_link", os.fspath(path))
-            if metadata.st_mode & 0o777 != 0o600 or metadata.st_mode & 0o111:
-                raise ZipIntakeError("unsafe", "staged_file_permissions", os.fspath(path))
-            total += int(metadata.st_size)
-            if total > limits.max_total_uncompressed_bytes:
-                raise ZipIntakeError("budget", "staged_tree_budget")
-            if progress is not None:
-                progress.tick("verify", 1)
+    pending = [root_fd]
+    try:
+        while pending:
+            current_fd = pending.pop()
+            try:
+                deadline.check()
+                scan_fd = os.dup(current_fd)
+                try:
+                    with os.scandir(scan_fd) as entries:
+                        for entry in entries:
+                            deadline.check()
+                            metadata = os.stat(
+                                entry.name,
+                                dir_fd=current_fd,
+                                follow_symlinks=False,
+                            )
+                            if stat.S_ISDIR(metadata.st_mode):
+                                if metadata.st_mode & 0o777 != 0o700:
+                                    raise ZipIntakeError("unsafe", "staged_directory_permissions", entry.name)
+                                pending.append(
+                                    _open_directory_child(
+                                        current_fd,
+                                        entry.name,
+                                        create=False,
+                                    )
+                                )
+                                continue
+                            if (
+                                stat.S_ISLNK(metadata.st_mode)
+                                or not stat.S_ISREG(metadata.st_mode)
+                                or metadata.st_nlink != 1
+                            ):
+                                raise ZipIntakeError("unsafe", "staged_special_or_link", entry.name)
+                            if metadata.st_mode & 0o777 != 0o600 or metadata.st_mode & 0o111:
+                                raise ZipIntakeError("unsafe", "staged_file_permissions", entry.name)
+                            total += int(metadata.st_size)
+                            if total > limits.max_total_uncompressed_bytes:
+                                raise ZipIntakeError("budget", "staged_tree_budget")
+                            if progress is not None:
+                                progress.tick("verify", 1)
+                finally:
+                    try:
+                        os.close(scan_fd)
+                    except OSError:
+                        pass
+            finally:
+                os.close(current_fd)
+    finally:
+        for descriptor in pending:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _normalize_trash_result(value: object) -> TrashDisposition:
@@ -1784,9 +2228,6 @@ def run_zip_intake(
     destination_path = _validate_destination(Path(destination) if destination is not None else _default_destination(path))
     if not apply:
         return ZipIntakeOutcome("planned", source_text, identity, classification, apply=False, destination=os.fspath(destination_path), members=classification.member_count, uncompressed_bytes=classification.estimated_uncompressed_bytes, reason="generic_zip", source_sha256=source_digest)
-    prior_identity = _COMPLETED_DESTINATIONS.get(os.fspath(destination_path))
-    if prior_identity is not None and _same_physical_identity(prior_identity, identity) and os.path.isdir(destination_path):
-        return ZipIntakeOutcome("already_applied", source_text, identity, classification, apply=True, destination=os.fspath(destination_path), members=classification.member_count, uncompressed_bytes=classification.estimated_uncompressed_bytes, published=False, trashed=False, successor_paths=(os.fspath(destination_path),), reason="replay_proven", source_sha256=source_digest)
     if trash is None:
         return ZipIntakeOutcome("dependency", source_text, identity, classification, apply=True, destination=os.fspath(destination_path), members=classification.member_count, uncompressed_bytes=classification.estimated_uncompressed_bytes, reason="kio_trash_hook_required", detail="apply requires a verified KIO Trash adapter", source_sha256=source_digest)
     stage_factory = _stage_factory(staging if staging is not None else scratch_root)
@@ -1797,9 +2238,13 @@ def run_zip_intake(
     budget = _ExtractionBudget(started=time.monotonic())
     try:
         lease = stage_factory.create(source=path, metadata={"owner": "archive-intake", "source": source_text, "classification": classification.to_dict()})
-        _private_directory(lease.path, label="workspace", create=False)
+        workspace_fd = _open_private_directory(lease.path, label="workspace", create=False)
         payload_root = lease.path / "payload"
-        _create_directory(payload_root)
+        try:
+            payload_fd = _open_directory_child(workspace_fd, "payload", create=True)
+        finally:
+            os.close(workspace_fd)
+        os.close(payload_fd)
         destination_name = destination_path.name
         staged_destination = payload_root / destination_name
         _check_disk(lease.path, classification.estimated_uncompressed_bytes, limits=effective_limits)
@@ -1870,7 +2315,8 @@ def run_zip_intake(
             raise ZipIntakeError(trash_status, "trash_not_applied", trash_result.detail)
         if os.path.lexists(path):
             raise ZipIntakeError("recovery_required", "trash_claim_unverified")
-        _COMPLETED_DESTINATIONS[os.fspath(destination_path)] = identity
+        if publish_receipt is not None:
+            publish_receipt.close()
         try:
             lease.complete()
         except BaseException as exc:
@@ -1894,6 +2340,8 @@ def run_zip_intake(
         reporter.finish("intake", metrics=(ProgressMetric("applied", 1),))
         return ZipIntakeOutcome("applied", source_text, identity, classification, apply=True, destination=os.fspath(destination_path), members=budget.members, uncompressed_bytes=budget.total_uncompressed_bytes, published=True, trashed=True, successor_paths=(os.fspath(destination_path),), reason="generic_zip_published", detail=trash_result.evidence, source_sha256=source_digest)
     except ZipIntakeError as exc:
+        if publish_receipt is not None:
+            publish_receipt.close()
         if lease is not None:
             try:
                 lease.fail(exc.detail)
@@ -1902,6 +2350,8 @@ def run_zip_intake(
         reporter.finish("intake", metrics=(ProgressMetric("blocked", 1),))
         return ZipIntakeOutcome(exc.status, source_text, identity, classification, apply=True, destination=os.fspath(destination_path), members=budget.members, uncompressed_bytes=budget.total_uncompressed_bytes, published=publish_receipt is not None and exc.status == "recovery_required", reason=exc.reason, detail=exc.detail, source_sha256=source_digest)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        if publish_receipt is not None:
+            publish_receipt.close()
         if lease is not None:
             try:
                 lease.fail(f"{type(exc).__name__}: {exc}")

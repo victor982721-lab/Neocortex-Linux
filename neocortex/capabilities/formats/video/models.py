@@ -64,6 +64,14 @@ class VideoProcessingError(RuntimeError):
         self.evidence = dict(evidence or {})
 
 
+class VideoNotApplicable(RuntimeError):
+    """A valid media container has audio but no visual video stream."""
+
+    def __init__(self, probe: VideoMediaProbe) -> None:
+        super().__init__("audio-only media is not applicable to the visual video route")
+        self.probe = probe
+
+
 class VideoRuntimeUnavailableError(FileNotFoundError):
     """A required FFmpeg/FFprobe executable is unavailable at route startup."""
 
@@ -113,12 +121,14 @@ class VideoRouteSummary:
     catalog_stale_marked: int = field(default=0, kw_only=True)
     catalog_source_missing: int = field(default=0, kw_only=True)
     catalog_complete: bool | None = field(default=None, kw_only=True)
+    not_applicable: int = field(default=0, kw_only=True)
 
 
 __all__ = (
     "VIDEO_ROUTE_VERSION",
     "SubtitleStreamProbe",
     "VideoMediaProbe",
+    "VideoNotApplicable",
     "VideoProcessingError",
     "VideoRouteSummary",
     "VideoRuntimeUnavailableError",

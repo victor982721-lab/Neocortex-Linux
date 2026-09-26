@@ -32,6 +32,7 @@ EXPECTED_PUBLIC_NAMES = (
     "capture_organization_input_scope",
     "default_organization_root",
     "list_organization_plans",
+    "organization_apply_has_unresolved",
     "plan_document_organization",
 )
 
@@ -49,6 +50,7 @@ def test_document_organization_facade_delegates_to_bounded_layers() -> None:
     assert facade.list_organization_plans is models.list_organization_plans
     assert facade.OrganizationPlanSummary is models.OrganizationPlanSummary
     assert facade.OrganizationApplySummary is models.OrganizationApplySummary
+    assert facade.organization_apply_has_unresolved is models.organization_apply_has_unresolved
     assert facade.OrganizationPlanView is models.OrganizationPlanView
     assert facade._create_destination_parent is application._create_destination_parent
 

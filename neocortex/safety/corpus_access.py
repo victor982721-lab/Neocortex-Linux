@@ -311,9 +311,11 @@ class CorpusAccessPolicy:
             self.root_file_id,
             self.root_birthtime_ns,
         ):
-            if self.mode == "normal":
-                return
-            raise ProtectedAnalysisRootError("protected root identity is incomplete")
+            # A normal run is not allowed to fall back to path-only mutation
+            # when a legacy or tampered record lacks its physical identity.
+            # ``-1`` is the explicit Linux birth-time sentinel; ``None`` is
+            # uncertainty and therefore must abstain in every access mode.
+            raise ProtectedAnalysisRootError("corpus root identity is incomplete")
         try:
             metadata = os.stat(self.root, follow_symlinks=False)
         except OSError as exc:
@@ -357,8 +359,12 @@ class CorpusMutationGuard:
     def reject_run_mutation(self) -> None:
         """Reject any action originating in a globally read-only run."""
 
+        # Revalidate the physical root even for normal runs.  Previously a
+        # normal policy with an incomplete identity returned here without any
+        # root check, allowing callers to cross the mutation boundary using
+        # path-only evidence.
+        self.policy.verify_root_identity()
         if self.policy.mode == "analyze_only":
-            self.policy.verify_root_identity()
             raise ProtectedAnalysisRootError()
         if self.protected_content_policy is not None:
             self.protected_content_policy.require_run_mutation_allowed(self.policy)
@@ -369,11 +375,13 @@ class CorpusMutationGuard:
     ) -> None:
         """Reject internal, protected-content and analyze-only intersections."""
 
+        self.policy.verify_root_identity()
         self.internal_paths_policy.require_mutation_paths_allowed(*paths)
         if self.protected_content_policy is not None:
             self.protected_content_policy.require_mutation_paths_allowed(*paths)
         if self.policy.mode == "analyze_only":
             self._require_analyze_only_paths_allowed(paths)
+        self.policy.verify_root_identity()
 
     def mutation_path_protection_reasons(
         self,
@@ -381,6 +389,7 @@ class CorpusMutationGuard:
     ) -> tuple[str | None, ...]:
         """Classify one path batch while revalidating each policy only once."""
 
+        self.policy.verify_root_identity()
         self.internal_paths_policy.require_mutation_paths_allowed(*paths)
         protected_reasons: tuple[str | None, ...]
         if self.protected_content_policy is None:
@@ -394,8 +403,10 @@ class CorpusMutationGuard:
             )
 
         if self.policy.mode != "analyze_only":
+            self.policy.verify_root_identity()
             return protected_reasons
         self._require_analyze_only_paths_allowed(paths)
+        self.policy.verify_root_identity()
         return protected_reasons
 
     def _require_analyze_only_paths_allowed(

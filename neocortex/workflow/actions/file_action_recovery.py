@@ -525,19 +525,31 @@ def _valid_success_receipt(
     )
     if not valid:
         return False
-    if action.action_type == "trash_curation":
-        if expected.source_digest is None or receipt.get("source_digest") != expected.source_digest:
+    if action.action_type.startswith("trash_"):
+        # Every current Trash action crosses the same reversible KIO frontier.
+        # A generic successful-return receipt only proves that a caller saw a
+        # syscall return; it does not prove where the source went.  Do not let
+        # recovery confirm a missing source without the source-bound Trash
+        # evidence and a fresh physical observation of the Trash object.
+        source_digest = receipt.get("source_digest")
+        if not isinstance(source_digest, str) or not source_digest:
+            return False
+        if expected.source_digest is not None and source_digest != expected.source_digest:
             return False
         try:
             verify_trash_receipt_evidence(
                 receipt.get("trash"),
                 FileSnapshot(
-                    action.source_path, expected.volume_id, expected.file_id,
-                    expected.size, expected.mtime_ns, expected.birthtime_ns,
+                    action.source_path,
+                    expected.volume_id,
+                    expected.file_id,
+                    expected.size,
+                    expected.mtime_ns,
+                    expected.birthtime_ns,
                 ),
-                expected.source_digest,
+                source_digest,
             )
-        except (OSError, RuntimeError, ValueError, FileChangedError):
+        except (OSError, RuntimeError, TypeError, ValueError, FileChangedError):
             return False
         return True
     return True

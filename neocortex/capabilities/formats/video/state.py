@@ -972,6 +972,75 @@ def store_video_success(
     )
 
 
+def store_video_not_applicable(
+    connection: sqlite3.Connection,
+    snapshot: FileSnapshot,
+    mime: str,
+    processing_signature: str,
+    probe: VideoMediaProbe,
+    audio_link: PublishedAudioLink | None,
+    run_id: int,
+) -> None:
+    """Persist a valid audio-only container without creating video evidence."""
+
+    _remove_path_conflict(connection, snapshot)
+    key = file_key_from_snapshot(snapshot)
+    title = Path(snapshot.path).stem
+    connection.execute(
+        """INSERT INTO documents(
+        file_key,path,mime,size,mtime_ns,birthtime_ns,processing_signature,status,
+        title,duration_seconds,format_name,video_streams,audio_streams,
+        subtitle_streams,chapters,frame_count,ocr_frame_count,ocr_text_chars,
+        probe_json,warnings_json,audio_file_key,audio_processing_signature,
+        audio_status,error_type,error_message,retryable,review_disposition,
+        last_seen_run_id,updated_ns)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,0,'none',?,?)
+        ON CONFLICT(file_key) DO UPDATE SET path=excluded.path,mime=excluded.mime,
+        size=excluded.size,mtime_ns=excluded.mtime_ns,
+        birthtime_ns=excluded.birthtime_ns,
+        processing_signature=excluded.processing_signature,status='not_applicable',
+        title=excluded.title,duration_seconds=excluded.duration_seconds,
+        format_name=excluded.format_name,video_streams=0,audio_streams=excluded.audio_streams,
+        subtitle_streams=excluded.subtitle_streams,chapters=excluded.chapters,
+        frame_count=0,ocr_frame_count=0,ocr_text_chars=0,
+        probe_json=excluded.probe_json,warnings_json=excluded.warnings_json,
+        audio_file_key=excluded.audio_file_key,
+        audio_processing_signature=excluded.audio_processing_signature,
+        audio_status=excluded.audio_status,error_type=NULL,error_message=NULL,
+        retryable=0,review_disposition='none',
+        last_seen_run_id=excluded.last_seen_run_id,updated_ns=excluded.updated_ns""",
+        (
+            key,
+            snapshot.path,
+            mime,
+            snapshot.size,
+            snapshot.mtime_ns,
+            snapshot.birthtime_ns,
+            processing_signature,
+            "not_applicable",
+            title,
+            probe.duration_seconds,
+            probe.format_name,
+            0,
+            probe.audio_streams,
+            len(probe.subtitles),
+            probe.chapters,
+            0,
+            0,
+            0,
+            _probe_json(probe, 0),
+            json.dumps(["video_not_applicable_audio_only"], ensure_ascii=True),
+            None if audio_link is None else audio_link.file_key,
+            None if audio_link is None else audio_link.processing_signature,
+            None if audio_link is None else audio_link.status,
+            run_id,
+            time.time_ns(),
+        ),
+    )
+    connection.execute("DELETE FROM frames WHERE file_key=?", (key,))
+    delete_format_fts_keys(connection, "frame_fts", (key,))
+
+
 def store_video_error(
     connection: sqlite3.Connection,
     snapshot: FileSnapshot,
@@ -1224,6 +1293,7 @@ __all__ = (
     "search_video_state",
     "store_video_error",
     "store_video_inventory",
+    "store_video_not_applicable",
     "store_video_success",
     "validate_video_schema",
     "video_database",

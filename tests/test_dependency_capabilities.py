@@ -243,9 +243,9 @@ def test_optional_route_components_produce_stable_degradation_reasons() -> None:
     pdf = inspect_runtime_capability(
         "pdf",
         module_finder=(
-            lambda name: object() if name in {"packaging", "rich", "xxhash", "fitz"} else None
+            lambda name: object() if name in {"packaging", "rich", "xxhash", "pymupdf"} else None
         ),
-        distribution_version=_version_reader({"packaging", "rich", "xxhash", "fitz"}),
+        distribution_version=_version_reader({"packaging", "rich", "xxhash", "pymupdf"}),
         executable_finder=lambda _name: None,
     )
     assert pdf.state is CapabilityState.DEGRADED
@@ -384,6 +384,7 @@ def test_base_surfaces_and_absent_knowledge_state_ignore_optional_engines(
             "fastembed",
             "faster_whisper",
             "fitz",
+            "pymupdf",
             "numpy",
             "onnxruntime",
             "pdfminer",
@@ -519,6 +520,7 @@ def test_base_knowledge_reads_existing_image_state_without_pillow(
             "fastembed",
             "faster_whisper",
             "fitz",
+            "pymupdf",
             "numpy",
             "onnxruntime",
             "pdfminer",

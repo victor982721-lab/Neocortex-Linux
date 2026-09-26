@@ -113,7 +113,7 @@ _IMPORT_MODULES = (
     "ctranslate2",
     "fastembed",
     "faster_whisper",
-    "fitz",
+    "pymupdf",
     "mcp",
     "numpy",
     "pytesseract",

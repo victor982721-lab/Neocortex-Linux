@@ -412,7 +412,7 @@ def test_profile_child_does_not_open_pdf_state(
         def put(message: tuple[object, ...]) -> None:
             messages.append(message)
 
-    monkeypatch.setitem(sys.modules, "fitz", _FakeFitz())
+    monkeypatch.setitem(sys.modules, "pymupdf", _FakeFitz())
 
     pdf_isolation._profile_child("unused-by-fake-fitz.pdf", (), _Channel())
 

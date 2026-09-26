@@ -666,12 +666,17 @@ def _fail_empty_superseded_generations(
             raise SemanticStateError("empty embedding generation changed while being superseded")
 
 
-def has_building_embedding_generation(path: Path, *, model_signature: str) -> bool:
+def has_building_embedding_generation(
+    path: Path,
+    *,
+    model_signature: str,
+    writer_coordinated: bool = False,
+) -> bool:
     """Read a bounded recovery hint without creating an absent owner."""
 
     if not path.is_file():
         return False
-    with semantic_database(path, readonly=True) as connection:
+    with semantic_database(path, readonly=not writer_coordinated) as connection:
         return connection.execute(
             "SELECT 1 FROM embedding_generations WHERE model_signature=? AND status='building' LIMIT 1",
             (model_signature,),

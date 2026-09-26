@@ -19,9 +19,11 @@ import json
 import math
 import sqlite3
 import stat
+import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -29,6 +31,7 @@ from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteImmutableFence,
     SQLiteSnapshotBudget,
+    SQLiteSnapshotBudgetExceeded,
     SQLiteReadSession,
     capture_sqlite_read_fence,
     preferred_sqlite_read_mode,
@@ -52,6 +55,12 @@ MAX_JSON_BYTES = 256 * 1024
 MAX_AGGREGATE_DIGEST_BYTES = 64 * 1024 * 1024
 READ_TIMEOUT_SECONDS = 60.0
 SQL_PROGRESS_OPCODES = 1_000
+# A publication boundary can race a writer's final WAL checkpoint.  A bounded
+# retry gives that lifecycle race one fresh fence without enlarging the
+# snapshot budget or weakening the immutable-read contract.  Persistent
+# oversize/active snapshots still fail closed after the retry window.
+PUBLICATION_HEAD_SNAPSHOT_RETRIES = 2
+PUBLICATION_HEAD_RETRY_DELAY_SECONDS = 0.01
 
 
 _EXPECTED_SCHEMA_VERSIONS = {
@@ -116,6 +125,48 @@ class _SemanticObservation:
     generation_heads: tuple[tuple[str, int], ...]
     semantic_heads: tuple[_SemanticHead, ...]
     capture: _OwnerCapture
+
+
+_LEASE_CONSTRUCTOR_TOKEN = object()
+_ACTIVE_OWNER_LEASES: ContextVar[tuple[object, ...]] = ContextVar(
+    "semantic_publication_active_owner_leases",
+    default=(),
+)
+
+
+class _SemanticOwnerLease:
+    """Opaque, context-registered existing-owner connection."""
+
+    __slots__ = ("_connection", "_fence", "_owner_identity")
+
+    def __init__(
+        self,
+        constructor_token: object,
+        connection: sqlite3.Connection,
+        fence: SQLiteImmutableFence,
+        owner_identity: tuple[int, int],
+    ) -> None:
+        if constructor_token is not _LEASE_CONSTRUCTOR_TOKEN:
+            raise TypeError("Semantic owner leases are created only by their context")
+        self._connection = connection
+        self._fence = fence
+        self._owner_identity = owner_identity
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        return self._connection
+
+    @property
+    def fence(self) -> SQLiteImmutableFence:
+        return self._fence
+
+    @property
+    def owner_identity(self) -> tuple[int, int]:
+        return self._owner_identity
+
+
+def _active_owner_lease(value: object) -> bool:
+    return any(candidate is value for candidate in _ACTIVE_OWNER_LEASES.get())
 
 
 class _ObservationControls:
@@ -439,6 +490,37 @@ def _verify_capture(capture: _OwnerCapture) -> None:
         )
 
 
+def _verify_lease_close_fence(
+    path: Path,
+    expected: SQLiteImmutableFence,
+) -> None:
+    """Require owner bytes/WAL identity to survive a coordinated lease close.
+
+    SQLite may update or create only the shared-memory bookkeeping sidecar as
+    readers join/leave a WAL owner. Main bytes, WAL/journal identities and all
+    their metadata remain exact; any difference there is owner drift, not
+    harmless reader bookkeeping.
+    """
+
+    try:
+        observed = capture_sqlite_read_fence(path)
+    except (FileNotFoundError, ImmutableSQLiteUnavailable, OSError) as exc:
+        raise PublicationHeadsDriftError(
+            f"owner changed while closing lease: {path.name}"
+        ) from exc
+    if observed.main != expected.main:
+        raise PublicationHeadsDriftError(
+            f"owner changed while closing lease: {path.name}"
+        )
+    expected_sidecars = dict(expected.sidecars)
+    observed_sidecars = dict(observed.sidecars)
+    for suffix in ("-journal", "-wal"):
+        if observed_sidecars.get(suffix) != expected_sidecars.get(suffix):
+            raise PublicationHeadsDriftError(
+                f"owner {suffix} changed while closing lease: {path.name}"
+            )
+
+
 def _application_objects(
     connection: sqlite3.Connection,
     controls: _ObservationControls | None = None,
@@ -637,9 +719,279 @@ def _semantic_owner_head(
     )
 
 
+@contextmanager
+def _semantic_owner_lease(
+    state_directory: Path,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+    timeout_seconds: float = READ_TIMEOUT_SECONDS,
+) -> Iterator[_SemanticOwnerLease | None]:
+    """Lend an existing Semantic owner to an integrated mutating boundary.
+
+    This is intentionally not a public read mode.  The integrated lifecycle
+    already owns the state lock, so it may open the existing owner read-write,
+    pin one transaction, and provide that connection to the bounded projection
+    helper.  No owner is created, migrated, checkpointed, or opened through a
+    live ``mode=ro`` reader; absent state yields ``None`` for the normal empty
+    baseline.
+    """
+
+    if checkpoint is not None and not callable(checkpoint):
+        raise TypeError("Semantic owner lease checkpoint must be callable")
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(float(timeout_seconds))
+        or float(timeout_seconds) <= 0
+    ):
+        raise ValueError("Semantic owner lease timeout must be finite and positive")
+    timeout = float(timeout_seconds)
+    path = _state_directory(state_directory) / "semantic.sqlite3"
+    if checkpoint is not None:
+        checkpoint()
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        yield None
+        return
+    except OSError as exc:
+        raise PublicationHeadsStateError("Semantic owner cannot be inspected") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise PublicationHeadsStateError("Semantic owner must be a regular file")
+    # A zero-byte owner with no sidecars is the documented empty baseline. Do
+    # not send it through the writer lease, whose SQLite fence intentionally
+    # rejects non-databases; the observer will return the same stable empty
+    # head without creating or opening state.
+    if _empty_or_absent_capture(path) is not None:
+        if checkpoint is not None:
+            checkpoint()
+        yield None
+        return
+
+    from neocortex.persistence.sqlite_paths import existing_sqlite_uri
+    from neocortex.persistence.sqlite_writer_snapshot import SQLiteProgressConnection
+
+    connection: sqlite3.Connection | None = None
+    try:
+        initial_fence = capture_sqlite_read_fence(path)
+        if (initial_fence.main.device, initial_fence.main.inode) != (
+            metadata.st_dev,
+            metadata.st_ino,
+        ):
+            raise PublicationHeadsDriftError("Semantic owner changed before its lease opened")
+        if checkpoint is not None:
+            checkpoint()
+        connection = sqlite3.connect(
+            existing_sqlite_uri(path),
+            uri=True,
+            timeout=timeout,
+            factory=SQLiteProgressConnection,
+        )
+        connected_fence = capture_sqlite_read_fence(path)
+        if connected_fence.main != initial_fence.main:
+            connection.close()
+            connection = None
+            raise PublicationHeadsDriftError(
+                "Semantic owner changed immediately after lease connect"
+            )
+    except (OSError, sqlite3.Error, ImmutableSQLiteUnavailable) as exc:
+        if connection is not None:
+            connection.close()
+        raise PublicationHeadsStateError("Semantic owner lease cannot be opened") from exc
+    except BaseException:
+        if connection is not None:
+            connection.close()
+        raise
+    expected_close_fence: SQLiteImmutableFence | None = None
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout={max(1, round(timeout * 1000))}")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA trusted_schema=OFF")
+        if hasattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE"):
+            connection.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+        progress_failure: BaseException | None = None
+
+        def progress() -> int:
+            nonlocal progress_failure
+            try:
+                if checkpoint is not None:
+                    checkpoint()
+            except BaseException as exc:
+                progress_failure = exc
+                return 1
+            return 0
+
+        connection.set_progress_handler(progress, SQL_PROGRESS_OPCODES)
+        # Establish and release one empty read transaction before the caller
+        # captures its owner fence.  SQLite may materialize a residual
+        # ``-wal=0``/``-shm=32KiB`` pair when a read-write lease first joins a
+        # WAL owner; treating that normal lease lifecycle as mid-read drift
+        # would reject an otherwise pinned, bounded projection.
+        try:
+            if checkpoint is not None:
+                checkpoint()
+            connection.execute("BEGIN")
+            connection.execute("SELECT rootpage FROM sqlite_schema LIMIT 1").fetchone()
+            if progress_failure is not None:
+                raise progress_failure
+            connection.rollback()
+            if checkpoint is not None:
+                checkpoint()
+            current_fence = capture_sqlite_read_fence(path)
+            if current_fence.main != initial_fence.main:
+                raise PublicationHeadsDriftError("Semantic owner changed while acquiring its lease")
+            expected_close_fence = current_fence
+            lease = _SemanticOwnerLease(
+                _LEASE_CONSTRUCTOR_TOKEN,
+                connection=connection,
+                fence=current_fence,
+                owner_identity=(current_fence.main.device, current_fence.main.inode),
+            )
+            lease_token = _ACTIVE_OWNER_LEASES.set(
+                (*_ACTIVE_OWNER_LEASES.get(), lease)
+            )
+            try:
+                yield lease
+            finally:
+                _ACTIVE_OWNER_LEASES.reset(lease_token)
+        except sqlite3.OperationalError as exc:
+            if progress_failure is not None:
+                raise progress_failure from exc
+            raise
+    except BaseException as exc:
+        assert connection is not None
+        if connection.in_transaction:
+            try:
+                connection.rollback()
+            except BaseException as rollback_failure:
+                exc.add_note(
+                    "Semantic owner lease rollback cleanup failed: "
+                    f"{type(rollback_failure).__name__}: {rollback_failure}"
+                )
+        raise
+    finally:
+        assert connection is not None
+        primary = sys.exception()
+        cleanup_errors: list[BaseException] = []
+        try:
+            connection.set_progress_handler(None, 0)
+        except BaseException as restore_failure:
+            cleanup_errors.append(restore_failure)
+        try:
+            connection.close()
+        except BaseException as close_failure:
+            cleanup_errors.append(close_failure)
+        if expected_close_fence is not None:
+            try:
+                _verify_lease_close_fence(path, expected_close_fence)
+            except BaseException as fence_failure:
+                cleanup_errors.append(fence_failure)
+        if primary is not None:
+            for cleanup_failure in cleanup_errors:
+                primary.add_note(
+                    "Semantic owner lease cleanup failed: "
+                    f"{type(cleanup_failure).__name__}: {cleanup_failure}"
+                )
+        elif cleanup_errors:
+            first_error, *additional = cleanup_errors
+            for additional_failure in additional:
+                first_error.add_note(
+                    "Semantic owner lease cleanup also failed: "
+                    f"{type(additional_failure).__name__}: {additional_failure}"
+                )
+            raise first_error
+
+
+def _observe_semantic_from_owner(
+    state_directory: Path,
+    controls: _ObservationControls,
+    lease: _SemanticOwnerLease,
+) -> _SemanticObservation:
+    """Project only publication-head facts from a leased Semantic owner."""
+
+    from neocortex.persistence.sqlite_writer_snapshot import (
+        SQLiteProgressConnection,
+        writer_coordinated_sqlite_snapshot,
+    )
+
+    if not isinstance(lease, _SemanticOwnerLease) or not _active_owner_lease(lease):
+        raise PublicationHeadsStateError(
+            "coordinated Semantic publication reads require an authenticated lease"
+        )
+    writer_connection = lease.connection
+    if not isinstance(writer_connection, SQLiteProgressConnection):
+        raise PublicationHeadsStateError(
+            "coordinated Semantic publication reads require the owner lease"
+        )
+    path = _state_directory(state_directory) / "semantic.sqlite3"
+    source_fence = lease.fence
+    if capture_sqlite_read_fence(path) != source_fence:
+        raise PublicationHeadsDriftError("Semantic owner changed before its projection")
+    owner_identity = lease.owner_identity
+    projected: list[tuple[int | None, tuple[_SemanticHead, ...]]] = []
+
+    def projection(
+        source: sqlite3.Connection,
+        target: sqlite3.Connection,
+        _budget_state: object,
+    ) -> None:
+        controls.checkpoint()
+        schema_version = _semantic_schema(source, controls)
+        heads = () if schema_version is None else _read_semantic_heads(source, controls)
+        raw_heads = [
+            {
+                "model_signature": head.model_signature,
+                "modality": head.modality,
+                "vector_space": head.vector_space,
+                "generation_id": head.generation_id,
+                "processing_signature": head.processing_signature,
+                "published_ns": head.published_ns,
+            }
+            for head in heads
+        ]
+        payload = canonical_json({"schema_version": schema_version, "heads": raw_heads})
+        if len(payload.encode("utf-8", "surrogatepass")) > MAX_AGGREGATE_DIGEST_BYTES:
+            raise PublicationHeadsSchemaError("Semantic publication-head projection exceeds its bound")
+        target.execute(
+            "CREATE TABLE semantic_publication_projection(schema_version INTEGER, payload TEXT NOT NULL)"
+        )
+        target.execute(
+            "INSERT INTO semantic_publication_projection(schema_version,payload) VALUES(?,?)",
+            (schema_version, payload),
+        )
+        projected.append((schema_version, heads))
+        controls.checkpoint()
+
+    with writer_coordinated_sqlite_snapshot(
+        writer_connection,
+        path,
+        owner_identity=owner_identity,
+        projection=projection,
+        timeout_seconds=READ_TIMEOUT_SECONDS,
+        budget=controls.session_budget(),
+    ):
+        controls.checkpoint()
+    if len(projected) != 1:
+        raise PublicationHeadsStateError("Semantic publication-head projection is incomplete")
+    _verify_capture(_OwnerCapture(path, source_fence, None, False))
+    controls.checkpoint()
+    schema_version, heads = projected[0]
+    selected_schema = SEMANTIC_SCHEMA_VERSION if schema_version is None else schema_version
+    return _SemanticObservation(
+        _semantic_owner_head(heads, schema_version=selected_schema),
+        tuple((head.model_signature, head.generation_id) for head in heads),
+        heads,
+        _OwnerCapture(path, source_fence, None, False),
+    )
+
+
 def _observe_semantic(
     state_directory: Path,
     controls: _ObservationControls,
+    *,
+    owner_lease: _SemanticOwnerLease | None = None,
 ) -> _SemanticObservation:
     path = state_directory / "semantic.sqlite3"
     controls.checkpoint()
@@ -656,33 +1008,58 @@ def _observe_semantic(
         controls.checkpoint()
         return observation
 
-    try:
-        controls.checkpoint()
-        mode = preferred_sqlite_read_mode(path)
-        session = SQLiteReadSession(
-            path,
-            mode=mode,
-            timeout_seconds=READ_TIMEOUT_SECONDS,
-            max_attempts=2,
-            budget=controls.session_budget(),
-        )
-        with session as connection:
-            with _sql_progress(connection, controls):
-                connection.execute("BEGIN")
-                schema_version = _semantic_schema(connection, controls)
-                if schema_version is None:
-                    heads: tuple[_SemanticHead, ...] = ()
-                else:
-                    heads = _read_semantic_heads(connection, controls)
-                capture = _OwnerCapture(path, session.source_fence, None, False)
-        _verify_capture(capture)
-        controls.checkpoint()
-    except PublicationHeadsError:
-        raise
-    except Exception as exc:
+    if owner_lease is not None:
+        return _observe_semantic_from_owner(state_directory, controls, owner_lease)
+
+    last_snapshot_budget_error: SQLiteSnapshotBudgetExceeded | None = None
+    for attempt in range(PUBLICATION_HEAD_SNAPSHOT_RETRIES):
+        try:
+            controls.checkpoint()
+            mode = preferred_sqlite_read_mode(path)
+            session = SQLiteReadSession(
+                path,
+                mode=mode,
+                timeout_seconds=READ_TIMEOUT_SECONDS,
+                max_attempts=2,
+                budget=controls.session_budget(),
+            )
+            with session as connection:
+                with _sql_progress(connection, controls):
+                    connection.execute("BEGIN")
+                    schema_version = _semantic_schema(connection, controls)
+                    if schema_version is None:
+                        heads: tuple[_SemanticHead, ...] = ()
+                    else:
+                        heads = _read_semantic_heads(connection, controls)
+                    capture = _OwnerCapture(path, session.source_fence, None, False)
+            _verify_capture(capture)
+            controls.checkpoint()
+        except SQLiteSnapshotBudgetExceeded as exc:
+            last_snapshot_budget_error = exc
+            if attempt + 1 >= PUBLICATION_HEAD_SNAPSHOT_RETRIES:
+                break
+            # Do not turn an exhausted snapshot into an unbounded wait.  The
+            # short, cancellable pause only lets a writer finish a checkpoint;
+            # the next attempt recaptures mode, fence and the full snapshot
+            # budget from scratch.
+            controls.checkpoint()
+            time.sleep(PUBLICATION_HEAD_RETRY_DELAY_SECONDS)
+            controls.checkpoint()
+            continue
+        except PublicationHeadsError:
+            raise
+        except Exception as exc:
+            raise PublicationHeadsError(
+                f"Semantic publication heads could not be observed: {type(exc).__name__}"
+            ) from exc
+        else:
+            last_snapshot_budget_error = None
+            break
+    if last_snapshot_budget_error is not None:
         raise PublicationHeadsError(
-            f"Semantic publication heads could not be observed: {type(exc).__name__}"
-        ) from exc
+            "Semantic publication heads could not be observed: "
+            f"{type(last_snapshot_budget_error).__name__}"
+        ) from last_snapshot_budget_error
     if schema_version is None:
         owner_head = _empty_owner_head(
             "semantic",
@@ -704,6 +1081,7 @@ def observe_integrated_owner_heads(
     snapshot_budget: SQLiteSnapshotBudget | None = None,
     deadline_monotonic: float | None = None,
     cancellation_check: Callable[[], bool | None] | None = None,
+    _writer_lease: _SemanticOwnerLease | None = None,
 ) -> tuple[StateOwnerHead, ...]:
     """Observe the fresh Semantic owner head through a bounded read-only fence.
 
@@ -719,7 +1097,7 @@ def observe_integrated_owner_heads(
         cancellation_check=cancellation_check,
     )
     selected = _state_directory(state_directory)
-    semantic = _observe_semantic(selected, controls)
+    semantic = _observe_semantic(selected, controls, owner_lease=_writer_lease)
     return (semantic.owner_head,)
 
 
@@ -729,6 +1107,7 @@ def observe_semantic_generation_heads(
     snapshot_budget: SQLiteSnapshotBudget | None = None,
     deadline_monotonic: float | None = None,
     cancellation_check: Callable[[], bool | None] | None = None,
+    _writer_lease: _SemanticOwnerLease | None = None,
 ) -> tuple[tuple[str, int], ...]:
     """Return every validated published Semantic ``(model, generation)`` head."""
 
@@ -738,7 +1117,11 @@ def observe_semantic_generation_heads(
         cancellation_check=cancellation_check,
     )
     selected = _state_directory(state_directory)
-    return _observe_semantic(selected, controls).generation_heads
+    return _observe_semantic(
+        selected,
+        controls,
+        owner_lease=_writer_lease,
+    ).generation_heads
 
 
 __all__ = [

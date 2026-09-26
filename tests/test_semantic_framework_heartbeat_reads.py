@@ -524,9 +524,15 @@ def test_semantic_index_failure_only_suggests_model_cache_for_typed_model_error(
 ) -> None:
     from neocortex.semantic.semantic_config import SemanticModelUnavailableError
 
+    events: list[tuple[str, object]] = []
     execution = cast(
         cli_semantic._SemanticIndexExecution,
-        SimpleNamespace(results=(), scope_timings=()),
+        SimpleNamespace(
+            args=SimpleNamespace(),
+            results=(),
+            scope_timings=(),
+            result_sink=lambda scope, value: events.append((scope, value)),
+        ),
     )
     failure = (
         SemanticModelUnavailableError("local_snapshot_missing")
@@ -535,6 +541,9 @@ def test_semantic_index_failure_only_suggests_model_cache_for_typed_model_error(
     )
 
     assert cli_semantic._semantic_index_failure(execution, failure, print_output=True) == 2
+    assert execution.args._semantic_failure is failure
+    assert events and events[0][0] == "__error__"
+    assert events[0][1]["error_type"] == type(failure).__name__
     output = capsys.readouterr().out
     assert ("--semantic-model-cache" in output) is expects_model_hint
     if not expects_model_hint:
