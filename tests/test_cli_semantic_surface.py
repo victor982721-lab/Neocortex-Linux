@@ -472,3 +472,23 @@ def test_semantic_validation_error_precedence_remains_stable(
 
 
 # endregion [02]
+
+
+def test_integrated_resume_preserves_explicit_offline_model_options() -> None:
+    args = build_parser().parse_args([
+        "--resume-run", "6", "--json", "--semantic-model-cache", "/fixture/models",
+        "--semantic-threads", "2",
+    ])
+    validate_arguments(args)
+    assert args.resume_run == 6
+    assert args.json_output is True
+    assert str(args.semantic_model_cache) == "/fixture/models"
+    assert args.semantic_threads == 2
+
+
+def test_ordinary_route_does_not_gain_semantic_action_from_model_options() -> None:
+    args = build_parser().parse_args([
+        "--route", "pdf", "--semantic-model-cache", "/fixture/models",
+    ])
+    with pytest.raises(SystemExit, match="semantic options require"):
+        validate_arguments(args)

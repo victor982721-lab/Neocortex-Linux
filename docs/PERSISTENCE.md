@@ -186,6 +186,32 @@ publicación como sustituto de observar los heads del owner.
 Los candidatos del pipeline integrado usan una publicación específica del writer
 Framework, no ese modo genérico; véase [concurrencia](ARCHITECTURE.md#concurrencia-y-recuperación).
 
+La proyección integrada conserva sólo candidatos y evidencia de selección de la
+generación actual. Su presupuesto automático deriva del espacio libre real y,
+en tmpfs, de la memoria disponible limitada por cgroups. Las reservas pendientes
+y bytes materializados se distinguen entre proyecciones del proceso para no
+contar dos veces el espacio ya ocupado. Cada lote limita también `max_page_count`
+a su reserva, incluyendo páginas SQLite aún sucias; un límite explícito del caller
+siempre estrecha el automático. La admisión inicial puede esperar con cancelación;
+un holder que ya retiene bytes, o depende de otro holder del mismo hilo, no espera
+circularmente. Presión imposible, timeout y cancelación conservan el owner durable.
+No cambia el techo predeterminado de 256 MiB de snapshots públicos no coordinados.
+
+PDF selecciona candidatos desde su writer existente: fija orden y filtros en una
+tabla TEMP de metadatos, con reserva para tabla/ordenamiento, caché de páginas
+acotada y paginación de 256 filas. No copia texto, páginas, FTS ni históricos para
+enumerar. Las escrituras posteriores de documentos no alteran esa selección.
+El owner valida identidad física por operación; SQL y paginación conservan
+cancelación, y el cierre retira sólo la tabla temporal propia. Los consumidores
+de candidatos Framework conservan una conexión validada por iterador, no una
+copia o apertura por lote, y la cierran en el hilo propietario también ante error.
+
+Los errores de presupuesto incluyen owner/operación, modo, límite, bytes observados
+o requeridos, ubicación temporal y recursos observables. `SQLITE_FULL` puede ser
+un techo de páginas o una cuota de almacenamiento: si la observación no distingue
+ambos, se declara esa ambigüedad y no se presenta como falta confirmada de RAM.
+Después de un rollback SQLite, los bytes requeridos pueden ser desconocidos.
+
 Una consulta pública no crea bases ausentes, no migra y no hace checkpoint. Los
 schemas `future`, incompatibles o corruptos producen abstención tipada.
 

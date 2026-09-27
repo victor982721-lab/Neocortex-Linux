@@ -22,6 +22,7 @@ from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, 
 from neocortex.workflow.actions.action_policy import same_snapshot
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.runtime.control.elastic_workers import current_worker_cancellation, elastic_map
+from neocortex.runtime.control.io_identity import io_device_key
 from ..media_resources import MediaTaskGate, media_gate_scope
 from neocortex.runtime.control.global_resources import current_resource_grant
 from neocortex.foundation.file_identity import file_key_from_snapshot
@@ -596,8 +597,10 @@ class VideoRoute:
         with elastic_map(
             inspect, candidates(), gate=MediaTaskGate(self.memory_gate),
             max_workers=self.config.workers, estimated_bytes=video_worker_memory_reservation(self.config),
-            native_threads=1, io_slots=1, io_device=lambda item: f"dev:{item[0].volume_id:x}",
+            native_threads=1, io_slots=1,
+            io_device=lambda item: io_device_key(item[0].volume_id),
             phase="video-inspect", cancellation=self.cancellation,
+            producer_mode="pure",
         ) as results:
             for snapshot, mime, outcome, local in results:
                 for name in ("ocr_attempts", "ocr_positive", "ocr_chars", "ocr_failures"):

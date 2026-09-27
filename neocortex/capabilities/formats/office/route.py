@@ -18,6 +18,7 @@ from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, 
 
 from neocortex.workflow.actions.action_policy import same_snapshot
 from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.runtime.control.io_identity import io_device_key
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
 from neocortex.runtime.control.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
 from neocortex.workflow.findings import ReviewCandidate
@@ -209,6 +210,9 @@ class OfficeRoute:
         if self.config.max_documents is not None and self.config.max_documents < 1:
             raise ValueError("office max_documents must be positive")
 
+    def _processing_signature(self, format_name: str) -> str:
+        return self.config.processing_signature_for(format_name)
+
     def _selected_counts(self) -> tuple[int, int, int]:
         totals = [
             self.framework_state.selected_route_candidate_counts(
@@ -282,7 +286,7 @@ class OfficeRoute:
             snapshot,
             format_name,
             self.run_id,
-            processing_signature=self.config.processing_signature,
+            processing_signature=self._processing_signature(format_name),
             cache_status=status,
             max_text_chars=self.config.max_text_chars,
         )
@@ -438,7 +442,7 @@ class OfficeRoute:
         def prepare(work: _OfficeWork):
             _store_inventory(connection, work.snapshot, work.format_name, self.run_id)
             cached = _cached_document(
-                connection, work.snapshot, self.config.processing_signature,
+                connection, work.snapshot, self._processing_signature(work.format_name),
                 format_name=work.format_name, max_text_chars=work.max_text_chars,
                 validate_representation=False,
             )
@@ -458,7 +462,8 @@ class OfficeRoute:
             ),
             executor_kind="process", cancellation=self.cancellation,
             prepare=prepare, phase="office.extract", native_threads=1, io_slots=1,
-            io_device=lambda work: str(work.snapshot.volume_id),
+            io_device=lambda work: io_device_key(work.snapshot.volume_id),
+            producer_mode="pure",
         ) as results:
             for result in results:
                 self.cancellation.checkpoint()
@@ -498,7 +503,7 @@ class OfficeRoute:
                 )
             _store_success(
                 connection, snapshot, result.document,
-                self.config.processing_signature, self.run_id,
+                self._processing_signature(result.work.format_name), self.run_id,
             )
             self._queue_success(
                 reconciliations, snapshot,
@@ -514,7 +519,7 @@ class OfficeRoute:
             )
         _store_error(
             connection, snapshot, result.work.format_name,
-            self.config.processing_signature, self.run_id, failure,
+            self._processing_signature(result.work.format_name), self.run_id, failure,
         )
         store_findings_compat(
             self.framework_state,
@@ -566,7 +571,7 @@ class OfficeRoute:
         cached = _cached_document(
             connection,
             snapshot,
-            self.config.processing_signature,
+            self._processing_signature(format_name),
             format_name=format_name,
             max_text_chars=self.config.max_text_chars,
             validate_representation=False,

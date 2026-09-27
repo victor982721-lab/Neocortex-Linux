@@ -1,6 +1,7 @@
 """Incremental cross-format catalog built from durable document text caches."""
 
 from __future__ import annotations
+from neocortex.runtime.control.io_identity import io_device_key
 
 from neocortex.persistence.operational_freshness import next_operational_identity, require_operational_identity
 import hashlib
@@ -1276,7 +1277,7 @@ def _preserve_catalog_outside_scope(
     database_path = Path(str(connection.execute("PRAGMA database_list").fetchone()[2]))
     admission = nullcontext() if gate is None else gate.admit(
         CATALOG_RESULT_BUFFER_BYTES, io_slots=1,
-        io_device=str(database_path.stat().st_dev), phase="catalog_preserve_scope",
+        io_device=io_device_key(database_path.stat().st_dev), phase="catalog_preserve_scope",
     )
     pending: list[str] = []
 
@@ -1457,7 +1458,7 @@ def try_reuse_catalog(
     gate = resource_gate("catalog")
     observation = nullcontext() if gate is None else gate.admit(
         CATALOG_RESULT_BUFFER_BYTES, io_slots=1,
-        io_device=str(source_path.parent.stat().st_dev), phase="catalog_replay",
+        io_device=io_device_key(source_path.parent.stat().st_dev), phase="catalog_replay",
     )
     with observation as grant, (nullcontext() if grant is None else resource_grant_scope(grant)):
         prepared = _prepare_catalog_replay(
@@ -1562,7 +1563,8 @@ def _catalog_classification_results(
             classify_catalog_task, documents, prepare=prepare, gate=gate,
             estimated_bytes=lambda document: CATALOG_RESULT_BUFFER_BYTES + 4 * (taxonomy_bytes + retained_catalog_bytes(document)),
             executor_kind="process", native_threads=1, cancellation=cancellation,
-            io_slots=1, io_device=str(source_view_path.stat().st_dev), phase="catalog_classify",
+            producer_mode="pure",
+            io_slots=1, io_device=io_device_key(source_view_path.stat().st_dev), phase="catalog_classify",
         ) as results:
             yield results
         return
@@ -1575,7 +1577,7 @@ def _catalog_classification_results(
             from neocortex.runtime.control.global_resources import resource_grant_scope
             with gate.admit(
                 CATALOG_RESULT_BUFFER_BYTES + 4 * retained_catalog_bytes(document),
-                io_slots=1, io_device=str(source_view_path.stat().st_dev), phase="catalog_classify_local",
+                io_slots=1, io_device=io_device_key(source_view_path.stat().st_dev), phase="catalog_classify_local",
             ) as grant, resource_grant_scope(grant):
                 prepared = prepare(document)
                 if isinstance(prepared, ImmediateResult):
@@ -1729,7 +1731,7 @@ def _update_document_catalog_source(
             # Existing resident results must be able to drain under memory
             # pressure, including the final partial batch after map.close().
             with buffer_grant.drain_admission(
-                io_slots=1, io_device=str(catalog_path.stat().st_dev), phase="catalog_write",
+                io_slots=1, io_device=io_device_key(catalog_path.stat().st_dev), phase="catalog_write",
             ), _CATALOG_WRITE_LOCK:
                 try:
                     for result in pending:
@@ -2226,7 +2228,7 @@ def _publish_catalog_build(
             cancellation.checkpoint()
         admission = nullcontext() if gate is None else gate.admit(
             CATALOG_RESULT_BUFFER_BYTES, io_slots=1,
-            io_device=str(database_path.stat().st_dev), phase="catalog_publication",
+            io_device=io_device_key(database_path.stat().st_dev), phase="catalog_publication",
         )
         with admission:
             prepared = _prepare_catalog_publication(

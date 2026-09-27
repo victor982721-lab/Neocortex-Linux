@@ -138,6 +138,18 @@ def _extract_xlsx(
         cancellation=cancellation,
         max_cells=max_cells,
     )
+    # Keep genuinely orphaned dictionary entries discoverable, but separate
+    # them from the canonical cell projection.  Referenced values are already
+    # emitted exactly once per cell; adding the complete dictionary here would
+    # duplicate every shared cell and make the result depend on XLSX encoding.
+    referenced_shared_strings = {
+        int(cell.raw_value)
+        for cell in cells
+        if cell.cell_type == "shared_string" and cell.raw_value is not None
+    }
+    for index, value in enumerate(shared_strings):
+        if index not in referenced_shared_strings:
+            accumulator.add(f"XLSX_SHARED_STRING_ORPHAN {value}")
     _extract_remaining_xlsx_parts(
         archive,
         selected=selected,
@@ -502,7 +514,12 @@ def _extract_xlsx_shared_strings(
                 root = element
             if event != "end":
                 continue
-            appended = _consume_shared_string_element(element, accumulator, values)
+            # sharedStrings.xml is a lookup dictionary, not an additional
+            # document part.  The canonical text projection is emitted once
+            # per referenced cell below; adding dictionary entries here would
+            # duplicate visible values and make text limits depend on whether
+            # the producer chose shared or inline strings.
+            appended = _consume_shared_string_element(element, values)
             if appended and len(values) % 1024 == 0:
                 cancellation.checkpoint()
                 if root is not None:
@@ -514,12 +531,10 @@ def _extract_xlsx_shared_strings(
 
 def _consume_shared_string_element(
     element: ET.Element,
-    accumulator: _TextAccumulator,
     values: list[str],
 ) -> bool:
     local = _local_name(element.tag)
     if local == "t":
-        accumulator.add(element.text)
         return False
     if local != "si":
         return False

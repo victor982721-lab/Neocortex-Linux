@@ -17,6 +17,14 @@ from neocortex.foundation.processing_provenance import (
 from neocortex.safety.route_filters import CandidateSelection
 
 OFFICE_ROUTE_VERSION = "office-route-v2"
+# Keep extraction contracts per format.  A changed ODT/XLSX representation must
+# invalidate only that format; PPTX retains the route-v2 signature for
+# compatibility because this change does not alter its extractor.
+OFFICE_EXTRACTION_CONTRACTS: Mapping[str, str | None] = {
+    "xlsx": "office-xlsx-extraction-v2",
+    "pptx": None,
+    "odt": "office-odt-extraction-v2",
+}
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 ODT_MIME = "application/vnd.oasis.opendocument.text"
@@ -78,17 +86,35 @@ class OfficeRouteConfig:
     def processing_signature(self) -> str:
         return self.processing_provenance.signature
 
+    def processing_signature_for(self, format_name: str) -> str:
+        """Return the selective cache identity for one Office format."""
+
+        try:
+            extraction_contract = OFFICE_EXTRACTION_CONTRACTS[format_name]
+        except KeyError:
+            raise ValueError(f"unsupported Office format: {format_name}") from None
+        return _office_processing_provenance(
+            self.max_text_chars,
+            extraction_contract,
+        ).signature
+
     @property
     def processing_provenance(self) -> ProcessingProvenance:
         return _office_processing_provenance(self.max_text_chars)
 
 
 @processing_provenance_cache(maxsize=64)
-def _office_processing_provenance(max_text_chars: int) -> ProcessingProvenance:
+def _office_processing_provenance(
+    max_text_chars: int,
+    extraction_contract: str | None = None,
+) -> ProcessingProvenance:
+    configuration: dict[str, object] = {"max_text_chars": max_text_chars}
+    if extraction_contract is not None:
+        configuration["extraction_contract"] = extraction_contract
     return build_processing_provenance(
         "office-route",
         OFFICE_ROUTE_VERSION,
-        {"max_text_chars": max_text_chars},
+        configuration,
         (
             python_runtime_component(),
             distribution_component("hashlib", "hashlib"),

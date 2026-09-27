@@ -51,6 +51,7 @@ from neocortex.runtime.control.bounded_subprocess import (
     run_bounded_capture,
 )
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.io_identity import io_device_key
 from neocortex.runtime.control.memory_runtime import MemoryBudgetExceeded
 from neocortex.semantic.derivation_contracts import (
     CapabilityFailure,
@@ -1106,19 +1107,31 @@ class TextRoute:
                 self._reusable_derivation(connection, file_key, resource, revision, signature)
                 if reuse_allowed else None
             )
-            work = self._begin_derivation(
-                connection, candidate_provenance, resource, revision, binding, selection,
-                causation_id=None if reusable is None else reusable[0].producer_receipt_id,
-                cache_observation=None if reusable is None else reusable[0].observation,
-            )
             if reusable is not None:
-                # An observation belongs to this owner/connection. Consume it
-                # before preparing another candidate can mutate the same state.
-                self._publish_cache_hit(connection, work, snapshot, reusable[0])
+                # A cache hit has no expensive work to protect with a separate
+                # committed ``running`` fence.  Persist its attempt and
+                # terminal receipt in one owner transaction, preserving the
+                # observation fence while removing one BEGIN/COMMIT pair per
+                # replay hit in the coordinated path.
+                self._publish_cache_hit_atomic(
+                    connection,
+                    candidate_provenance,
+                    resource,
+                    revision,
+                    binding,
+                    selection,
+                    snapshot,
+                    reusable[0],
+                )
                 delta = dict.fromkeys(counters, 0)
                 delta["cache_hits"] = 1
                 _record_extracted_counters(delta, reusable[1])
                 return immediate(**delta)
+            work = self._begin_derivation(
+                connection, candidate_provenance, resource, revision, binding, selection,
+                causation_id=None,
+                cache_observation=None,
+            )
             if selection.selected is None:
                 retryable = self._publish_error(
                     connection, work, snapshot, mime, TextCapabilityUnavailableError(selection),
@@ -1137,7 +1150,8 @@ class TextRoute:
                 ),
                 prepare=prepare, executor_kind="process", cancellation=self.cancellation,
                 native_threads=1, io_slots=1,
-                io_device=lambda item: str(item[1].volume_id), phase="text.extract",
+                io_device=lambda item: io_device_key(item[1].volume_id),
+                completion_order=True, producer_mode="pure", phase="text.extract",
             ) as results:
                 for result in results:
                     self.cancellation.checkpoint()
@@ -1155,6 +1169,8 @@ class TextRoute:
                                 raise text_worker_failure(result.failure)
                             if result.extracted is None:
                                 raise RuntimeError("Text worker returned no extracted representation")
+                            if not isinstance(result.extracted, _ExtractedText):
+                                raise RuntimeError("Text worker returned an invalid extracted representation")
                             if snapshot_path(snapshot.path) != snapshot:
                                 raise FileChangedError("Text source changed before publication")
                         except handled_errors as exc:
@@ -1512,6 +1528,7 @@ class TextRoute:
         *,
         causation_id: str | None,
         cache_observation: TextCacheObservation | None = None,
+        commit: bool = True,
     ) -> _TextDerivationWork:
         stage = _stage_descriptor(provenance)
         recorded_ns = time.time_ns()
@@ -1557,6 +1574,7 @@ class TextRoute:
                 causation_id=causation_id,
             ),
             cache_observation=cache_observation,
+            commit=commit,
         )
         return _TextDerivationWork(
             attempt_id=attempt_id,
@@ -1581,7 +1599,9 @@ class TextRoute:
         reusable: TextReusableDerivation,
     ) -> None:
         file_key = file_key_from_snapshot(snapshot)
-        connection.execute("BEGIN IMMEDIATE")
+        owns_transaction = not connection.in_transaction
+        if owns_transaction:
+            connection.execute("BEGIN IMMEDIATE")
         try:
             if work.cache_observation is not None:
                 validate_text_cache_observation(connection, work.cache_observation)
@@ -1608,6 +1628,50 @@ class TextRoute:
                 reproducibility=_work_reproducibility(work.capability_selection),
                 document_file_key=file_key,
             )
+        except BaseException:
+            if owns_transaction:
+                connection.rollback()
+            raise
+        else:
+            if owns_transaction:
+                connection.commit()
+
+    def _publish_cache_hit_atomic(
+        self,
+        connection: sqlite3.Connection,
+        provenance: ProcessingProvenance,
+        resource: ResourceRef,
+        revision: RevisionRef,
+        input_binding: InputBinding,
+        capability_selection: CapabilitySelection,
+        snapshot: FileSnapshot,
+        reusable: TextReusableDerivation,
+    ) -> None:
+        """Publish one validated replay hit with one SQLite transaction.
+
+        Cache-hit publication does not need a durable running interval: no
+        parser/model is admitted between the validation and terminal receipt.
+        Keeping begin + terminal publication together retains crash atomicity
+        while avoiding the former two-transaction replay path.  This helper is
+        intentionally used only by the coordinated replay path; the serial
+        path keeps its existing begin fence for compatibility with its
+        cancellation/crash contract.
+        """
+
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            work = self._begin_derivation(
+                connection,
+                provenance,
+                resource,
+                revision,
+                input_binding,
+                capability_selection,
+                causation_id=reusable.producer_receipt_id,
+                cache_observation=reusable.observation,
+                commit=False,
+            )
+            self._publish_cache_hit(connection, work, snapshot, reusable)
         except BaseException:
             connection.rollback()
             raise

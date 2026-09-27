@@ -13,6 +13,7 @@ import os
 import sqlite3
 import stat
 import time
+import tempfile
 from collections.abc import Callable
 from contextlib import AbstractContextManager, closing
 from pathlib import Path
@@ -27,7 +28,6 @@ from neocortex.safety.corpus_access import (
 )
 from neocortex.persistence.framework_schema import initialize_framework_schema
 from neocortex.persistence.sqlite_immutable import (
-    DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES,
     DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS,
     ImmutableSQLiteUnavailable,
     SQLiteSnapshotBudget,
@@ -70,7 +70,15 @@ class _RouteSnapshotBudget(Protocol):
 
     def checkpoint(self) -> None: ...
 
-    def before_write(self, size: int) -> None: ...
+    def before_write(self, size: int, *, allocated_bytes: int = 0) -> None: ...
+
+    @property
+    def write_ceiling(self) -> int: ...
+
+
+def _constrain_projection_target(target: sqlite3.Connection, budget: _RouteSnapshotBudget) -> None:
+    page_size = int(target.execute("PRAGMA page_size").fetchone()[0])
+    target.execute(f"PRAGMA max_page_count={max(1, budget.write_ceiling // page_size)}")
 
 
 _ROUTE_CANDIDATE_PROJECTION_TABLE = f"""
@@ -171,7 +179,11 @@ def _copy_route_projection_rows(
                 for row in batch
                 for value in row
             )
-            budget.before_write(max(4096, (estimate * 2) + 8192))
+            allocated = int(target.execute("PRAGMA page_count").fetchone()[0]) * int(
+                target.execute("PRAGMA page_size").fetchone()[0]
+            )
+            budget.before_write(max(4096, (estimate * 2) + 8192), allocated_bytes=allocated)
+            _constrain_projection_target(target, budget)
             target.executemany(insert_sql, batch)
             budget.checkpoint()
 
@@ -193,6 +205,8 @@ def _project_route_candidate_view(
     reader or corpus access is opened here.
     """
 
+    budget.before_write(64 * 1024)
+    _constrain_projection_target(target, budget)
     target.execute(_ROUTE_CANDIDATE_PROJECTION_TABLE)
     target.execute(_ROUTE_CANDIDATE_PROJECTION_INDEX)
     target.execute(_ROUTE_REVIEW_PROJECTION_TABLE)
@@ -530,6 +544,7 @@ class FrameworkState(FrameworkStateContentMixin, FrameworkStateRunsMixin, Framew
         run_id: int | None = None,
         generation: object | None = None,
         cancellation_check: Callable[[], bool | None] | None = None,
+        max_temporary_bytes: int | None = None,
     ) -> AbstractContextManager[Path]:
         """Lend the owned connection to publish one input view before workers.
 
@@ -542,14 +557,24 @@ class FrameworkState(FrameworkStateContentMixin, FrameworkStateRunsMixin, Framew
         if self._connection_owner_identity is None:
             raise ImmutableSQLiteUnavailable("route snapshot requires a durable SQLite owner")
         budget: SQLiteSnapshotBudget | None = None
+        if run_id is None and max_temporary_bytes is not None:
+            budget = SQLiteSnapshotBudget(
+                max_temporary_bytes=max_temporary_bytes,
+                cancellation_check=cancellation_check,
+            )
         if run_id is not None:
             durable = self.read_run_budget(run_id)
             timeout = DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS
             if durable is not None and durable.get("deadline_ns") is not None:
                 remaining = (int(durable["deadline_ns"]) - time.time_ns()) / 1_000_000_000
-                timeout = max(0.001, min(timeout, remaining))
-            budget = SQLiteSnapshotBudget(
-                max_temporary_bytes=DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES,
+                if remaining <= 0:
+                    raise _RunBudgetExceeded("time", durable)
+                timeout = min(timeout, remaining)
+            from .sqlite_immutable import automatic_snapshot_budget
+
+            budget = automatic_snapshot_budget(
+                Path(tempfile.gettempdir()),
+                max_temporary_bytes=max_temporary_bytes,
                 prepare_timeout_seconds=timeout,
                 cancellation_check=cancellation_check,
             )

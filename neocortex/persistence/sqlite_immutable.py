@@ -45,22 +45,11 @@ from typing import Iterator, Literal
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 
-class ImmutableSQLiteUnavailable(RuntimeError):
-    """A database cannot be proven safe for an immutable read."""
+from .sqlite_read_errors import ImmutableSQLiteUnavailable, SQLiteSnapshotBudgetExceeded
 
 
 class _SQLiteSnapshotSidecarRace(ImmutableSQLiteUnavailable):
     """A captured sidecar disappeared before its bounded copy completed."""
-
-
-class SQLiteSnapshotBudgetExceeded(ImmutableSQLiteUnavailable):
-    """A detached SQLite snapshot exceeded a bounded preparation budget."""
-
-    def __init__(self, reason: str) -> None:
-        if reason not in {"temporary_bytes", "prepare_time", "cancelled"}:
-            raise ValueError(f"unsupported SQLite snapshot budget reason: {reason}")
-        self.reason = reason
-        super().__init__(f"SQLite snapshot {reason.replace('_', ' ')} budget exhausted")
 
 
 DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES = 256 * 1024 * 1024
@@ -111,8 +100,11 @@ class SQLiteSnapshotBudget:
     cancellation_check: Callable[[], bool | None] | None = None
     monotonic_clock: Callable[[], float] = time.monotonic
     block_bytes: int = DEFAULT_SQLITE_SNAPSHOT_BLOCK_BYTES
+    resource_aware: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.resource_aware) is not bool:
+            raise TypeError("resource_aware must be a bool")
         if (
             isinstance(self.max_temporary_bytes, bool)
             or not isinstance(self.max_temporary_bytes, int)
@@ -137,6 +129,39 @@ class SQLiteSnapshotBudget:
         if not callable(self.monotonic_clock):
             raise TypeError("monotonic_clock must be callable")
         object.__setattr__(self, "prepare_timeout_seconds", float(self.prepare_timeout_seconds))
+
+
+def automatic_snapshot_budget(
+    root: Path,
+    *,
+    prepare_timeout_seconds: float,
+    cancellation_check: Callable[[], bool | None] | None = None,
+    max_temporary_bytes: int | None = None,
+) -> SQLiteSnapshotBudget:
+    """Choose a real-resource ceiling; an explicit caller limit only narrows it."""
+    from .sqlite_temporary_space import _resources
+
+    free, memory, memory_backed = _resources(root)
+    available = free
+    if memory_backed:
+        if memory is None:
+            raise SQLiteSnapshotBudgetExceeded("memory_pressure", available_memory_bytes="unknown")
+        available = min(available, memory)
+    # Leave ten percent for the rest of the run, plus each active projection's
+    # bounded page cache. The reservation check below is live, not this sample.
+    ceiling = available * 9 // 10
+    if max_temporary_bytes is not None:
+        if type(max_temporary_bytes) is not int or max_temporary_bytes <= 0:
+            raise ValueError("max_temporary_bytes must be positive")
+        ceiling = min(ceiling, max_temporary_bytes)
+    if ceiling <= 0:
+        raise SQLiteSnapshotBudgetExceeded("disk_space", free_bytes=free)
+    return SQLiteSnapshotBudget(
+        max_temporary_bytes=ceiling,
+        prepare_timeout_seconds=prepare_timeout_seconds,
+        cancellation_check=cancellation_check,
+        resource_aware=True,
+    )
 
 
 @dataclass(slots=True)
@@ -482,7 +507,7 @@ class SQLiteSnapshotReuseCache:
 class _SnapshotBudgetState:
     """Mutable accounting shared by one bounded snapshot preparation."""
 
-    __slots__ = ("_last_tree_bytes", "budget", "deadline", "metrics", "temporary_root")
+    __slots__ = ("_last_poll", "_last_tree_bytes", "_space", "budget", "deadline", "metrics", "temporary_root")
 
     def __init__(
         self,
@@ -501,6 +526,42 @@ class _SnapshotBudgetState:
         self.metrics = metrics
         self.temporary_root = temporary_root
         self._last_tree_bytes = 0
+        self._last_poll = 0.0
+        self._space = None
+        if budget.resource_aware:
+            from .sqlite_temporary_space import SQLiteTemporarySpace
+            self._space = SQLiteTemporarySpace(temporary_root)
+
+    def close(self) -> None:
+        if self._space is not None:
+            self._space.close()
+
+    @property
+    def write_ceiling(self) -> int:
+        """Hard target ceiling backed by the current aggregate reservation."""
+        return min(
+            self.budget.max_temporary_bytes,
+            self.budget.max_temporary_bytes if self._space is None else self._space.reserved,
+        )
+
+    def poll(self) -> None:
+        """Check control every SQL callback without stat'ing a tree each time."""
+        _check_snapshot_cancellation(self.budget, self.metrics)
+        now = self.budget.monotonic_clock()
+        if now >= self.deadline:
+            raise self._exceeded("prepare_time")
+        if now - self._last_poll >= 0.05:
+            self.checkpoint()
+
+    def _exceeded(self, reason: str, *, required: int | None = None) -> SQLiteSnapshotBudgetExceeded:
+        error = SQLiteSnapshotBudgetExceeded(reason)
+        error.add_context(
+            allowed_bytes=self.budget.max_temporary_bytes,
+            required_bytes="unknown" if required is None else required,
+            retained_bytes=self._last_tree_bytes,
+            temporary_root=self.temporary_root,
+        )
+        return error
 
     def _tree_bytes(self) -> int:
         total = 0
@@ -521,21 +582,32 @@ class _SnapshotBudgetState:
     def checkpoint(self) -> None:
         _check_snapshot_cancellation(self.budget, self.metrics)
         if self.budget.monotonic_clock() >= self.deadline:
-            raise SQLiteSnapshotBudgetExceeded("prepare_time")
+            raise self._exceeded("prepare_time")
         observed = self._tree_bytes()
         if self.budget.monotonic_clock() >= self.deadline:
-            raise SQLiteSnapshotBudgetExceeded("prepare_time")
+            raise self._exceeded("prepare_time")
         if observed > self.budget.max_temporary_bytes:
-            raise SQLiteSnapshotBudgetExceeded("temporary_bytes")
+            raise self._exceeded("temporary_bytes", required=observed)
         self._last_tree_bytes = observed
+        self._last_poll = self.budget.monotonic_clock()
         self.metrics.temporary_bytes = max(self.metrics.temporary_bytes, observed)
+        if self._space is not None:
+            self._space.observe(observed)
 
-    def before_write(self, size: int) -> None:
+    def before_write(self, size: int, *, allocated_bytes: int = 0) -> None:
         if size < 0:
             raise ValueError("SQLite snapshot block size cannot be negative")
         self.checkpoint()
-        if self._last_tree_bytes + size > self.budget.max_temporary_bytes:
-            raise SQLiteSnapshotBudgetExceeded("temporary_bytes")
+        required = max(self._last_tree_bytes, allocated_bytes) + size
+        if required > self.budget.max_temporary_bytes:
+            raise self._exceeded("temporary_bytes", required=required)
+        if self._space is not None:
+            self._space.reserve(
+                required - self._last_tree_bytes,
+                checkpoint=lambda: _check_snapshot_cancellation(self.budget, self.metrics),
+                deadline=self.deadline,
+                clock=self.budget.monotonic_clock,
+            )
 
     def record_prepare_time(self, started: float) -> None:
         elapsed = self.budget.monotonic_clock() - started
@@ -1614,6 +1686,7 @@ class SQLiteReadSession:
         self._temporary_database: Path | None = None
         self._opened = False
         self._prepare_deadline: float | None = None
+        self._budget_state: _SnapshotBudgetState | None = None
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -1788,9 +1861,34 @@ class SQLiteReadSession:
                 budget_state.checkpoint()
                 self._temporary_directory = temporary_directory
                 self._temporary_database = temporary_database
+                self._budget_state = budget_state
                 return self._connection
             except BaseException as exc:
                 last_error = exc
+                if isinstance(exc, SQLiteSnapshotBudgetExceeded):
+                    root = self.temp_root or Path(tempfile.gettempdir())
+                    try:
+                        free: object = shutil.disk_usage(root).free
+                    except OSError:
+                        free = "unknown"
+                    try:
+                        from .sqlite_temporary_space import _available_memory
+                        available_memory: object = _available_memory()
+                    except OSError:
+                        available_memory = "unknown"
+                    fence = self._source_fence
+                    exc.add_context(
+                        owner=self.path.name, source=self.path, operation="read_open",
+                        mode=self.mode.value, allowed_bytes=self.budget.max_temporary_bytes,
+                        main_bytes="unknown" if fence is None else fence.main.size,
+                        sidecar_bytes="unknown" if fence is None else {
+                            name: identity.size for name, identity in fence.sidecars
+                        },
+                        required_bytes="unknown" if fence is None else _sqlite_fence_bytes(fence),
+                        retained_bytes=self.metrics.temporary_bytes,
+                        temporary_root=root, free_bytes=free,
+                        available_memory_bytes="unknown" if available_memory is None else available_memory,
+                    )
                 # A snapshot connection can already exist when the final
                 # preparation checkpoint rejects the candidate.  Close it
                 # before removing its temporary owner directory; otherwise
@@ -1815,6 +1913,8 @@ class SQLiteReadSession:
                             "temporary SQLite snapshot cleanup failed: "
                             f"{type(cleanup_error).__name__}: {cleanup_error}"
                         )
+                if budget_state is not None:
+                    budget_state.close()
                 # Retry only a fence race.  An active WAL, a symlink, an
                 # invalid owner, and every other deterministic safety failure
                 # must retain its actionable reason on the first attempt.
@@ -1878,6 +1978,9 @@ class SQLiteReadSession:
                             "temporary SQLite snapshot cleanup failed: "
                             f"{type(cleanup_error).__name__}: {cleanup_error}"
                         )
+            if self._budget_state is not None:
+                self._budget_state.close()
+                self._budget_state = None
         if primary_error is not None:
             raise primary_error
 

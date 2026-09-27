@@ -785,7 +785,10 @@ def _validate_json_output(args: argparse.Namespace) -> None:
     if not getattr(args, "json_output", False):
         return
     selected_routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
-    if not (args.all or args.dedupe or selected_routes or args.route_only):
+    if not (
+        args.all or args.dedupe or selected_routes or args.route_only
+        or getattr(args, "resume_run", None) is not None
+    ):
         raise SystemExit("--json requires --all, --dedupe or --route")
 
 

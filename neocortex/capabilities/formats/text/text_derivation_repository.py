@@ -824,14 +824,26 @@ def begin_text_derivation_attempt_from_connection(
     start: TextDerivationAttemptStart,
     *,
     cache_observation: TextCacheObservation | None = None,
+    commit: bool = True,
 ) -> TextCacheObservation | None:
-    """Commit a running attempt through one caller-owned, currently idle connection."""
+    """Persist a running attempt through one caller-owned connection.
+
+    Normal callers keep the historical idle-connection/commit fence.  The
+    elastic Text route can set ``commit=False`` while it is publishing a
+    validated cache hit in the same owner transaction; no worker or SQLite
+    connection crosses that fence, and the caller remains responsible for
+    committing or rolling back the enclosing transaction.
+    """
 
     if not isinstance(start, TextDerivationAttemptStart):
         raise TypeError("start must be a TextDerivationAttemptStart")
-    if connection.in_transaction:
+    if commit and connection.in_transaction:
         raise ValueError("Text attempt begin requires an idle caller connection")
-    connection.execute("BEGIN IMMEDIATE")
+    owns_transaction = commit
+    if owns_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    elif not connection.in_transaction:
+        raise ValueError("commit=False requires an active caller transaction")
     try:
         if cache_observation is not None:
             validate_text_cache_observation(connection, cache_observation)
@@ -892,7 +904,8 @@ def begin_text_derivation_attempt_from_connection(
         refreshed_observation = None if cache_observation is None else TextCacheObservation(
             connection, cache_observation.data_version, connection.total_changes,
         )
-        connection.commit()
+        if owns_transaction:
+            connection.commit()
         return refreshed_observation
 
 

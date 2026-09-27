@@ -596,6 +596,7 @@ class PdfDerivedIndexer:
             lambda item: self._profile_document_admitted(*item), candidates(),
             capacity=capacity, prepare=prepare,
             max_workers=self.workers, cancellation=self.cancellation,
+            producer_mode="pure", completion_order=True,
         ) as results:
             for succeeded in results:
                 completed += 1

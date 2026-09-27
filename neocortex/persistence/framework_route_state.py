@@ -11,6 +11,7 @@ import sqlite3
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -201,158 +202,68 @@ class FrameworkRouteState:
             raise
         return connection
 
-    def iter_route_candidates(self, run_id: int, mime: str):
+    def _candidate_rows(
+        self, run_id: int, mime: str, *, prefix: bool = False,
+        route_name: str = "", selection: CandidateSelection | None = None,
+    ):
+        """One validated view per iterator, bounded keyset pages, owner-thread close.
+
+        Reopening a snapshot for every page copied live standalone owners
+        repeatedly and paid the immutable guard for each integrated batch.
+        Retaining this connection also prevents pages mixing generations.
+        """
+        predicate, parameters = ("1", ()) if selection is None else framework_selection_predicate(
+            selection, route_name=route_name, candidate_alias="c",
+        )
+        comparison = "LIKE" if prefix else "="
+        selector = f"{mime}%" if prefix else mime
         last_path = ""
-        while True:
-            connection = self._connect_candidates()
-            try:
+        connection = self._connect_candidates()
+        try:
+            while True:
                 rows = connection.execute(
-                    """SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns
-                    FROM route_candidates WHERE run_id=? AND mime=? AND path>?
-                    ORDER BY path LIMIT ?""",
-                    (run_id, mime, last_path, self.CANDIDATE_BATCH_SIZE),
+                    "SELECT c.path,c.volume_id,c.file_id,c.size,c.mtime_ns,c.birthtime_ns,c.mime "
+                    f"FROM route_candidates c WHERE c.run_id=? AND c.mime {comparison} ? "
+                    f"AND c.path>? AND {predicate} ORDER BY c.path LIMIT ?",
+                    (run_id, selector, last_path, *parameters, self.CANDIDATE_BATCH_SIZE),
                 ).fetchall()
-            finally:
-                connection.close()
-            if not rows:
-                return
-            for path, volume_id, file_id, size, mtime_ns, birthtime_ns in rows:
-                yield FileSnapshot(
-                    path,
-                    int(volume_id, 16),
-                    int(file_id, 16),
-                    int(size),
-                    int(mtime_ns),
-                    int(birthtime_ns),
-                )
-            last_path = str(rows[-1][0])
+                if not rows:
+                    return
+                yield from rows
+                last_path = str(rows[-1][0])
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _candidate_snapshot(row) -> FileSnapshot:
+        path, volume_id, file_id, size, mtime_ns, birthtime_ns = row[:6]
+        return FileSnapshot(path, int(volume_id, 16), int(file_id, 16), int(size), int(mtime_ns), int(birthtime_ns))
+
+    def iter_route_candidates(self, run_id: int, mime: str):
+        with closing(self._candidate_rows(run_id, mime)) as rows:
+            for row in rows:
+                yield self._candidate_snapshot(row)
 
     def iter_selected_route_candidates(
-        self,
-        run_id: int,
-        mime: str,
-        route_name: str,
-        selection: CandidateSelection,
+        self, run_id: int, mime: str, route_name: str, selection: CandidateSelection,
     ):
-        """Stream path/review-filtered candidates without materializing an allow-list."""
-
-        predicate, predicate_parameters = framework_selection_predicate(
-            selection,
-            route_name=route_name,
-            candidate_alias="c",
-        )
-        last_path = ""
-        while True:
-            connection = self._connect_candidates()
-            try:
-                rows = connection.execute(
-                    f"""SELECT c.path,c.volume_id,c.file_id,c.size,c.mtime_ns,
-                    c.birthtime_ns FROM route_candidates c
-                    WHERE c.run_id=? AND c.mime=? AND c.path>? AND {predicate}
-                    ORDER BY c.path LIMIT ?""",
-                    (
-                        run_id,
-                        mime,
-                        last_path,
-                        *predicate_parameters,
-                        self.CANDIDATE_BATCH_SIZE,
-                    ),
-                ).fetchall()
-            finally:
-                connection.close()
-            if not rows:
-                return
-            for path, volume_id, file_id, size, mtime_ns, birthtime_ns in rows:
-                yield FileSnapshot(
-                    path,
-                    int(volume_id, 16),
-                    int(file_id, 16),
-                    int(size),
-                    int(mtime_ns),
-                    int(birthtime_ns),
-                )
-            last_path = str(rows[-1][0])
+        with closing(self._candidate_rows(run_id, mime, route_name=route_name, selection=selection)) as rows:
+            for row in rows:
+                yield self._candidate_snapshot(row)
 
     def iter_route_candidates_by_prefix(self, run_id: int, mime_prefix: str):
-        last_path = ""
-        while True:
-            connection = self._connect_candidates()
-            try:
-                rows = connection.execute(
-                    """SELECT mime,path,volume_id,file_id,size,mtime_ns,birthtime_ns
-                    FROM route_candidates WHERE run_id=? AND mime LIKE ? AND path>?
-                    ORDER BY path LIMIT ?""",
-                    (
-                        run_id,
-                        f"{mime_prefix}%",
-                        last_path,
-                        self.CANDIDATE_BATCH_SIZE,
-                    ),
-                ).fetchall()
-            finally:
-                connection.close()
-            if not rows:
-                return
-            for mime, path, volume_id, file_id, size, mtime_ns, birthtime_ns in rows:
-                yield (
-                    str(mime),
-                    FileSnapshot(
-                        path,
-                        int(volume_id, 16),
-                        int(file_id, 16),
-                        int(size),
-                        int(mtime_ns),
-                        int(birthtime_ns),
-                    ),
-                )
-            last_path = str(rows[-1][1])
+        with closing(self._candidate_rows(run_id, mime_prefix, prefix=True)) as rows:
+            for row in rows:
+                yield str(row[6]), self._candidate_snapshot(row)
 
     def iter_selected_route_candidates_by_prefix(
-        self,
-        run_id: int,
-        mime_prefix: str,
-        route_name: str,
-        selection: CandidateSelection,
+        self, run_id: int, mime_prefix: str, route_name: str, selection: CandidateSelection,
     ):
-        predicate, predicate_parameters = framework_selection_predicate(
-            selection,
-            route_name=route_name,
-            candidate_alias="c",
-        )
-        last_path = ""
-        while True:
-            connection = self._connect_candidates()
-            try:
-                rows = connection.execute(
-                    f"""SELECT c.mime,c.path,c.volume_id,c.file_id,c.size,
-                    c.mtime_ns,c.birthtime_ns FROM route_candidates c
-                    WHERE c.run_id=? AND c.mime LIKE ? AND c.path>? AND {predicate}
-                    ORDER BY c.path LIMIT ?""",
-                    (
-                        run_id,
-                        f"{mime_prefix}%",
-                        last_path,
-                        *predicate_parameters,
-                        self.CANDIDATE_BATCH_SIZE,
-                    ),
-                ).fetchall()
-            finally:
-                connection.close()
-            if not rows:
-                return
-            for mime, path, volume_id, file_id, size, mtime_ns, birthtime_ns in rows:
-                yield (
-                    str(mime),
-                    FileSnapshot(
-                        path,
-                        int(volume_id, 16),
-                        int(file_id, 16),
-                        int(size),
-                        int(mtime_ns),
-                        int(birthtime_ns),
-                    ),
-                )
-            last_path = str(rows[-1][1])
+        with closing(self._candidate_rows(
+            run_id, mime_prefix, prefix=True, route_name=route_name, selection=selection,
+        )) as rows:
+            for row in rows:
+                yield str(row[6]), self._candidate_snapshot(row)
 
     def selected_route_candidate_counts(
         self,

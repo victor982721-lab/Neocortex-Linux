@@ -172,7 +172,7 @@ def writer_coordinated_sqlite_snapshot(
     def check_budget(_status: int = 0, _remaining: int = 0, _total: int = 0) -> None:
         nonlocal control_error
         try:
-            budget_state.checkpoint()
+            budget_state.poll()
         except BaseException as exc:
             control_error = exc
             raise
@@ -298,7 +298,15 @@ def writer_coordinated_sqlite_snapshot(
                         if projection_error is not None:
                             raise projection_error from exc
                         if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL:
-                            raise SQLiteSnapshotBudgetExceeded("temporary_bytes") from exc
+                            free = shutil.disk_usage(directory).free
+                            raise SQLiteSnapshotBudgetExceeded(
+                                "disk_space" if free < target_page_size else "temporary_bytes",
+                                allocated_bytes=int(target.execute("PRAGMA page_count").fetchone()[0]) * target_page_size,
+                                page_ceiling_bytes=int(target.execute("PRAGMA max_page_count").fetchone()[0]) * target_page_size,
+                                required_bytes="unknown_after_sqlite_rollback",
+                                free_bytes=free,
+                                origin="filesystem_full" if free < target_page_size else "page_ceiling_or_storage_quota",
+                            ) from exc
                         raise
                 check_budget()
                 # The output must be self-contained before any worker sees it.
@@ -399,6 +407,13 @@ def writer_coordinated_sqlite_snapshot(
     except BaseException as exc:
         if primary_error is None:
             primary_error = exc
+        if isinstance(exc, SQLiteSnapshotBudgetExceeded):
+            exc.add_context(
+                owner=source.name, source=source,
+                operation="projection" if projection is not None else "backup",
+                mode="writer_coordinated", allowed_bytes=budget.max_temporary_bytes,
+                retained_bytes=metrics.temporary_bytes, temporary_root=directory,
+            )
         raise
     finally:
         if not preparation_complete:
@@ -412,6 +427,8 @@ def writer_coordinated_sqlite_snapshot(
                 "SQLite coordinated snapshot temporary cleanup failed: "
                 f"{type(cleanup_failure).__name__}: {cleanup_failure}"
             )
+        finally:
+            budget_state.close()
 
 
 __all__ = ["SQLiteProgressConnection", "writer_coordinated_sqlite_snapshot"]

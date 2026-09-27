@@ -119,6 +119,7 @@ def test_multifile_parallelism_exceeds_old_four_worker_ceiling_and_holds_results
     observer.start()
     try:
         with elastic_map(work, range(8), gate=pool, estimated_bytes=5,
+                         producer_mode="pure",
                          cancellation=CancellationToken()) as results:
             assert next(results) == 0
             assert base.ram == 8 * (10 + 5)

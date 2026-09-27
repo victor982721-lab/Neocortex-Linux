@@ -10,9 +10,18 @@ import sqlite3
 import time
 import zlib
 from contextlib import ExitStack, closing, nullcontext
-from neocortex.runtime.control.elastic_workers import current_worker_cancellation, elastic_map
+from neocortex.runtime.control.elastic_workers import (
+    ImmediateResult,
+    current_worker_cancellation,
+    elastic_map,
+)
 from neocortex.runtime.control.gpu_runtime import cuda_memory_snapshot
-from ..media_resources import ResidentMediaGate, current_media_resource, media_gate_scope
+from ..media_resources import (
+    MediaTaskGate,
+    ResidentMediaGate,
+    current_media_resource,
+    media_gate_scope,
+)
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Protocol
@@ -49,10 +58,11 @@ from ..fts_lookup import (
     insert_format_fts_row,
     refresh_format_fts_path,
 )
-from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
 from neocortex.foundation.processing_provenance import ProcessingProvenance
 from neocortex.runtime.control.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
+from neocortex.runtime.control.io_identity import io_device_key
 from neocortex.workflow.findings import ReviewCandidate
 from neocortex.persistence.framework_route_state import (
     FrameworkRouteState,
@@ -93,6 +103,8 @@ VIDEO_MIME_TYPES = frozenset(
     }
 )
 AUDIO_COMMIT_BATCH = 8
+AUDIO_PROBE_MEMORY_BYTES = 16 * 1024 * 1024
+AUDIO_CACHE_MEMORY_BYTES = 4 * 1024 * 1024
 _PATH_COLLATION = sqlite_path_collation()
 AUDIO_REVIEW_REASON_CODES = frozenset(
     {
@@ -221,6 +233,19 @@ class _AudioReviewBuffer:
             # chunk fails, the unsubmitted suffix remains available for a
             # bounded retry without duplicating an already accepted prefix.
             del self.reconciliations[: len(batch)]
+
+
+@dataclass(frozen=True, slots=True)
+class _AudioCandidate:
+    snapshot: FileSnapshot
+    mime: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AudioProbeResult:
+    candidate: _AudioCandidate
+    probe: MediaProbe | None = None
+    failure: AudioProcessingError | OSError | None = None
 
 
 class _TranscriberLease:
@@ -470,10 +495,31 @@ class AudioRoute:
             return
         model_bytes = _estimated_audio_memory_bytes(self.config)
         result_bytes = max(64 * 1024 * 1024, self.config.max_transcript_chars * 8)
-        pool = ResidentMediaGate(
-            self.memory_gate, lambda: _TranscriberLease(self), resident_bytes=model_bytes,
-            cancellation=self.cancellation, variable_native_threads=True,
-            gpu_reservation=lambda: lease._gpu_reservation,
+        # Cache hits and probes use a small gate.  The model-resident pool is
+        # created lazily only after a successful probe, so no_audio and replay
+        # candidates never reserve Whisper/model memory.
+        cache_bytes = max(
+            AUDIO_CACHE_MEMORY_BYTES,
+            min(self.config.max_transcript_chars * 4, 64 * 1024 * 1024),
+        )
+        probe_bytes = max(AUDIO_PROBE_MEMORY_BYTES, cache_bytes)
+        probe_gate = MediaTaskGate(self.memory_gate)
+        probe_capacity = max(
+            1,
+            int(probe_gate.worker_capacity(
+                max_workers=self.config.workers,
+                estimated_bytes=probe_bytes,
+                native_threads=1,
+            )),
+        )
+        # The live probe capacity bounds the stage window.  Commit batching is
+        # independent: cache hits commit from owner-side ``prepare`` every
+        # AUDIO_COMMIT_BATCH, so the probe/transcription window is not reduced
+        # to the SQLite flush size.
+        batch_size = probe_capacity
+        legacy_probe = (
+            getattr(self.memory_gate, "coordinator", None) is None
+            and not callable(getattr(self.memory_gate, "native_budget", None))
         )
 
         def candidates():
@@ -484,66 +530,265 @@ class AudioRoute:
                 )
                 try:
                     for snapshot in iterator:
+                        self.cancellation.checkpoint()
                         if selected >= metrics.selected:
                             return
                         if self._exceeds_file_limit(snapshot):
                             continue
                         selected += 1
-                        _store_inventory(connection, snapshot, mime, self.run_id)
-                        cached = _cached_document(connection, snapshot, signature)
-                        if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
-                            continue
-                        if self._consume_current_transcript(connection, snapshot, mime, lease, metrics, reviews):
-                            continue
-                        try:
-                            probe = self._probe_candidate(snapshot)
-                            processing = lease.resolve_processing()
-                            cached = _cached_document(connection, snapshot, processing.signature)
-                            if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
-                                continue
-                        except (AudioProcessingError, OSError) as exc:
-                            self._transcribe_candidate(
-                                connection, snapshot, mime, signature, lease, metrics, reviews,
-                                prepared=(None, exc),
-                            )
-                            continue
-                        yield snapshot, mime, probe
+                        # Enumeration deliberately performs no admission,
+                        # probing, model resolution, or per-file blocking I/O.
+                        yield _AudioCandidate(snapshot, mime)
                 finally:
                     close = getattr(iterator, "close", None)
                     if close is not None:
                         close()
 
-        def execute(payload):
-            snapshot, mime, probe = payload
-            local_lease = current_media_resource()
-            local_lease._runtime = lease._runtime
-            local_lease.processing = lease.processing
+        def prepare_probe(candidate: _AudioCandidate):
+            snapshot, mime = candidate.snapshot, candidate.mime
+            _store_inventory(connection, snapshot, mime, self.run_id)
+            cached = _cached_document(connection, snapshot, signature)
+            if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
+                self._commit_batch(connection, metrics, reviews)
+                return ImmediateResult(None)
+            if self._consume_current_transcript(
+                connection, snapshot, mime, lease, metrics, reviews,
+            ):
+                self._commit_batch(connection, metrics, reviews)
+                return ImmediateResult(None)
+            return candidate
+
+        def probe(candidate: _AudioCandidate) -> _AudioProbeResult | None:
             try:
-                _, result = self._transcribe(snapshot, local_lease, probe=probe)
-                return snapshot, mime, probe, result
+                # The map owns the small probe grant.  Do not call
+                # _probe_candidate here: that helper would acquire a second
+                # admission while the map's first grant is still retained.
+                return _AudioProbeResult(
+                    candidate,
+                    probe=self._probe_candidate_admitted(candidate.snapshot),
+                )
             except (AudioProcessingError, OSError) as exc:
-                return snapshot, mime, probe, exc
+                return _AudioProbeResult(candidate, failure=exc)
+
+        transcription_pool: ResidentMediaGate | None = None
+
+        def transcribe_batch(probe_batch: list[_AudioProbeResult]) -> None:
+            nonlocal transcription_pool
+            successful = [
+                result for result in probe_batch
+                if result.probe is not None and result.failure is None
+            ]
+            if not successful:
+                return
+            # Resolve runtime/provenance only after a real audio stream was
+            # observed.  This keeps no_audio and cache-only replays model-free.
+            effective_signature = lease.resolve_processing().signature
+            ready: list[_AudioProbeResult] = []
+            for result in successful:
+                candidate = result.candidate
+                cached = _cached_document(
+                    connection,
+                    candidate.snapshot,
+                    effective_signature,
+                )
+                # This is the one post-probe cache/retry decision.  The
+                # prepared transcription path below deliberately does not
+                # look up the row again, so a claimed retry cannot be replaced
+                # by the error that motivated it.
+                if self._consume_cached(
+                    connection,
+                    candidate.snapshot,
+                    candidate.mime,
+                    cached,
+                    metrics,
+                    reviews,
+                ):
+                    self._commit_batch(connection, metrics, reviews)
+                else:
+                    ready.append(result)
+            if not ready:
+                return
+            if transcription_pool is None:
+                transcription_pool = ResidentMediaGate(
+                    self.memory_gate,
+                    lambda: _TranscriberLease(self),
+                    resident_bytes=model_bytes,
+                    cancellation=self.cancellation,
+                    variable_native_threads=True,
+                    gpu_reservation=lambda: lease._gpu_reservation,
+                )
+
+            def execute(result: _AudioProbeResult):
+                assert result.probe is not None
+                local_lease = current_media_resource()
+                local_lease._runtime = lease._runtime
+                local_lease.processing = lease.processing
+                try:
+                    _, transcript = self._transcribe(
+                        result.candidate.snapshot,
+                        local_lease,
+                        probe=result.probe,
+                    )
+                    return result.candidate, result.probe, transcript
+                except (AudioProcessingError, OSError) as exc:
+                    return result.candidate, result.probe, exc
+
+            workers = min(
+                self.config.workers or len(ready),
+                len(ready),
+            )
+            with elastic_map(
+                execute,
+                ready,
+                gate=transcription_pool,
+                max_workers=max(1, workers),
+                estimated_bytes=lambda _result: result_bytes,
+                native_threads=1,
+                io_slots=1,
+                io_device=lambda item: io_device_key(item.candidate.snapshot.volume_id),
+                completion_order=True,
+                phase="audio-transcribe",
+                cancellation=self.cancellation,
+                producer_mode="pure",
+            ) as results:
+                for candidate, probe_result, outcome in results:
+                    self.cancellation.checkpoint()
+                    self._transcribe_candidate(
+                        connection,
+                        candidate.snapshot,
+                        candidate.mime,
+                        signature,
+                        lease,
+                        metrics,
+                        reviews,
+                        prepared=(probe_result, outcome),
+                    )
+                    self._commit_batch(connection, metrics, reviews)
+
+        candidate_iterator = iter(candidates())
+
+        def take_batch() -> tuple[list[_AudioCandidate], bool, bool]:
+            batch: list[_AudioCandidate] = []
+            exhausted = False
+            cancelled = False
+            for _ in range(batch_size):
+                try:
+                    batch.append(next(candidate_iterator))
+                except StopIteration:
+                    exhausted = True
+                    break
+                except CancellationRequested:
+                    cancelled = True
+                    break
+            return batch, exhausted, cancelled
+
+        def drain_cancelled_cache_prefix(batch: list[_AudioCandidate]) -> None:
+            """Publish only cheap cache hits already enumerated before cancel."""
+
+            for candidate in batch:
+                prepared = prepare_probe(candidate)
+                if not isinstance(prepared, ImmediateResult):
+                    break
+            self._commit_batch(connection, metrics, reviews, force=True)
 
         try:
-            with elastic_map(
-                execute, candidates(), gate=pool,
-                max_workers=min(self.config.workers or metrics.selected, metrics.selected),
-                estimated_bytes=lambda _payload: result_bytes, native_threads=1,
-                io_slots=1, io_device=lambda item: f"dev:{item[0].volume_id:x}",
-                phase="audio-transcribe", cancellation=self.cancellation,
-            ) as results:
-                for completed in results:
-                    if completed is not None:
-                        snapshot, mime, probe, outcome = completed
-                        self._transcribe_candidate(
-                            connection, snapshot, mime, signature, lease, metrics, reviews,
-                            prepared=(probe, outcome),
-                        )
-                    connection.commit()
-                    reviews.flush()
-                    self._report(metrics)
+            while True:
+                batch, exhausted, cancelled = take_batch()
+                if not batch:
+                    if cancelled:
+                        self._commit_batch(connection, metrics, reviews, force=True)
+                        self.cancellation.checkpoint()
+                    break
+
+                if cancelled:
+                    drain_cancelled_cache_prefix(batch)
+                    self.cancellation.checkpoint()
+
+                probe_results: list[_AudioProbeResult] = []
+                if legacy_probe:
+                    for candidate in batch:
+                        prepared = prepare_probe(candidate)
+                        if isinstance(prepared, ImmediateResult):
+                            continue
+                        try:
+                            probe_result = _AudioProbeResult(
+                                candidate,
+                                probe=self._probe_candidate_admitted(candidate.snapshot),
+                            )
+                        except (AudioProcessingError, OSError) as exc:
+                            probe_result = _AudioProbeResult(candidate, failure=exc)
+                        probe_results.append(probe_result)
+                        if probe_result.failure is not None:
+                            self._transcribe_candidate(
+                                connection,
+                                candidate.snapshot,
+                                candidate.mime,
+                                signature,
+                                lease,
+                                metrics,
+                                reviews,
+                                prepared=(None, probe_result.failure),
+                            )
+                            self._commit_batch(connection, metrics, reviews)
+                else:
+                    with elastic_map(
+                        probe,
+                        batch,
+                        gate=probe_gate,
+                        max_workers=batch_size,
+                        estimated_bytes=probe_bytes,
+                        native_threads=1,
+                        io_slots=1,
+                        io_device=lambda item: io_device_key(item.snapshot.volume_id),
+                        completion_order=True,
+                        phase="audio-probe",
+                        cancellation=self.cancellation,
+                        prepare=prepare_probe,
+                        producer_mode="pure",
+                    ) as results:
+                        for result in results:
+                            self.cancellation.checkpoint()
+                            if result is None:
+                                continue
+                            probe_results.append(result)
+                            if result.failure is not None:
+                                self._transcribe_candidate(
+                                    connection,
+                                    result.candidate.snapshot,
+                                    result.candidate.mime,
+                                    signature,
+                                    lease,
+                                    metrics,
+                                    reviews,
+                                    prepared=(None, result.failure),
+                                )
+                                self._commit_batch(connection, metrics, reviews)
+                self._commit_batch(
+                    connection,
+                    metrics,
+                    reviews,
+                    force=True,
+                    report=False,
+                )
+                transcribe_batch(probe_results)
+                self._commit_batch(
+                    connection,
+                    metrics,
+                    reviews,
+                    force=True,
+                    report=False,
+                )
+                if exhausted:
+                    break
+        except CancellationRequested:
+            self._commit_batch(connection, metrics, reviews, force=True)
+            raise
         finally:
-            pool.close()
+            close_candidates = getattr(candidate_iterator, "close", None)
+            if close_candidates is not None:
+                close_candidates()
+            if transcription_pool is not None:
+                transcription_pool.close()
 
     def _consume_current_transcript(
         self,
@@ -604,6 +849,17 @@ class AudioRoute:
         status = str(cached["status"])
         benign_statuses = {"complete", "no_speech", "no_audio"}
         if status == "error":
+            if "|audio-route-probe|" in str(cached["processing_signature"]):
+                # Older concurrent workers accidentally signed transcription
+                # failures with probe-v1. Their stage cannot be established
+                # from that signature. Invalidate only these ambiguous error
+                # rows; successful transcripts and no-audio probes stay hits.
+                try:
+                    metadata = json.loads(str(cached["media_metadata_json"]))
+                except (TypeError, ValueError):
+                    return False
+                if not isinstance(metadata, dict) or metadata.get("error_provenance") != "audio-error-stage-v2":
+                    return False
             if self.config.retry_errors:
                 return False
             if self._claim_recoverable_retry(cached, snapshot):
@@ -676,17 +932,46 @@ class AudioRoute:
         *, prepared: tuple | None = None,
     ) -> None:
         try:
-            if prepared is not None and isinstance(prepared[1], Exception):
-                raise prepared[1]
-            probe = self._probe_candidate(snapshot) if prepared is None else prepared[0]
-            signature = lease.resolve_processing().signature
-            cached = _cached_document(connection, snapshot, signature)
-            if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
-                return
             if prepared is None:
+                probe = self._probe_candidate(snapshot)
+                signature = lease.resolve_processing().signature
+                cached = _cached_document(connection, snapshot, signature)
+                if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
+                    return
                 probe, result = self._transcribe(snapshot, lease, probe=probe)
             else:
-                result = prepared[1]
+                probe, outcome = prepared
+                # A probe failure is deliberately stored under the probe
+                # provenance supplied by the caller.  Once a probe succeeded,
+                # a worker failure belongs to the effective transcription
+                # provenance (model, language and limits), even when it is
+                # delivered as a prepared exception.  The old code re-raised
+                # first and therefore cached that error under the probe
+                # signature.
+                if probe is not None:
+                    signature = lease.resolve_processing().signature
+                if isinstance(outcome, Exception):
+                    raise outcome
+                result = outcome
+            if not isinstance(probe, MediaProbe):
+                raise AudioProcessingError(
+                    "audio_transcription_error",
+                    "audio worker returned no valid media probe",
+                    recommendation="retry",
+                    retryable=True,
+                )
+            if not isinstance(result, TranscriptResult):
+                raise AudioProcessingError(
+                    "audio_transcription_error",
+                    "audio worker returned no valid transcript",
+                    recommendation="retry",
+                    retryable=True,
+                )
+            if not same_snapshot(snapshot, snapshot_path(snapshot.path)):
+                raise AudioProcessingError(
+                    "audio_source_changed", "media source changed before transcript publication",
+                    recommendation="retry", retryable=True,
+                )
             _store_success(
                 connection,
                 snapshot,
@@ -762,7 +1047,7 @@ class AudioRoute:
     def _probe_candidate(self, snapshot: FileSnapshot) -> MediaProbe:
         native = getattr(self.memory_gate, "native_budget", None)
         admission = (native(16 * 1024 * 1024, max_threads=1, phase="audio-probe",
-                            io_slots=1, io_device=f"dev:{snapshot.volume_id:x}")
+                            io_slots=1, io_device=io_device_key(snapshot.volume_id))
                      if native is not None else nullcontext())
         with admission:
             return self._probe_candidate_admitted(snapshot)
@@ -837,12 +1122,16 @@ class AudioRoute:
         connection: sqlite3.Connection,
         metrics: _AudioRunMetrics,
         reviews: _AudioReviewBuffer,
+        *,
+        force: bool = False,
+        report: bool = True,
     ) -> None:
-        if metrics.processed % AUDIO_COMMIT_BATCH != 0:
+        if not force and metrics.processed % AUDIO_COMMIT_BATCH != 0:
             return
         connection.commit()
         reviews.flush()
-        self._report(metrics)
+        if report:
+            self._report(metrics)
 
     def _finalize_database(
         self,
@@ -947,7 +1236,7 @@ def _cached_document(
 ) -> sqlite3.Row | None:
     return connection.execute(
         """SELECT processing_signature,status,duration_seconds,speech_duration_seconds,text_chars,
-        segment_count,error_type,error_message,retryable,review_disposition
+        segment_count,error_type,error_message,retryable,review_disposition,media_metadata_json
         FROM documents WHERE file_key=? AND size=? AND mtime_ns=?
         AND birthtime_ns=? AND processing_signature=?""",
         (
@@ -1387,7 +1676,11 @@ def _store_error(
 ) -> None:
     _remove_path_conflict(connection, snapshot)
     key = _file_key(snapshot)
-    metadata = {"evidence": error.evidence}
+    metadata = {
+        "evidence": error.evidence,
+        "error_provenance": "audio-error-stage-v2",
+        "error_stage": "probe" if "|audio-route-probe|" in processing_signature else "transcription",
+    }
     connection.execute(
         """INSERT INTO documents(
         file_key,path,mime,size,mtime_ns,birthtime_ns,processing_signature,status,

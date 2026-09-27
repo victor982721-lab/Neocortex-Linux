@@ -477,6 +477,21 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
     each item is a cancellation/cooperation boundary.  Active synchronous work
     is drained on close, not interrupted by killing unrelated processes.
 
+    Results are ordered by input by default.  ``completion_order=True`` is an
+    explicit opt-in for routes whose owner can publish identities in any
+    order; it returns the first ready result in the bounded pending window.
+    Both modes keep iteration and publication in the caller thread, so a
+    route's SQLite connection is never used by workers.  The window remains
+    bounded by live capacity (and ``max_workers`` when supplied); completion
+    order does not turn the map into an unbounded future queue.
+
+    ``producer_mode="admission"`` (the safe default) assumes that advancing
+    the input may request coordinated resources and drains each admitted task
+    to a ready result before calling ``next(source)``.  A route whose producer
+    is proven not to perform blocking admission may explicitly use
+    ``producer_mode="pure"`` to retain concurrent prefetch without that
+    conservative handoff.
+
     Task estimates include payload/result copies.  ``process_resident_bytes``
     separately reserves interpreter memory until each process cohort stops.
     A caller retaining values after its next ``next()`` owns that additional
@@ -502,6 +517,8 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
         process_predicate: Callable[[Any], bool] | None = None,
         prepare: Callable[[_Input], Any] | None = None,
         on_admission_error: Callable[[_Input, MemoryBudgetExceeded], ImmediateResult[_Output]] | None = None,
+        completion_order: bool = False,
+        producer_mode: Literal["admission", "pure"] = "admission",
         poll_interval: float = 0.05,
     ) -> None:
         if max_workers is not None and max_workers < 1:
@@ -516,6 +533,8 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
             raise ValueError("executor_kind must be 'thread' or 'process'")
         if process_resident_bytes < 0:
             raise ValueError("process_resident_bytes cannot be negative")
+        if producer_mode not in {"admission", "pure"}:
+            raise ValueError("producer_mode must be 'admission' or 'pure'")
         self._function = function
         self._source = iter(iterable)
         self._gate = gate
@@ -529,6 +548,8 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
         self._prepare = prepare
         self._on_admission_error = on_admission_error
         self._process_predicate = process_predicate
+        self._completion_order = bool(completion_order)
+        self._producer_mode = producer_mode
         self._poll = poll_interval
         self._stop = CancellationToken(
             parent=cancellation if cancellation is not None else getattr(gate, "cancellation", None)
@@ -635,7 +656,34 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
         # One admission waiter lets the governor own pressure timeouts even
         # when capacity is zero.  It cannot start work until granted resources.
         limit = max(1, target) if self._gate is not None else target
+        coordinated_producer = (
+            getattr(self._gate, "coordinator", None) is not None
+            and self._producer_mode == "admission"
+        )
+        if coordinated_producer and self._pending:
+            # A previous fill may have returned early because a later
+            # admission was waiting for a consumable result's memory.  Before
+            # touching the producer again, finish owner-side preparation (or
+            # return an already-ready result to the caller).
+            self._prepare_ready()
+            for pending in self._pending:
+                if pending.prepared.is_set() or pending.ready.is_set():
+                    continue
+                if not self._prepare_submitted(pending, wait_ready=True):
+                    return
         while not self._exhausted and len(self._pending) < limit:
+            if (
+                coordinated_producer
+                and any(pending.ready.is_set() for pending in self._pending)
+            ):
+                # A completed result still owns its bounded result bytes until
+                # the caller publishes it.  A producer may perform a probe or
+                # metadata read while advancing its iterator; do not let that
+                # read wait for headroom held by a ready result that this
+                # owner could release first.  Completion-order consumers can
+                # opt into this handoff without restoring the ordered HOL
+                # limitation; ordered consumers get the same safety fence.
+                return
             self._checkpoint()
             try:
                 item = next(self._source)
@@ -658,6 +706,69 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
                     self._processes.resize(target)
             context = copy_context()
             self._supervisors.submit(context.run, self._run, work)
+            # A route's producer may perform its own coordinated probe before
+            # yielding the next item (Audio is one example).  Never advance
+            # such a producer while this newly submitted task has an
+            # admission grant that is still waiting for owner-side
+            # preparation: that ordering formed a producer/grant cycle.
+            #
+            # Legacy injected gates do not expose coordinator admission and
+            # retain their historical prefetch behavior. Coordinator-backed
+            # admission producers use the ready-result handoff below; pure
+            # producers explicitly opt out after proving next(source) cannot
+            # request those resources.
+            if coordinated_producer:
+                if not self._prepare_submitted(work, wait_ready=True):
+                    # A previous result is already consumable.  Returning to
+                    # the owner lets it release that result's retained bytes
+                    # before this admission is forced to wait for headroom.
+                    # This is the bounded escape from a result-memory /
+                    # producer admission cycle.
+                    return
+
+    def _prepare_submitted(self, work: _Work[_Output], *, wait_ready: bool = False) -> bool:
+        """Prepare one submission before pulling again.
+
+        ``False`` means a prior ready result should be consumed first.  The
+        caller must not wait for a new admission while a completed result can
+        release the memory that admission may need.
+        """
+
+        while not work.admitted.is_set() and not work.ready.is_set():
+            prior_ready = False
+            for pending in self._pending:
+                if pending is work:
+                    break
+                if pending.ready.is_set():
+                    prior_ready = True
+                    break
+            if prior_ready:
+                return False
+            self._checkpoint()
+            self._owner_wakeup.clear()
+            if work.admitted.is_set() or work.ready.is_set():
+                break
+            self._owner_wakeup.wait(self._poll)
+        self._prepare_ready()
+        if not wait_ready or work.ready.is_set():
+            return True
+        # Conservative producer mode waits until the task has released its
+        # execution lease and published a ready result before advancing a
+        # producer that may request its own coordinator admission.  A ready
+        # predecessor still takes priority so retained result memory can be
+        # released by the owner instead of waiting in a circular admission.
+        while not work.ready.is_set():
+            for pending in self._pending:
+                if pending is work:
+                    break
+                if pending.ready.is_set():
+                    return False
+            self._checkpoint()
+            self._owner_wakeup.clear()
+            if work.ready.is_set():
+                break
+            self._owner_wakeup.wait(self._poll)
+        return True
 
     def _prepare_ready(self) -> None:
         for work in self._pending:
@@ -828,9 +939,25 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
                 if not self._pending and self._exhausted:
                     self.close()
                     raise StopIteration
-                if self._pending and self._pending[0].ready.is_set():
+                ready_index: int | None = None
+                if self._completion_order:
+                    for index, pending in enumerate(self._pending):
+                        if pending.ready.is_set():
+                            ready_index = index
+                            break
+                elif self._pending and self._pending[0].ready.is_set():
+                    ready_index = 0
+                if ready_index is not None:
                     self._stop.checkpoint()
-                    work = self._pending.popleft()
+                    if ready_index == 0:
+                        work = self._pending.popleft()
+                    else:
+                        # The pending window is capacity-bounded, so this
+                        # linear removal is bounded too; it avoids a second
+                        # queue/consumer thread and keeps SQLite publication
+                        # in this owner thread.
+                        work = self._pending[ready_index]
+                        del self._pending[ready_index]
                     self._current = work
                     if work.error is not None:
                         raise work.error
@@ -894,6 +1021,6 @@ def elastic_map(
     iterable: Iterable[_Input],
     **kwargs: Any,
 ) -> ElasticMap[_Input, _Output]:
-    """Create an ordered elastic map; see :class:`ElasticMap` for its contract."""
+    """Create a bounded elastic map; see :class:`ElasticMap` for its contract."""
 
     return ElasticMap(function, iterable, **kwargs)

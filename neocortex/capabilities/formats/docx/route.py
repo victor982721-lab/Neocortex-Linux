@@ -42,6 +42,7 @@ from neocortex.progress import (
 from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.io_identity import io_device_key
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
 from neocortex.runtime.control.memory_runtime import (
     MemoryBudgetExceeded,
@@ -102,6 +103,11 @@ MAX_MEMBER_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 DOCX_BASE_WORKSPACE_BYTES = 96 * 1024 * 1024
+# A validated durable representation is substantially cheaper than opening a
+# package and retaining its OOXML parts.  This is a reservation, not a bypass
+# of cache validation: the owner still rechecks the row and representation in
+# ``prepare`` before publishing a hit.
+DOCX_CACHE_BASE_WORKSPACE_BYTES = 4 * 1024 * 1024
 DOCX_INVENTORY_BATCH = 1000
 DOCX_COMMIT_BATCH = 8
 DOCX_PRUNE_BATCH = 256
@@ -1048,6 +1054,7 @@ class _DocxWork:
     max_text_chars: int
     cache_status: str = "new"
     prior_reviewable: bool = False
+    cache_estimate_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1056,9 +1063,12 @@ class _DocxWorkResult:
     document: _Extracted | None = None
     failure: DocxFailure | None = None
     completed: _DocxCandidateOutcome | None = None
+    requires_extraction: bool = False
 
 
 def _estimate_docx_work(work: _DocxWork) -> int:
+    if work.cache_estimate_bytes is not None:
+        return work.cache_estimate_bytes
     try:
         inspect_zip_structure(work.snapshot.path, max_members=MAX_ZIP_MEMBERS)
         with zipfile.ZipFile(work.snapshot.path) as archive:
@@ -1067,6 +1077,22 @@ def _estimate_docx_work(work: _DocxWork) -> int:
         # Invalid inputs still need a small admitted unit to publish a typed
         # failure. The worker repeats validation against the current source.
         return DOCX_BASE_WORKSPACE_BYTES
+
+
+def _estimated_docx_cache_bytes(
+    *,
+    text_chars: int,
+    compressed_bytes: int,
+    parts: int,
+) -> int:
+    """Reserve the bounded work needed to decode an already durable result."""
+
+    return (
+        DOCX_CACHE_BASE_WORKSPACE_BYTES
+        + max(0, int(text_chars)) * 8
+        + max(0, int(compressed_bytes)) * 2
+        + max(0, int(parts)) * 512
+    )
 
 
 def _extract_docx_work(work: _DocxWork) -> _DocxWorkResult:
@@ -1374,6 +1400,56 @@ class DocxRoute:
         if row["status"] == "error":
             return "cached_error"
         return "retry"
+
+    def _cache_preflight_estimate(
+        self,
+        connection,
+        snapshot: FileSnapshot,
+    ) -> int | None:
+        """Return a cache reservation without opening the source ZIP.
+
+        ElasticMap asks for a work estimate before its owner-thread
+        ``prepare`` callback runs.  A replay used to inspect the package in
+        that estimator even though prepare would immediately consume the
+        durable result.  Probe only scalar identity/size metadata first.
+        Representation decoding stays in ``prepare`` under this reservation;
+        a miss (or a retryable/error row) deliberately returns ``None`` so the
+        normal bounded ZIP estimator remains responsible for extraction.
+        """
+
+        key = _file_key(snapshot)
+        row = connection.execute(
+            """SELECT status,size,mtime_ns,birthtime_ns,processing_signature,
+            text_chars,length(text_zlib) AS text_bytes
+            FROM documents WHERE file_key=?""",
+            (key,),
+        ).fetchone()
+        if row is None or str(row["status"]) not in {"complete", "partial"}:
+            return None
+        if not (
+            int(row["size"]) == snapshot.size
+            and int(row["mtime_ns"]) == snapshot.mtime_ns
+            and int(row["birthtime_ns"]) == snapshot.birthtime_ns
+            and row["processing_signature"] == self.config.processing_signature
+        ):
+            return None
+        status = str(row["status"])
+        if status == "partial" and (
+            self.config.retry_errors or self.config.selection.force_incomplete_retry
+        ):
+            return None
+        parts = connection.execute(
+            """SELECT COUNT(*) AS count,
+            COALESCE(SUM(length(text_zlib)),0) AS compressed_bytes
+            FROM document_parts WHERE file_key=?""",
+            (key,),
+        ).fetchone()
+        return _estimated_docx_cache_bytes(
+            text_chars=int(row["text_chars"] or 0),
+            compressed_bytes=int(row["text_bytes"] or 0)
+            + int(parts["compressed_bytes"] or 0),
+            parts=int(parts["count"] or 0),
+        )
 
     def _touch_cache_hit(
         self,
@@ -2115,6 +2191,7 @@ class DocxRoute:
                 prepared = _DocxWork(
                     work.snapshot, work.max_text_chars, cache_status,
                     self._prior_reviewable(connection, work.snapshot) if outcome is None else False,
+                    work.cache_estimate_bytes,
                 )
             except _LiveDocxCachePathConflict:
                 # A conflict belongs to this identity; it must not abort other
@@ -2133,10 +2210,23 @@ class DocxRoute:
                 ))
             if outcome is not None:
                 return ImmediateResult(_DocxWorkResult(prepared, completed=outcome))
+            if work.cache_estimate_bytes is not None:
+                # The cheap reservation covered cache validation only.  If the
+                # revalidation just performed rejected that representation,
+                # do not run a parser under the cache-sized lease; hand the
+                # candidate back to the owner for a fresh extraction lease.
+                return ImmediateResult(_DocxWorkResult(
+                    prepared,
+                    requires_extraction=True,
+                ))
             return prepared
 
         candidates = (
-            _DocxWork(snapshot, self.config.max_text_chars)
+            _DocxWork(
+                snapshot,
+                self.config.max_text_chars,
+                cache_estimate_bytes=self._cache_preflight_estimate(connection, snapshot),
+            )
             for snapshot in self._candidates(connection)
         )
 
@@ -2164,14 +2254,14 @@ class DocxRoute:
                 and row["processing_signature"] == self.config.processing_signature
             ):
                 from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
-                cache_bytes = (
-                    4 * 1024 * 1024 + max(0, int(row["chars"])) * 8
-                    + max(0, int(row["compressed_bytes"])) * 2
-                    + max(0, int(row["parts"])) * 512
+                cache_bytes = _estimated_docx_cache_bytes(
+                    text_chars=int(row["chars"]),
+                    compressed_bytes=int(row["compressed_bytes"]),
+                    parts=int(row["parts"]),
                 )
                 with cast(CoordinatedMemoryGate, self.memory_gate).admit(
                     cache_bytes, native_threads=1, io_slots=1,
-                    io_device=str(work.snapshot.volume_id), phase="docx.cache",
+                    io_device=io_device_key(work.snapshot.volume_id), phase="docx.cache",
                 ):
                     prepared = prepare(work)
                 if isinstance(prepared, ImmediateResult):
@@ -2186,7 +2276,8 @@ class DocxRoute:
             estimated_bytes=_estimate_docx_work, executor_kind="process",
             cancellation=self.cancellation, prepare=prepare,
             native_threads=1, io_slots=1,
-            io_device=lambda work: str(work.snapshot.volume_id), phase="docx.extract",
+            io_device=lambda work: io_device_key(work.snapshot.volume_id),
+            producer_mode="pure", phase="docx.extract",
             on_admission_error=admission_error,
         ) as results:
             try:
@@ -2289,19 +2380,40 @@ class DocxRoute:
                             else:
                                 new_documents += 1
                             report(active=1)
-                            if prepared.failure is not None:
+                            if prepared.requires_extraction:
+                                # The result still owns the cache-validation
+                                # lease until the next map iteration. Release
+                                # its transient/CPU portion before acquiring
+                                # the fresh ZIP extraction reservation; this
+                                # keeps invalid-cache recovery bounded under a
+                                # one-document global budget.
+                                from neocortex.runtime.control.global_resources import (
+                                    current_resource_grant,
+                                )
+                                replay_grant = current_resource_grant()
+                                if replay_grant is not None:
+                                    replay_grant.shrink_transient_bytes(0)
+                                    replay_grant.release_cpu()
+                                outcome = self._extract_candidate(
+                                    connection, snapshot, review_batch,
+                                    review_reconciliations,
+                                )
+                            elif prepared.failure is not None:
                                 raise DocxProcessingError(prepared.failure)
-                            if elastic:
+                            if elastic and not prepared.requires_extraction:
                                 if prepared.document is None:
                                     raise RuntimeError("DOCX worker returned no document")
-                                outcome = self._store_extracted_candidate(
-                                    connection, snapshot, prepared.document,
-                                    review_batch, review_reconciliations,
-                                )
-                            else:
+                                else:
+                                    outcome = self._store_extracted_candidate(
+                                        connection, snapshot, prepared.document,
+                                        review_batch, review_reconciliations,
+                                    )
+                            elif not prepared.requires_extraction:
                                 outcome = self._extract_candidate(
                                     connection, snapshot, review_batch, review_reconciliations,
                                 )
+                            if outcome is None:
+                                raise RuntimeError("DOCX candidate produced no outcome")
                         cache_hits += outcome.cache_hits
                         cached_errors += outcome.cached_errors
                         extracted += outcome.extracted
@@ -2338,7 +2450,7 @@ class DocxRoute:
                                 # governor while the owner persists it.
                                 error_admission = cast(CoordinatedMemoryGate, self.memory_gate).admit(
                                     64 * 1024, native_threads=1, io_slots=1,
-                                    io_device=str(snapshot.volume_id), phase="docx.failure",
+                                    io_device=io_device_key(snapshot.volume_id), phase="docx.failure",
                                 )
                         with error_admission:
                             outcome = self._failure_outcome(

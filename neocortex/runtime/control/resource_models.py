@@ -222,5 +222,8 @@ class _Request:
     temp_materialized_bytes: int = 0
     temp_file_identity: tuple[int, int] | None = None
     draining_from: _Request | None = None
+    # A renewal reuses the already-reserved result/model bytes; admission
+    # must not charge that memory a second time while renegotiating execution.
+    renewing_from: _Request | None = None
     adaptive_native_threads: bool = False
     native_thread_limit: int | None = None

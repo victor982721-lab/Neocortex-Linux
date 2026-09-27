@@ -337,14 +337,32 @@ class IdentifyActionsMixin:
                     samples_lock: threading.Lock = observation_samples_lock,
                 ) -> int:
                     now = time.monotonic_ns()
+                    return adaptive_capacity(
+                        effective_cpu_count(), now=now, cache=cache,
+                        samples=samples, samples_lock=samples_lock,
+                    )
+
+                def adaptive_capacity(
+                    observed_capacity: int,
+                    *,
+                    now: int,
+                    cache: list[int],
+                    samples: list[int],
+                    samples_lock: threading.Lock,
+                    blocking_divisor: int = 2,
+                ) -> int:
+                    """Apply the detector pilot to either direct or live-gated work.
+
+                    ``observed_capacity`` is supplied by the caller's current
+                    owner: direct Identify uses the effective CPU probe while
+                    the integrated route uses the coordinator gate.  The same
+                    pilot signal therefore controls both paths without
+                    inventing a fixed worker ceiling or bypassing live
+                    memory/CPU admission.
+                    """
+
+                    observed_capacity = max(0, int(observed_capacity))
                     if now - cache[1] >= IDENTIFY_PROGRESS_INTERVAL_NS:
-                        observed = effective_cpu_count()
-                        # Content detection is predominantly Python work
-                        # (the detector profile is GIL-bound), so using every
-                        # logical CPU only adds thread stacks and context
-                        # switches.  Derive a conservative width from live
-                        # capacity instead of a fixed worker count.  The
-                        # bounded batch below keeps this width memory-safe.
                         with samples_lock:
                             recent = tuple(samples[-32:])
                         mean_ns = (
@@ -352,28 +370,29 @@ class IdentifyActionsMixin:
                             if len(recent) >= 8
                             else 0.0
                         )
-                        # Only widen for clearly I/O-bound observations; a
-                        # few-millisecond sample can be scheduler/GIL noise
-                        # and must not cause a memory-heavy worker surge.
-                        if len(recent) < 8:
-                            # Keep a short pilot wide enough to expose a
-                            # genuinely blocking detector before narrowing a
-                            # CPU-bound workload.  A cold page has no timing
-                            # evidence yet, so the initial live-capacity
-                            # divisor remains the conservative value used by
-                            # the historical bounded pipeline.
-                            divisor = 4
-                        else:
-                            # The content detector is Python/GIL-bound for
-                            # small headers.  Once the pilot has enough
-                            # observations, one worker avoids context-switch
-                            # and thread hand-off overhead.  Slow detectors
-                            # (for example a blocked filesystem) still widen
-                            # to half of the live capacity.
-                            divisor = 2 if mean_ns >= 8_000_000 else 16
-                        cache[0] = max(1, min(observed, observed // divisor or 1))
+                        # A short cold pilot is deliberately conservative.  A
+                        # stable Python/GIL-bound signal narrows to one; a
+                        # genuinely blocking detector widens according to
+                        # the owner-specific divisor (direct callers retain a
+                        # half-width ceiling, while the integrated gate may
+                        # use its full live width).
+                        divisor = (
+                            4 if len(recent) < 8
+                            else blocking_divisor if mean_ns >= 8_000_000
+                            else 16
+                        )
+                        cache[0] = max(
+                            1,
+                            min(
+                                max(1, observed_capacity),
+                                observed_capacity // divisor or 1,
+                            ),
+                        )
                         cache[1] = now
-                    return max(1, cache[0])
+                    # Capacity zero is temporary pressure, not permission to
+                    # bypass the gate. One bounded future is retained so the
+                    # admission owner can observe cancellation/recovery.
+                    return max(1, min(max(1, observed_capacity), cache[0] or 1))
 
                 def observe(
                     planned: FileSnapshot,
@@ -422,13 +441,31 @@ class IdentifyActionsMixin:
 
                 if coordinator is None:
                     worker_count = direct_capacity()
+                    executor_capacity = max(1, effective_cpu_count())
                 else:
                     assert gate is not None
-                    worker_count = gate.worker_capacity(
+                    live_capacity = gate.worker_capacity(
                         max_workers=None,
                         estimated_bytes=CONTENT_PREFIX_BYTES * 2,
                         native_threads=1,
                     )
+                    # Let the first bounded pilot observe the real detector at
+                    # the gate's already-admitted width.  Once eight samples
+                    # exist, the same loop narrows a GIL-bound detector or
+                    # retains the full width for a measured blocking one.
+                    worker_count = (
+                        max(1, int(live_capacity))
+                        if len(observation_samples) < 8
+                        else adaptive_capacity(
+                            live_capacity,
+                            now=time.monotonic_ns(),
+                            cache=capacity_cache,
+                            samples=observation_samples,
+                            samples_lock=observation_samples_lock,
+                            blocking_divisor=1,
+                        )
+                    )
+                    executor_capacity = max(1, int(live_capacity))
                 # Keep the queue bounded and submit one observation per
                 # future.  The previous implementation submitted serial
                 # batches of 32: one pathological member held 31 siblings
@@ -438,7 +475,11 @@ class IdentifyActionsMixin:
                 # corpus member.
                 max_in_flight = max(1, int(worker_count))
                 executor = ThreadPoolExecutor(
-                    max_workers=max(1, int(worker_count)),
+                    # The executor ceiling is the live owner capacity; the
+                    # pilot controls the bounded submission window below and
+                    # can widen/narrow it after fresh observations without
+                    # constructing an unbounded future queue.
+                    max_workers=executor_capacity,
                     thread_name_prefix="neocortex-identify",
                 )
                 in_flight: dict[Future[tuple[int, ContentObservation]], int] = {}
@@ -448,6 +489,27 @@ class IdentifyActionsMixin:
                 try:
                     while next_pending < len(pending) or in_flight:
                         self._checkpoint()
+                        if coordinator is None:
+                            max_in_flight = direct_capacity()
+                        else:
+                            assert gate is not None
+                            live_capacity = gate.worker_capacity(
+                                max_workers=None,
+                                estimated_bytes=CONTENT_PREFIX_BYTES * 2,
+                                native_threads=1,
+                            )
+                            max_in_flight = (
+                                max(1, int(live_capacity))
+                                if len(observation_samples) < 8
+                                else adaptive_capacity(
+                                    live_capacity,
+                                    now=time.monotonic_ns(),
+                                    cache=capacity_cache,
+                                    samples=observation_samples,
+                                    samples_lock=observation_samples_lock,
+                                    blocking_divisor=1,
+                                )
+                            )
                         while (
                             next_pending < len(pending)
                             and len(in_flight) < max_in_flight

@@ -278,7 +278,10 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
 
     explicit = set(getattr(args, "_explicit_options", ()))
     semantic_actions = len(selected_direct_operations(args, family=DirectOperationFamily.SEMANTIC))
-    integrated_all = bool(args.all)
+    # A lifecycle resume can continue the Semantic stage created by --all.
+    # Keep its explicit local model/cache options usable without requiring the
+    # mutually exclusive --all flag or selecting a new direct Semantic action.
+    integrated_all = bool(args.all or getattr(args, "resume_run", None) is not None)
     if semantic_actions > 1:
         raise SystemExit("semantic direct actions are mutually exclusive")
     _validate_semantic_values(args)

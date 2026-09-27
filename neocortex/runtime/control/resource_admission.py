@@ -15,6 +15,7 @@ from .cancellation import CancellationRequested, CancellationToken
 from .memory_runtime import MemoryBudgetExceeded, MemoryHeadroomTimeout
 from .resource_grants import ResourceGrant, _CURRENT_RESOURCE_GRANT
 from .resource_models import _Request
+from .io_identity import canonical_io_device, io_device_key
 
 
 class ResourceWaitTimeout(MemoryHeadroomTimeout):
@@ -115,6 +116,7 @@ def admission_scope(
             )
         aggregate_memory = component_total
     requested_memory = requested_resident + requested_transient
+    normalized_io_device = canonical_io_device(io_device)
     if _renewing_from is not None and (
         requested_memory
         or requested_temp
@@ -180,7 +182,7 @@ def admission_scope(
             f"{route_name} requires {requested_temp} temporary bytes but only "
             f"{coordinator.temp_budget_bytes} are configured"
         )
-    if requested_io > coordinator._io_capacity(str(io_device or "default")):
+    if requested_io > coordinator._io_capacity(io_device_key(normalized_io_device)):
         raise MemoryBudgetExceeded("one request exceeds the device I/O concurrency limit")
     if requested_gpu > coordinator._gpu_capacity.get(str(gpu_device or "default"), 0):
         raise MemoryBudgetExceeded("GPU device is unregistered or its memory budget is exceeded")
@@ -214,10 +216,11 @@ def admission_scope(
         phase=normalized_phase,
         resident_key=normalized_resident_key,
         io_slots=requested_io,
-        io_device=None if io_device is None else str(io_device),
+        io_device=normalized_io_device,
         gpu_bytes=requested_gpu,
         gpu_device=None if gpu_device is None else str(gpu_device),
         draining_from=_draining_from,
+        renewing_from=_renewing_from,
         adaptive_native_threads=_adaptive_native_threads,
         native_thread_limit=_native_thread_limit,
     )
@@ -230,18 +233,26 @@ def admission_scope(
                 or _renewing_from.route_name != route_name
             ):
                 raise RuntimeError("execution renewal requires its original live lease")
-            if _draining_from is not None:
+            if _draining_from is not None or _renewing_from is not None:
                 if (
-                    coordinator._active_reservations.get(id(_draining_from)) is not _draining_from
-                    or _draining_from.route_name != route_name
-                    or requested_memory
-                    or requested_temp
-                    or requested_gpu
-                    or max(requested_cpu, requested_native, requested_io) > 1
+                    _draining_from is not None
+                    and (
+                        coordinator._active_reservations.get(id(_draining_from)) is not _draining_from
+                        or _draining_from.route_name != route_name
+                        or requested_memory
+                        or requested_temp
+                        or requested_gpu
+                        or max(requested_cpu, requested_native, requested_io) > 1
+                    )
                 ):
                     raise ValueError(
                         "drain admission must finalize a live lease without resource growth"
                     )
+                if _renewing_from is not None and (
+                    coordinator._active_reservations.get(id(_renewing_from)) is not _renewing_from
+                    or _renewing_from.route_name != route_name
+                ):
+                    raise RuntimeError("execution renewal requires its original live lease")
                 coordinator._queues[route_name].appendleft(request)
             else:
                 coordinator._queues[route_name].append(request)

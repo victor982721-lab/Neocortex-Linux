@@ -4,6 +4,27 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-27 — Corrección integral de procesamiento y escala
+
+- PDF enumera metadatos mediante su propio writer y una selección TEMP estable;
+  elimina la copia completa de texto/históricos durante extracción. Framework
+  reutiliza una vista por iterador y limita sus proyecciones por recursos reales,
+  reservas agregadas y techos explícitos, sin ampliar el límite público de 256 MiB.
+- Los errores de almacenamiento exponen owner, operación, consumo, recursos y
+  recuperación; la cancelación y el deadline durable no se convierten en éxito.
+- ODT conserva texto anidado/tails y libera bloques XML; XLSX no duplica el
+  diccionario sharedStrings como contenido. Invalidación selectiva ODT/XLSX.
+- Audio conserva procedencia de fallos, publica retries exitosos y hace replay
+  cancelable con commits acotados; los errores legacy ambiguos no se perpetúan.
+- Planificación elimina ciclos de productor/admisión, ofrece consumo por
+  finalización acotado y unifica identidad I/O. Identify adapta el camino
+  integrado sin recortar la concurrencia de observaciones lentas.
+- DOCX evita abrir ZIP en hits válidos; Text evita una transacción repetida por
+  hit y conserva lectura/hash estricto, validación física y receipts.
+- La CLI de reanudación acepta las opciones locales de modelos de Semantic
+  sin exigir el flag incompatible `--all`; el lifecycle conserva la configuración
+  y los presupuestos durables de la ejecución fuente.
+
 ## 2026-09-27 — Jerarquía visual de la CLI y conteos ZIP explícitos
 
 - Etapas enmarcadas con títulos centrados y numerados, padding adaptativo y

@@ -16,6 +16,7 @@ import json
 import math
 import queue
 import sqlite3
+import stat
 import threading
 import time
 from concurrent.futures import Future
@@ -359,7 +360,18 @@ class _PdfOwnerCoordinator:
 
     def _run(self) -> None:
         try:
+            original = self.path.lstat()
+            identity = (original.st_dev, original.st_ino)
+
+            def require_identity() -> None:
+                from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
+
+                observed = self.path.lstat()
+                if not stat.S_ISREG(observed.st_mode) or (observed.st_dev, observed.st_ino) != identity:
+                    raise ImmutableSQLiteUnavailable("PDF writer owner identity changed")
+
             with _database(self.path) as connection:
+                require_identity()
                 self._connection = connection
                 self._thread_ident = threading.get_ident()
                 self._ready.set()
@@ -370,7 +382,9 @@ class _PdfOwnerCoordinator:
                     assert isinstance(request, _PdfOwnerRequest)
                     try:
                         with serialized_pdf_write():
+                            require_identity()
                             request.value = request.operation(connection)
+                            require_identity()
                             connection.commit()
                     except BaseException as exc:
                         try:
@@ -977,7 +991,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 lambda payload: self._process_document(*payload), runtime.iterator,
                 capacity=lambda: self._resource_gate.worker_capacity(max_workers=self.config.workers),
                 max_workers=self.config.workers, cancellation=self.cancellation,
-                prepare=prepare,
+                prepare=prepare, producer_mode="pure", completion_order=True,
             ) as results:
                 for result in results:
                     if result is not None:
@@ -1481,6 +1495,33 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         if self.config.max_documents is not None:
             parameters.append(self.config.max_documents)
         order_sql = self._candidate_order_sql(protected_priority)
+        owner = getattr(self, "_pdf_owner", None)
+        if owner is not None:
+            # The route already owns this database. Opening a detached reader
+            # here used to copy *all* extracted pages and history while our own
+            # writer held WAL open, even though only five metadata fields are
+            # needed. Freeze the selection/order once on that writer, then
+            # drain bounded pages on its thread. Later document publications
+            # cannot reorder, duplicate or omit candidates in this plan.
+            from .pdf_candidate_plan import owned_pdf_candidates
+
+            yield from owned_pdf_candidates(
+                owner,
+                "SELECT i.file_key,i.path,i.size,i.mtime_ns,i.birthtime_ns "
+                "FROM pdf_inventory i LEFT JOIN documents d ON d.file_key=i.file_key "
+                "WHERE " + where_sql + order_sql + limit_sql,
+                parameters,
+                cancellation=self.cancellation,
+                decode=self._inventory_row_snapshot,
+                min_free_bytes=self.config.min_free_bytes,
+                estimate_sql=(
+                    "SELECT count(*),coalesce(max(length(CAST(i.path AS BLOB))+length(i.file_key)+128),0) "
+                    "FROM pdf_inventory i LEFT JOIN documents d ON d.file_key=i.file_key WHERE " + where_sql
+                ),
+                estimate_parameters=parameters if self.config.max_documents is None else parameters[:-1],
+                limit=self.config.max_documents,
+            )
+            return
         with _database(self.config.state_path, readonly=True) as connection:
             rows = connection.execute(
                 """SELECT i.file_key,i.path,i.size,i.mtime_ns,i.birthtime_ns

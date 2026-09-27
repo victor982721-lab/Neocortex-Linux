@@ -68,6 +68,21 @@ de tamaño inesperado, sidecars adicionales, symlinks o cualquier mutación
 durante el fence mantiene la abstención segura; una ruta que admita snapshot
 puede usar `snapshot_temp` sólo dentro del presupuesto acotado.
 
+### Presión de snapshots y corpus grandes
+
+Un error `SQLiteSnapshotBudgetExceeded` no establece un máximo de archivos ni
+demuestra agotamiento de RAM. Revisa los campos de owner, operación, modo,
+bytes permitidos/requeridos, espacio disponible y ubicación temporal. PDF y la
+selección integrada usan proyecciones mínimas del writer; las consultas públicas
+no coordinadas conservan sus límites y pueden abstenerse ante WAL activo.
+No borres WAL/SHM, no hagas checkpoints ajenos ni limpies todo el estado.
+Con el proceso terminal, inspecciona `--status --status-json` sobre la misma raíz
+de estado. Resuelve la presión real (o el límite explícito) y reanuda el run
+compatible con `--resume-run RUN_ID`; las fases verificadas y cachés válidas se
+conservan. Un deadline ya agotado no recibe tiempo nuevo por preparar una vista:
+si impide reanudar, inicia una ejecución nueva con presupuesto adecuado, que
+reutilizará las cachés válidas sin borrar resultados previos.
+
 ## Inventario federado de máquina
 
 Para observar el control plane del host sin iniciar una corrida de contenido,

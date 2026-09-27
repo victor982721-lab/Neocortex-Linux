@@ -1066,6 +1066,31 @@ worker explícito sin timeout de documento. Los procesos y modelos reutilizados
 mantienen su residencia contabilizada hasta cerrarse; cancelación espera su
 salida antes de retirar snapshots temporales.
 
+`ElasticMap` distingue productores que pueden pedir admisión de productores
+`pure`, cuya enumeración no depende de grants. El modo conservador entrega y
+libera resultados antes de volver a avanzar un productor con admisión; las rutas
+con enumeración verificada usan `pure` para mantener concurrencia. La preparación
+no queda detrás de un productor que espera sus propios recursos. La opción
+`completion_order` permite publicar resultados independientes según finalizan,
+siempre en el owner y con ventana/memoria acotadas; el orden contractual se
+conserva donde corresponde. Todos los productores y límites de I/O normalizan
+`st_dev` mediante el mismo constructor, incluyendo los aliases históricos.
+
+Identify aplica su piloto también con coordinador: estrecha trabajo corto
+predominantemente Python y mantiene capacidad viva para observaciones lentas.
+DOCX consulta primero metadatos de caché; valida la representación bajo reserva
+y sólo los misses inspeccionan ZIP para dimensionar extracción. Text mantiene
+lectura/hash estricto y combina los receipts de replay en una transacción del
+owner, sin repetir parser ni suprimir fences.
+
+ODT ensambla bloques en orden con descendientes y tails antes de desvincularlos
+del árbol XML. XLSX resuelve sharedStrings como diccionario de celdas, no como
+texto duplicado; las cadenas huérfanas son evidencia explícita. Sus contratos de
+extracción cambian por formato, sin invalidar PPTX. Audio firma errores por etapa,
+versiona la procedencia de fallos y rechaza sólo errores legacy probe ambiguos;
+no invalida éxitos o abstenciones `no_audio`. Un retry calculado no vuelve a ser
+sustituido por su error anterior, y se revalida la fuente antes de publicarlo.
+
 Dedup lee primero las muestras que pueden excluir candidatos grandes y calcula
 el hash completo de los supervivientes. Una muestra nunca prueba igualdad ni
 valida por sí sola una caché durable. Hashing usa workers de I/O acotados y

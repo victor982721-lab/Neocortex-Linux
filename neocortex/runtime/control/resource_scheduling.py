@@ -11,6 +11,7 @@ import shutil
 import tempfile
 
 from .resource_models import _Request
+from .io_identity import io_device_key
 
 
 def fits(coordinator, request: _Request, snapshot, effective_cpu_slots: int) -> bool:
@@ -67,7 +68,7 @@ def fits(coordinator, request: _Request, snapshot, effective_cpu_slots: int) -> 
         )
         if pending + request.temp_bytes > shutil.disk_usage(tempfile.gettempdir()).free:
             return False
-    io_device = request.io_device or "default"
+    io_device = io_device_key(request.io_device)
     if request.io_slots:
         if coordinator._io_pressure and not draining:
             return False

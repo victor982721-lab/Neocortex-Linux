@@ -198,6 +198,13 @@ class RouteExecutionMixin(_FrameworkOrchestratorOwner):
             with self._coordinator_lock:
                 self._active_coordinator = coordinator
             if coordinator is not None:
+                # Route-only resume may select durable routes after the outer
+                # resource scope was created from ``route=none``.  Register
+                # that resolved selection on the existing coordinator before
+                # any route worker or reservation is dispatched; do not build
+                # a second coordinator or alter its budgets.
+                for route_name in self.selected_routes:
+                    coordinator.register_route(route_name)
                 state.record_event(
                     run_id,
                     "info",

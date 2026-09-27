@@ -13,6 +13,7 @@ from typing import Protocol
 
 from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
+from neocortex.runtime.control.io_identity import io_device_key
 
 from ..domain.errors import InventoryError
 from ..domain.models import ScanSummary
@@ -311,7 +312,7 @@ class InventoryTraversal:
         # CPU/I/O permits are renewed between bounded groups of observations.
         admission = (
             nullcontext(None) if gate is None else gate.admit(
-                32 * 1024 * 1024, io_slots=1, io_device=str(self._root.volume_id),
+                32 * 1024 * 1024, io_slots=1, io_device=io_device_key(self._root.volume_id),
                 phase="inventory_metadata",
             )
         )

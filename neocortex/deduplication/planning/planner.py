@@ -32,6 +32,7 @@ from .pipeline import (
     FingerprintResult,
 )
 from neocortex.progress import ProgressCallback
+from neocortex.runtime.control.io_identity import io_device_key
 # endregion [01]
 
 # region [02] Implementación
@@ -140,8 +141,8 @@ class DedupPlanner:
             estimated_bytes=lambda snapshot: min(snapshot.size, buffer_size) + 64 * 1024,
             max_workers=self._max_workers, native_threads=1,
             cancellation=self._cancellation, io_slots=1,
-            io_device=lambda snapshot: str(snapshot.volume_id),
-            phase="dedup_full",
+            io_device=lambda snapshot: io_device_key(snapshot.volume_id),
+            phase="dedup_full", producer_mode="pure",
         ) as results:
             yield results
 
@@ -162,7 +163,7 @@ class DedupPlanner:
                 from neocortex.runtime.control.global_resources import resource_grant_scope
                 with self._resource_gate.admit(
                     2 * min(left.size, DEFAULT_IO_CHUNK_SIZE) + 64 * 1024,
-                    io_slots=1, io_device=str(left.volume_id), phase="dedup_exact",
+                    io_slots=1, io_device=io_device_key(left.volume_id), phase="dedup_exact",
                 ) as grant, resource_grant_scope(grant):
                     equal = files_equal_exact(left, right, read_observer=observe, checkpoint=self._checkpoint)
         except FileChangedError as exc:

@@ -10,6 +10,7 @@ from concurrent.futures import Future
 from contextlib import nullcontext
 from neocortex.runtime.control.elastic_workers import current_worker_cancellation, elastic_map, ImmediateResult
 from neocortex.runtime.control.global_resources import current_resource_grant
+from neocortex.runtime.control.io_identity import io_device_key
 from ..media_resources import ResidentMediaGate, current_media_resource, media_gate_scope
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -624,8 +625,9 @@ class ImageRoute:
                 analyze, candidates(), gate=pool,
                 max_workers=self.config.workers, estimated_bytes=lambda item: item.transient_bytes,
                 native_threads=1, io_slots=1,
-                io_device=lambda item: f"dev:{item.snapshot.volume_id:x}",
+                io_device=lambda item: io_device_key(item.snapshot.volume_id),
                 phase="image-classify", cancellation=self.cancellation,
+                producer_mode="pure",
                 prepare=prepare,
             ) as results:
                 for result in results:

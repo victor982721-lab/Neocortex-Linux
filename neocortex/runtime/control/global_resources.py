@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from collections import deque
 from contextlib import contextmanager
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path  # noqa: F401 - compatibility patch surface for grants
 from typing import Any
 
@@ -66,6 +67,7 @@ from .resource_observation import (
     update_pressure_locked,
 )
 from .resource_observation import _PROC_MEMORY_PRESSURE  # noqa: F401
+from .io_identity import io_device_key, normalize_io_device_slots
 
 # These records were historically defined in this module. Keep their pickle
 # identity stable while their definitions live in the data-contract module.
@@ -112,6 +114,13 @@ class GlobalResourceCoordinator:
     ):
         if not route_order or len(route_order) != len(set(route_order)):
             raise ValueError("route_order must contain unique route names")
+        # Normalize aliases once at the coordinator boundary.  Every route
+        # then sees the same configured key as admission requests, including
+        # decimal ``st_dev`` and media ``dev:<hex>`` spellings.
+        limits = replace(
+            limits,
+            io_device_slots=normalize_io_device_slots(limits.io_device_slots),
+        )
         if limits.wait_timeout_seconds is not None and limits.wait_timeout_seconds < 0:
             raise ValueError("global resource wait timeout cannot be negative")
         if limits.poll_interval_seconds <= 0:
@@ -264,6 +273,7 @@ class GlobalResourceCoordinator:
         self._active_execution_requests = 0
         self._active_reservations: dict[int, _Request] = {}
         self._io_in_use: dict[str, int] = {}
+        self._io_device_slots = dict(limits.io_device_slots or {})
         self._gpu_in_use: dict[str, int] = {}
         self._peak_io_slots = 0
         self._peak_gpu_bytes = 0
@@ -541,7 +551,7 @@ class GlobalResourceCoordinator:
             self._monitor_stop.wait(self.limits.sample_interval_seconds)
 
     def _io_capacity(self, device: str) -> int:
-        configured = (self.limits.io_device_slots or {}).get(device)
+        configured = self._io_device_slots.get(io_device_key(device))
         if configured is not None:
             return max(1, int(configured))
         if self.limits.io_slots is not None:
