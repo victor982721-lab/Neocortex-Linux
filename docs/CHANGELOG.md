@@ -4,6 +4,19 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-27 — Identidad Whisper y progreso de ingestión ZIP
+
+- Whisper valida la identidad efectiva de procesamiento (versiones backend y
+  CTranslate2, dispositivo y tipo de cómputo), sin confundir una observación
+  distinta del número de GPU disponibles con una firma diferente cuando trabaja
+  en CPU. Los runtimes malformados o realmente distintos siguen fallando.
+- `Ingestión ZIP` aparece entre Inventario e Identify, antes de las rutas de
+  contenido. El avance cuenta contenedores, no miembros ni bytes; los cierres
+  de fases internas no dejan el lote terminado mostrando `En curso`.
+- QA usa un entorno CPython 3.13 independiente del producto, con herramientas
+  individuales y supply autenticado. El inventario CPython 3.14 se conserva
+  únicamente como procedencia histórica.
+
 ## 2026-09-27 — Tablas legibles y columnas comunes de progreso
 
 - Las etapas tienen espacio visual entre sus tablas. Todas las rutas muestran

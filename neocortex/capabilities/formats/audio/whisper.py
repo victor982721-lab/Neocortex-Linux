@@ -10,6 +10,7 @@ import shutil
 import time
 from pathlib import Path
 from typing import Any, Mapping
+
 from neocortex.runtime.control.global_resources import current_resource_grant
 from neocortex.runtime.control.gpu_runtime import cuda_memory_snapshot, register_gpu_process
 from ..media_resources import checkpoint_before_deadline, current_media_resource, register_media_process
@@ -101,6 +102,42 @@ def _resolve_whisper_compute_type(compute_type: str, resolved_device: str) -> st
     if resolved_compute == "auto":
         resolved_compute = "float16" if resolved_device == "cuda" else "int8"
     return resolved_compute
+
+
+def _whisper_runtime_processing_identity(runtime: object) -> tuple[str, ...] | None:
+    """Return the fields that affect Whisper processing, not observation.
+
+    ``cuda_devices`` is a capability probe, not a processing input.  In
+    particular, CTranslate2 can report zero devices inside a worker carrying
+    a finite ``RLIMIT_AS`` even when the parent observed a CUDA device.  The
+    effective device is already explicit in this identity: a CUDA worker must
+    report ``cuda_devices >= 1`` and is rejected as malformed otherwise.  CPU
+    workers may legitimately observe a different capability count without
+    changing their processing signature.
+    """
+
+    if not isinstance(runtime, WhisperRuntime):
+        return None
+    if type(runtime.cuda_devices) is not int or runtime.cuda_devices < 0:
+        return None
+    if type(runtime.resolved_device) is not str or runtime.resolved_device not in {"cpu", "cuda"}:
+        return None
+    if runtime.resolved_device == "cuda" and runtime.cuda_devices < 1:
+        return None
+    fields = {
+        "backend_version": runtime.backend_version,
+        "ctranslate2_version": runtime.ctranslate2_version,
+        "resolved_device": runtime.resolved_device,
+        "resolved_compute_type": runtime.resolved_compute_type,
+    }
+    if any(type(value) is not str or not value for value in fields.values()):
+        return None
+    return tuple(fields[name] for name in (
+        "backend_version",
+        "ctranslate2_version",
+        "resolved_device",
+        "resolved_compute_type",
+    ))
 
 
 def audio_runtime_doctor(
@@ -560,7 +597,13 @@ class WhisperTranscriber:
             )
             if len(message) == 2 and message[0] == "ready":
                 child_runtime = message[1]
-                if child_runtime != self.runtime:
+                expected_identity = _whisper_runtime_processing_identity(self.runtime)
+                child_identity = _whisper_runtime_processing_identity(child_runtime)
+                if (
+                    expected_identity is None
+                    or child_identity is None
+                    or child_identity != expected_identity
+                ):
                     raise WhisperRuntimeError(
                         "Whisper worker runtime differs from the processing signature"
                     )

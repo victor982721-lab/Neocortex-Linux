@@ -418,6 +418,14 @@ resumen de esos efectos (`N` contenedores aplicados y `M` archivos físicos
 publicados); no simula rollback total y factory reset no restaura originales ya
 enviados a Trash.
 
+La tabla coloca `Ingestión ZIP` entre Inventario e Identify, no entre las rutas
+de contenido. El avance cuenta contenedores resueltos por el adaptador del lote;
+durante la clasificación el total es desconocido (`X/?`), porque los archivos
+admitidos no equivalen al número de ZIPs. Los eventos internos de miembros,
+bytes y cierres de fase no finalizan el lote: sólo su resultado agregado o una
+interrupción publican el estado terminal. Los paquetes atómicos participan en
+esa clasificación inicial, pero no se descomprimen como archivos genéricos.
+
 ### Lifecycle durable de `--all` (implementado; aceptación en curso)
 
 `--all` coordina ZIP Intake y las rutas de contenido bajo un único run

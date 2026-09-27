@@ -155,7 +155,9 @@ reportImportCycles = "warning"
 # do not embed a private absolute path; callers in another checkout may still
 # override it with Pyright's ``--venvpath`` option.
 venvPath = "../../.local/share/Neocortex/tooling"
-venv = "quality-cp313-20260920"
+# The verified CPython 3.13 quality environment lives outside the product
+# runtime and is provisioned only from authenticated local wheel supply.
+venv = "quality-cp313"
 extraPaths = ["."]
 exclude = [
     # Semgrep positive/negative fixtures intentionally contain invalid calls

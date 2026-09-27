@@ -19,6 +19,30 @@ from neocortex.progress import LineProgress, ProgressEvent, ProgressMetric, Rich
 from neocortex.progress import rich as rich_progress
 
 
+def test_zip_intake_is_shown_before_identify_and_content_routes() -> None:
+    console = Console(file=StringIO(), width=160, force_terminal=False)
+    reporter = RichProgress(console=console, transient=True)
+    for operation, phase, unit in (
+        ("pdf", "extract", "PDF"),
+        ("framework", "content-types", "archivos"),
+        ("zip-intake", "process", "ZIPs"),
+        ("dedup", "inventory", "archivos"),
+    ):
+        reporter(ProgressEvent(operation, phase, "fixture", 1, 1, unit, True,
+                               (ProgressMetric("status", "applied"),)))
+    tasks = sorted(reporter._progress.tasks, key=rich_progress._task_order)
+    assert [task.fields["operation"] for task in tasks] == [
+        "dedup", "zip-intake", "framework", "pdf",
+    ]
+    console.file = StringIO()
+    console.print(reporter._progress.get_renderable())
+    rendered = console.file.getvalue()
+    assert rendered.index("Ingestión ZIP") < rendered.index("Tipos de contenido")
+    assert rendered.index("Ingestión ZIP") < rendered.index("Procesamiento por rutas")
+    assert "Aplicado" in rendered
+    reporter.stop()
+
+
 def test_failed_terminal_event_keeps_unknown_total_in_rich_task() -> None:
     console = Console(file=StringIO(), force_terminal=False)
     reporter = RichProgress(console=console, transient=True)
@@ -202,7 +226,7 @@ def test_semantic_no_sources_producer_reports_partial_or_skipped(tmp_path, monke
     from neocortex.semantic import semantic_application
 
     for unavailable, state in ((True, "Parcial"), (False, "Omitido")):
-        def select(args, _run_id):
+        def select(args, _run_id, unavailable=unavailable):
             args.semantic_source = ()
             args._semantic_source_unavailable = {"pdf": "unavailable"} if unavailable else {}
             return (), False

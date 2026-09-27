@@ -80,6 +80,8 @@ _STATUS_LABELS = {
     "paused": "En pausa",
     "pending": "Pendiente",
     "skipped": "Omitido",
+    "planned": "Planificado",
+    "applied": "Aplicado",
 }
 
 _ROUTE_LABELS = {
@@ -87,7 +89,6 @@ _ROUTE_LABELS = {
     "docx": "DOCX",
     "office": "Office",
     "archive": "Archive",
-    "zip-intake": "ZIP",
     "text": "Texto",
     "audio": "Audio",
     "video": "Video",
@@ -179,7 +180,7 @@ def _default_console() -> Console:
 def _group_index(operation: str, phase: str) -> int:
     if operation == "framework" and phase == "prepare":
         return 0
-    if operation == "dedup" or (
+    if operation in {"dedup", "zip-intake"} or (
         operation == "framework"
         and phase in {"content-types", "duplicates", "zip-intake-reconciliation"}
     ):
@@ -192,6 +193,8 @@ def _group_index(operation: str, phase: str) -> int:
 
 
 def _task_label(operation: str, phase: str) -> str:
+    if operation == "zip-intake":
+        return "Ingestión ZIP"
     if operation in _ROUTE_LABELS:
         route = _ROUTE_LABELS[operation]
         suffix = {"fts": "Texto", "profile": "Perfil"}.get(phase)
@@ -237,10 +240,11 @@ def _task_order(task: Task) -> tuple[int, int, int]:
     phase = str(task.fields.get("phase", ""))
     stage_order = {
         ("dedup", "inventory"): 0,
-        ("framework", "zip-intake-reconciliation"): 1,
-        ("framework", "content-types"): 2,
-        ("dedup", "verify"): 3,
-        ("framework", "duplicates"): 4,
+        ("zip-intake", "process"): 1,
+        ("framework", "zip-intake-reconciliation"): 2,
+        ("framework", "content-types"): 3,
+        ("dedup", "verify"): 4,
+        ("framework", "duplicates"): 5,
     }
     group = _group_index(operation, phase)
     rank = _ROUTE_ORDER.get(operation, 99) if group == 2 else stage_order.get(

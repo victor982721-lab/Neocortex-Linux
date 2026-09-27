@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 from neocortex.api.cli.cli_app import _emit_unsuccessful_execution
-from neocortex.progress import ProgressEvent, RecordingProgress
+from neocortex.progress import ProgressEvent, ProgressMetric, RecordingProgress
 from neocortex.runtime.orchestration.orchestrator_pipeline import (
     _BoundedZipProgress,
     InitialPipelineMixin,
@@ -63,7 +63,49 @@ def test_zip_progress_is_bounded_and_keeps_physical_counters() -> None:
     assert metrics["applied"] == 257
     assert metrics["members"] == 1_024
     assert metrics["extracted"] == 1_024
+    assert recording.events[-1].completed == 257
+    assert recording.events[-1].total == 257
     assert recording.events[-1].description == "Procesando ZIPs"
+
+
+def test_member_phase_finish_cannot_finish_the_container_batch() -> None:
+    recording = RecordingProgress()
+    reporter = _BoundedZipProgress(recording, total_hint=112_798)
+    for container in range(1, 4):
+        reporter(ProgressEvent(
+            "zip-intake", "classification", "Procesando ZIP", 4_000, 4_000,
+            "elementos", True,
+        ))
+        reporter(ProgressEvent(
+            "zip-intake", "process", "Procesando ZIPs", container, None, "ZIPs",
+            metrics=(ProgressMetric("status", "running"),),
+        ))
+    assert all(not event.finished for event in recording.events)
+    assert all(event.total is None for event in recording.events)
+    assert all(event.completed <= 3 for event in recording.events)
+
+    reporter.finish({"status": "applied", "candidates": 3, "applied": 2,
+                     "atomic_packages": 1})
+    terminal = recording.events[-1]
+    assert terminal.finished
+    assert (terminal.completed, terminal.total) == (3, 3)
+    assert _metrics(terminal)["status"] == "applied"
+    assert _metrics(terminal)["applied"] == 2
+    assert _metrics(terminal)["atomic"] == 1
+    assert sum(event.finished for event in recording.events) == 1
+
+
+def test_partial_batch_reports_only_settled_containers_not_member_counts() -> None:
+    recording = RecordingProgress()
+    reporter = _BoundedZipProgress(recording, total_hint=99)
+    reporter(ProgressEvent("zip-intake", "process", "batch", 1, None, "ZIPs"))
+    reporter(ProgressEvent("zip-intake", "extract", "members", 50, 50, "elementos", True))
+    partial = reporter.partial(status="cancelled")
+    assert partial["candidates"] == 1
+    terminal = recording.events[-1]
+    assert terminal.finished and terminal.total is None
+    assert terminal.completed == 1
+    assert _metrics(terminal)["status"] == "cancelled"
 
 
 def test_zip_progress_does_not_leave_a_task_when_no_zip_exists() -> None:

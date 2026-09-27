@@ -278,7 +278,11 @@ def test_stage_forwards_identity_decision_cancellation_and_progress(
         "Procesando ZIPs",
         "Procesando ZIPs",
         "Procesando ZIPs",
+        "Procesando ZIPs",
     ]
+    assert events[-1].key == ("zip-intake", "process")
+    assert events[-1].completed == 1
+    assert events[-1].total is None
 
 
 def test_atomic_decision_exposes_identity_bound_cache_seed(

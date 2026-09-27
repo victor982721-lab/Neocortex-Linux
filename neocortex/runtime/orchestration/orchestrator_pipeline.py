@@ -111,18 +111,21 @@ class _BoundedZipProgress:
             self._counters[name] = max(
                 self._counters[name], self._metric_value(metrics, aliases)
             )
-        status = metrics.get("status")
-        if isinstance(status, str) and status:
-            self._status = status[:64]
-        if type(event.completed) is int and event.completed >= 0:
-            self._completed = max(self._completed, event.completed)
-        if type(event.total) is int and event.total >= 0:
-            self._total = event.total
+        # Only the Framework batch adapter counts containers. Engine events
+        # count members/bytes and finish individual phases, not the ZIP stage.
+        if event.key == (_ZIP_PROGRESS_OPERATION, _ZIP_PROGRESS_PHASE):
+            status = metrics.get("status")
+            if isinstance(status, str) and status:
+                self._status = status[:64]
+            if type(event.completed) is int and event.completed >= 0:
+                self._completed = max(self._completed, event.completed)
+            if type(event.total) is int and event.total >= 0:
+                self._total = event.total
 
     def _event(self, *, finished: bool, total: int | None = None) -> ProgressEvent:
         effective_total = self._total if self._total is not None else total
-        if effective_total is None:
-            effective_total = self._total_hint or None
+        # Inventory eligibility is not a ZIP count. The total stays unknown
+        # until classification has traversed the admitted batch.
         completed = self._completed
         if effective_total is not None:
             completed = min(completed, effective_total)
@@ -167,9 +170,7 @@ class _BoundedZipProgress:
             or now - self._last_emit_at >= _ZIP_PROGRESS_INTERVAL_SECONDS
         )
         if should_emit:
-            self._emit(finished=event.finished)
-            if event.finished:
-                self._finished = True
+            self._emit()
 
     def finish(self, payload: dict[str, object], *, status: str | None = None) -> None:
         """Publish one terminal event from the engine's bounded result."""
@@ -203,6 +204,9 @@ class _BoundedZipProgress:
         """Return only observed counters for cancellation/failure evidence."""
 
         self._status = status[:64]
+        if self._started and not self._finished:
+            self._emit(finished=True)
+            self._finished = True
         return {
             "status": self._status,
             "candidates": self._completed,

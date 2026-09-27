@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.admission import size_is_admitted, validate_max_file_bytes
+from neocortex.progress import ProgressEvent, ProgressMetric, emit_progress
 
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive.intake import ZipIntakeLimits
@@ -463,6 +464,29 @@ def run_zip_intake_stage(
                     "detail": source_payload.get("detail"),
                 }
             )
+        # Engine callbacks describe phases within one source; only this
+        # caller knows how many containers have settled across the batch.
+        # Preserve the real callback for cancellation/member observation,
+        # then publish cumulative container counts without a guessed total.
+        emit_progress(
+            progress,
+            ProgressEvent(
+                "zip-intake",
+                "process",
+                "Procesando ZIPs",
+                counters["candidates"],
+                None,
+                "ZIPs",
+                metrics=(
+                    *(ProgressMetric(name, value) for name, value in counters.items()),
+                    ProgressMetric("blocked", sum(
+                        count for name, count in statuses.items()
+                        if name not in {"planned", "atomic", "applied"}
+                    )),
+                    ProgressMetric("status", "running"),
+                ),
+            ),
+        )
 
     failure_statuses = {
         status: count

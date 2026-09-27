@@ -1,0 +1,48 @@
+{
+  "analyzer_roots": [
+    {
+      "name": "ruff",
+      "role": "analyzer",
+      "version": "0.15.17"
+    },
+    {
+      "name": "mypy",
+      "role": "analyzer",
+      "version": "2.1.0"
+    },
+    {
+      "name": "pyright",
+      "role": "analyzer",
+      "version": "1.1.411"
+    },
+    {
+      "name": "semgrep",
+      "role": "analyzer",
+      "version": "1.176.1"
+    }
+  ],
+  "closure_count": 74,
+  "kind": "neocortex_static_tooling_manifest",
+  "lock_path": "../locks/quality-cp313-linux-x86_64.lock",
+  "lock_sha256": "9a360cd70fd9e2260a1804797c02cb0be87143dc0ea8ec7d5a8a0e85aa00d9dd",
+  "provenance_path": "provenance-cp313.json",
+  "provenance_sha256": "46619f58f20448778c3d7852bf1706277ed5b54f2954e0b6eb7a5209114cd35c",
+  "schema_version": 1,
+  "scope": "active isolated CPython 3.13 static QA tooling",
+  "supply": {
+    "artifact_count": 74,
+    "local_manifest_path": "$HOME/.local/share/Neocortex/tooling/qa-supply-cp313-20260927/quality-supply-manifest.json",
+    "local_manifest_sha256": "481f1e1106d386e08241a6cb9767aebac2140887172f21234647f66cf8825467",
+    "status": "verified-local-for-this-host",
+    "wheels_path": "$HOME/.local/share/Neocortex/tooling/qa-supply-cp313-20260927/wheels"
+  },
+  "target": {
+    "platform": "linux_x86_64",
+    "python": "cp313",
+    "python_full_version": "3.13.15"
+  },
+  "test_base_reference": {
+    "lock_path": "../locks/test-base-cp313-linux-x86_64.lock",
+    "status": "separate-verified"
+  }
+}
