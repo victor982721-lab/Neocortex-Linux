@@ -1,5 +1,25 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-CLI-PROGRESS-20260927.
+**Estado:** implementación, publicación, instalación y verificación terminadas.
+**Fuente de detalle:** [NEOCORTEX_CLI_PROGRESS_2026-09-27.md](NEOCORTEX_CLI_PROGRESS_2026-09-27.md).
+
+La CLI ahora mide el PTY en cada redibujado y muestra una fila compacta y estable
+por `(operation, phase)`, agrupada por etapa general. El flujo usa exclusivamente
+`ProgressEvent` y sus métricas tipadas; el JSON de progreso permanece igual.
+La release activa deriva del commit de código `62d3c608231b47c8c79101a389be2f384f669528`
+y conserva la release anterior como rollback.
+
+La validación usó eventos sintéticos, PTY y un corpus temporal vacío; no procesó
+el Corpus real ni preparó modelos. No se encontró una corrida
+`Neocortex --all --apply` activa antes de promover. Ruff/Mypy/Pyright/Semgrep no
+se ejecutaron: el inventario local de analizadores es histórico para CPython
+3.14 y no hay un entorno de calidad CPython 3.13 autenticado.
+
+---
+
+# Handoff anterior — NeoCortex
+
 **Ronda:** NEO-OPT-20260926.
 **Alcance:** segunda pasada de simplificación de código privado inalcanzable y
 reducción de trabajo repetido, con equivalencia funcional y E2E aislado.
