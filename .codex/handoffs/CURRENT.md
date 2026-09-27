@@ -1,5 +1,19 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-CORRECCION-INTEGRAL-20260927.
+**Estado:** correcciones publicadas, release instalada y verificada.
+**Detalle:** [NEOCORTEX_INTEGRAL_CORRECTIONS_2026-09-27.md](NEOCORTEX_INTEGRAL_CORRECTIONS_2026-09-27.md).
+
+Release activa `0.14.1-e5d038cf88e2-cp313-linux-x86_64`; rollback `12dddb20d227`.
+Snapshots mínimos, correcciones de formatos/caché/admisión y recovery CLI.
+671 pruebas principales, escala sintética1M y E2E instalado completo incluidos
+error/cancelación/reanudación. Sin corpus real ni modelos nuevos; límites y
+mediciones en el expediente enlazado. SQLite mantiene acreditación.
+
+---
+
+# Handoff operativo vigente — NeoCortex
+
 **Ronda:** NEO-CLI-DESIGN-20260927.
 **Estado:** código publicado, release instalada y verificación terminada.
 **Detalle:** [NEOCORTEX_CLI_DESIGN_2026-09-27.md](NEOCORTEX_CLI_DESIGN_2026-09-27.md).
