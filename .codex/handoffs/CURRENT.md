@@ -1,5 +1,23 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-WHISPER-ZIP-QA-20260927.
+**Estado:** código publicado, release instalada y verificación terminada.
+**Detalle:** [NEOCORTEX_WHISPER_ZIP_QA_2026-09-27.md](NEOCORTEX_WHISPER_ZIP_QA_2026-09-27.md).
+
+Release activa: `0.14.1-d854809926ca-cp313-linux-x86_64`.
+Whisper valida identidad efectiva sin confundir el conteo observado de GPU en
+CPU; ZIP aparece inicialmente y su terminal cuenta el lote completo. QA está
+adaptado a CPython 3.13.15 en un entorno separado del producto.
+
+248 pruebas focales, 2 subtests y verificación instalada aprobadas. Ruff y
+Semgrep pasan; Mypy/Pyright conservan deuda previa sin diagnósticos nuevos.
+No se procesó el Corpus real. Su corrida 4 permanece fallida y tuvo 9
+abstenciones ZIP por límites/colisión/corrupción, no un procesamiento tardío.
+
+---
+
+# Handoff anterior — NeoCortex
+
 **Ronda:** NEO-CLI-PROGRESS-TABLES-20260927.
 **Estado:** código publicado, release instalada y verificación terminada.
 **Detalle:** [NEOCORTEX_CLI_PROGRESS_TABLES_2026-09-27.md](NEOCORTEX_CLI_PROGRESS_TABLES_2026-09-27.md).
