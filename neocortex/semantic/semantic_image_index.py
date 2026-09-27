@@ -512,6 +512,7 @@ def _finalize_image_staging(
             "imágenes",
             True,
             (
+                ProgressMetric("status", "completed" if enumeration_complete else "partial"),
                 ProgressMetric("chunks", chunks_staged),
                 ProgressMetric("queued_work", image_queued + ocr_queued),
                 ProgressMetric(

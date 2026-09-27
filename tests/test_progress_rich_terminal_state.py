@@ -12,6 +12,7 @@ import termios
 from io import StringIO
 from types import SimpleNamespace
 
+from rich.cells import cell_len
 from rich.console import Console
 
 from neocortex.progress import LineProgress, ProgressEvent, ProgressMetric, RichProgress
@@ -118,79 +119,243 @@ def test_default_console_keeps_pipe_mode_unforced(monkeypatch) -> None:
     reporter.stop()
 
 
-def test_task_summary_normalizes_metric_order_without_truncating_core_values() -> None:
-    console = Console(file=StringIO(), width=180, force_terminal=False)
-    reporter = RichProgress(console=console, transient=True)
-    reporter(
-        ProgressEvent(
-            "docx",
-            "extract",
-            "Indexando DOCX",
-            1234,
-            2468,
-            "documentos",
-            metrics=(
-                ProgressMetric("memory_waits", 7),
-                ProgressMetric("status", "running"),
-                ProgressMetric("errors", 2),
-                ProgressMetric("new_work", 1200),
-                ProgressMetric("cache_hits", 9),
-                ProgressMetric("retries", 4),
-                ProgressMetric("protected", 3),
-            ),
-        )
-    )
 
-    task = reporter._progress.tasks[0]  # type: ignore[attr-defined]
-    line = reporter._progress.columns[0].render(task).plain  # type: ignore[attr-defined]
-    ordered_fields = (
-        "avance 50% · 1234/2468 documentos",
-        "caché 9",
-        "trabajo nuevo 1200",
-        "errores 2",
-        "esperas 7",
-        "estado en curso",
-    )
-    assert all(field in line for field in ordered_fields)
-    assert [line.index(field) for field in ordered_fields] == sorted(
-        line.index(field) for field in ordered_fields
-    )
-    assert "Indexando DOCX" in line
-    assert len(line) <= console.width
+def _snapshot(reporter: RichProgress) -> str:
+    output = StringIO()
+    console = Console(file=output, width=reporter._console.width, color_system=None)
+    console.print(reporter._progress.get_renderable())
+    return output.getvalue()
+
+
+def _metric_tuple(**values: int | str) -> tuple[ProgressMetric, ...]:
+    return tuple(ProgressMetric(name, value) for name, value in values.items())
+
+
+def test_routes_share_columns_and_distinguish_zero_from_missing_metrics() -> None:
+    console = Console(file=StringIO(), width=180, force_terminal=False)
+    reporter = RichProgress(console=console, transient=True, details=False)
+    reporter(ProgressEvent(
+        "docx", "extract", "caché 999 errores 999; descripción no es un contador",
+        1234, 2468, "documentos",
+        metrics=_metric_tuple(memory_waits=7, errors=0, new_work=1200, cache_hits=9),
+    ))
+    reporter(ProgressEvent(
+        "text", "extract", "Descripción diferente", 200, 300, "documentos",
+        metrics=_metric_tuple(errors=2, cache_hits=100),
+    ))
+    table = reporter._progress.make_tasks_table(reporter._progress.tasks)
+    assert [column.header for column in table.columns] == [
+        "Ruta", "Avance", "Unidad", "Caché", "Nuevo", "Errores", "Esperas", "Tiempo", "Estado",
+    ]
+    assert len(table.rows) == 2
+    docx, text = reporter._progress.tasks
+    docx_cells = rich_progress._task_cells(docx)
+    text_cells = rich_progress._task_cells(text)
+    assert docx_cells["new"].plain == "1200"
+    assert docx_cells["errors"].plain == "0"
+    assert text_cells["new"].plain == "—"
+    assert text_cells["waits"].plain == "—"
+    rendered = _snapshot(reporter)
+    assert "999" not in rendered
+    assert "1234/2468" in rendered
+    assert "200/300" in rendered
+    assert "— dato no informado" in rendered
     reporter.stop()
 
 
-def test_phase_groups_are_ordered_independently_of_event_arrival() -> None:
+def test_real_route_terminal_producer_supplies_and_replaces_typed_outcome() -> None:
+    from threading import RLock
+
+    from neocortex.progress import RecordingProgress
+    from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
+
+    for outcome, state in (
+        ("completed", "Completo"), ("failed", "Fallido"), ("cancelled", "Cancelado"),
+    ):
+        recording = RecordingProgress()
+        orchestrator = FrameworkOrchestrator.__new__(FrameworkOrchestrator)
+        orchestrator._progress_lock = RLock()
+        orchestrator._active_progress = {}
+        orchestrator.progress = recording
+        orchestrator._coordinated_progress(ProgressEvent(
+            "pdf", "extract", "Descripción sin resultado", 900, 2000, "PDF",
+            metrics=_metric_tuple(errors=9, status="running"),
+        ))
+        orchestrator._finish_route_progress("pdf", outcome)
+        terminal = recording.events[-1]
+        assert terminal.finished
+        assert [metric.value for metric in terminal.metrics if metric.name == "status"] == [
+            outcome,
+        ]
+        reporter = RichProgress(console=Console(file=StringIO(), width=120), transient=True)
+        reporter(terminal)
+        view = _snapshot(reporter)
+        assert state in view
+        expected_advance = "900/2000" if outcome == "completed" else "900/?"
+        assert expected_advance in view
+        reporter.stop()
+
+
+def test_semantic_no_sources_producer_reports_partial_or_skipped(tmp_path, monkeypatch) -> None:
+    from neocortex.api.cli.cli_parser import build_parser
+    from neocortex.progress import RecordingProgress
+    from neocortex.semantic import semantic_application
+
+    for unavailable, state in ((True, "Parcial"), (False, "Omitido")):
+        def select(args, _run_id):
+            args.semantic_source = ()
+            args._semantic_source_unavailable = {"pdf": "unavailable"} if unavailable else {}
+            return (), False
+
+        monkeypatch.setattr(semantic_application, "_select_integrated_sources", select)
+        args = build_parser().parse_args(["--all", "--state-directory", str(tmp_path)])
+        args.state_directory = tmp_path
+        recording = RecordingProgress()
+        result = semantic_application.run_integrated_all_semantic_index(
+            args, progress=recording, print_output=False, framework_lock_held=True,
+        )
+        assert result == (2 if unavailable else 0)
+        terminal = recording.events[-1]
+        reporter = RichProgress(console=Console(file=StringIO(), width=120), transient=True)
+        reporter(terminal)
+        assert state in _snapshot(reporter)
+        assert "Finalizado" not in _snapshot(reporter)
+        reporter.stop()
+
+
+def test_existing_semantic_status_codes_have_consistent_human_labels() -> None:
+    for outcome, state in (
+        ("ok", "Completo"), ("error", "Incompleto"), ("interrumpido", "Interrumpido"),
+    ):
+        reporter = RichProgress(console=Console(file=StringIO(), width=120), transient=True)
+        reporter(ProgressEvent(
+            "semantic", "integrated", "Descripción", 1, 1, "fase", True,
+            _metric_tuple(status=outcome),
+        ))
+        assert state in _snapshot(reporter)
+        reporter.stop()
+
+
+def test_semantic_completion_metric_is_used_when_status_is_not_published() -> None:
+    reporter = RichProgress(console=Console(file=StringIO(), width=120), transient=True)
+    reporter(ProgressEvent(
+        "semantic", "unavailable:text", "Modelo no disponible", 0, 1, "ámbitos",
+        metrics=_metric_tuple(completion_status="partial"),
+    ))
+    assert "Parcial" in _snapshot(reporter)
+    reporter.stop()
+
+
+def test_display_uses_exact_event_counts_even_after_partial_finalization() -> None:
+    console = Console(file=StringIO(), width=180, force_terminal=False)
+    reporter = RichProgress(console=console, transient=True)
+    reporter(ProgressEvent(
+        "pdf", "extract", "Resultado parcial", 2, 10, "PDF", True,
+        _metric_tuple(status="failed", errors=1),
+    ))
+    assert rich_progress._task_cells(reporter._progress.tasks[0])["advance"].plain == "2/10"
+    large = 9007199254740993
+    reporter(ProgressEvent("pdf", "extract", "Reanudación", large, large + 1, "PDF"))
+    assert rich_progress._task_cells(reporter._progress.tasks[0])["advance"].plain == (
+        f"{large}/{large + 1}"
+    )
+    reporter.stop()
+
+
+def test_secondary_fields_stay_out_of_main_tables_until_details_are_requested() -> None:
+    event = ProgressEvent(
+        "video", "inspect", "Inspección visual en curso", 12, 20, "archivos",
+        metrics=_metric_tuple(cache_hits=3, errors=0, frames=200, ocr_positive=4),
+    )
+    for details in (False, True):
+        console = Console(file=StringIO(), width=240, force_terminal=False)
+        reporter = RichProgress(console=console, transient=True, details=details)
+        reporter(event)
+        view = _snapshot(reporter)
+        assert ("Detalles de las tareas" in view) is details
+        assert ("fotogramas: 200" in view) is details
+        assert ("Inspección visual en curso" in view) is details
+        assert len(reporter._progress.make_tasks_table(reporter._progress.tasks).rows) == 1
+        reporter.stop()
+
+
+def test_details_environment_is_opt_in_and_can_be_overridden(monkeypatch) -> None:
+    monkeypatch.setenv("NEOCORTEX_PROGRESS_DETAILS", "1")
+    console = Console(file=StringIO(), force_terminal=False)
+    reporter = RichProgress(console=console)
+    assert reporter._progress.details is True
+    explicit = RichProgress(console=console, details=False)
+    assert explicit._progress.details is False
+
+
+def test_details_also_expose_primary_columns_hidden_by_narrow_width() -> None:
+    reporter = RichProgress(
+        console=Console(file=StringIO(), width=40), transient=True, details=True,
+    )
+    reporter(ProgressEvent(
+        "pdf", "extract", "PDF", 10, 20, "PDF",
+        metrics=_metric_tuple(cache_hits=7, new_work=3, errors=1, memory_waits=8),
+    ))
+    view = _snapshot(reporter)
+    details = " ".join(view.split("Detalles de las tareas", 1)[1].split())
+    assert "caché: 7" in details
+    assert "trabajo nuevo: 3" in details
+    assert "esperas: 8" in details
+    reporter.stop()
+
+
+def test_narrow_and_wide_tables_keep_counts_and_state_complete() -> None:
+    for width in (40, 60, 80, 120, 240):
+        console = Console(file=StringIO(), width=width, force_terminal=False)
+        reporter = RichProgress(console=console, transient=True, details=False)
+        reporter(ProgressEvent(
+            "pdf", "extract", "PDF", 123456, 246912, "PDF",
+            metrics=_metric_tuple(status="running", cache_hits=100, new_work=3,
+                                  errors=2, memory_waits=7),
+        ))
+        reporter(ProgressEvent(
+            "docx", "extract", "DOCX", 24, 48, "documentos",
+            metrics=_metric_tuple(status="failed", errors=1),
+        ))
+        view = _snapshot(reporter)
+        assert "123456/246912" in view
+        assert "24/48" in view
+        assert "En curso" in view
+        assert "Fallido" in view
+        assert all(cell_len(line) <= width for line in view.splitlines())
+        table = reporter._progress.make_tasks_table(reporter._progress.tasks)
+        assert all(len(column._cells) == 2 for column in table.columns)
+        reporter.stop()
+
+
+def test_phase_groups_have_blank_separation_and_stable_stage_names() -> None:
     console = Console(file=StringIO(), width=180, force_terminal=False)
     reporter = RichProgress(console=console, transient=True)
     events = (
-        ProgressEvent("framework", "complete", "Etapa previa completada", 1, 1, "fase"),
-        ProgressEvent("semantic", "integrated", "Semantic completado", 1, 1, "fase"),
-        ProgressEvent("pdf", "extract", "Procesando PDF", 1, 2, "PDF"),
-        ProgressEvent("dedup", "inventory", "Inventariando archivos", 1, 2, "archivos"),
-        ProgressEvent("framework", "prepare", "Ejecución preparada", 1, 1, "fase"),
+        ProgressEvent("framework", "complete", "Etapa", 1, 1, "fase"),
+        ProgressEvent("semantic", "integrated", "Semantic", 1, 1, "fase"),
+        ProgressEvent("pdf", "extract", "PDF", 1, 2, "PDF"),
+        ProgressEvent("dedup", "verify", "Duplicados", 1, 2, "operaciones"),
+        ProgressEvent("framework", "content-types", "Tipos", 1, 2, "archivos"),
+        ProgressEvent("dedup", "inventory", "Inventario", 1, 2, "archivos"),
+        ProgressEvent("framework", "duplicates", "Duplicados", 1, 2, "archivos"),
+        ProgressEvent("framework", "prepare", "Preparación", 1, 1, "fase"),
     )
     for event in events:
         reporter(event)
-
-    snapshot = StringIO()
-    snapshot_console = Console(file=snapshot, width=180, force_terminal=False)
-    snapshot_console.print(
-        reporter._progress.make_tasks_table(reporter._progress.tasks)  # type: ignore[attr-defined]
-    )
-    rendered = snapshot.getvalue()
+    rendered = _snapshot(reporter)
     expected_groups = (
-        "Preparación",
-        "Inventario y validación",
-        "Procesamiento por rutas",
-        "Catálogos y Semantic",
-        "Cierre",
+        "Preparación", "Inventario y validación", "Procesamiento por rutas",
+        "Catálogos y Semantic", "Cierre",
     )
-    assert all(group in rendered for group in expected_groups)
     assert [rendered.index(group) for group in expected_groups] == sorted(
         rendered.index(group) for group in expected_groups
     )
-    assert len(reporter._progress.tasks) == len(events)  # type: ignore[attr-defined]
+    for group in expected_groups[1:]:
+        assert f"\n\n{group}\n" in rendered
+    assert rendered.index("Tipos de contenido") < rendered.index("Validar duplicados")
+    assert "Aplicar duplicados" in rendered
+    assert len(reporter._progress.tasks) == len(events)
     reporter.stop()
 
 
@@ -221,7 +386,10 @@ def test_pty_resize_redraw_tracks_both_directions_and_keeps_one_unwrapped_task(m
     terminal_output = bytearray()
     try:
         resize(44, 10)
-        reporter = RichProgress(transient=False, refresh_per_second=30)
+        reporter = RichProgress(transient=False, refresh_per_second=30, details=False)
+        reporter(ProgressEvent("docx", "extract", "DOCX", 3, 30, "documentos"))
+        reporter(ProgressEvent("text", "extract", "Texto", 5, 50, "documentos"))
+        reporter(ProgressEvent("framework", "prepare", "Preparado", 1, 1, "fase", True))
         updates = (
             (44, 10, ProgressEvent(
                 "pdf",
@@ -293,22 +461,25 @@ def test_pty_resize_redraw_tracks_both_directions_and_keeps_one_unwrapped_task(m
 
             assert reporter._console.width == columns  # type: ignore[attr-defined]
             assert reporter._console.height == lines  # type: ignore[attr-defined]
-            assert len(reporter._progress.tasks) == 1  # type: ignore[attr-defined]
-            task = reporter._progress.tasks[0]  # type: ignore[attr-defined]
-            row = reporter._progress.columns[0].render(task)  # type: ignore[attr-defined]
-            assert row.cell_len <= columns
-            assert progress_text in row.plain
+            assert len(reporter._progress.tasks) == 4  # type: ignore[attr-defined]
+            task = next(task for task in reporter._progress.tasks
+                        if task.fields["operation"] == "pdf")
+            row = rich_progress._task_cells(task)
+            view = _snapshot(reporter)
+            assert all(cell_len(line) <= columns for line in view.splitlines())
+            assert progress_text.removesuffix(" PDF") in view
 
             if event.description == "PDF fallido":
                 assert task.total is None
-                assert "errores 9" in row.plain
-                assert "estado fallido" in row.plain
+                assert row["errors"].plain == "9"
+                assert row["status"].plain == "Fallido"
+                assert "Fallido" in view
             if event.description == "Reanudando PDF":
                 assert task.finished is False
                 assert task.stop_time is None
-                assert "estado en curso" in row.plain
-                assert "fallido" not in row.plain
-                assert "Descripción anterior" not in row.plain
+                assert row["status"].plain == "En curso"
+                assert "Fallido" not in view
+                assert "Descripción anterior" not in view
 
         reporter.stop()
         terminal_output.extend(drain())

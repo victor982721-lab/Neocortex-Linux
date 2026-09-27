@@ -1,4 +1,4 @@
-"""Adaptive terminal presentation for normalized progress events."""
+"""Aligned terminal tables projected from typed progress events."""
 
 from __future__ import annotations
 
@@ -7,9 +7,11 @@ import sys
 from collections.abc import Iterable
 from threading import RLock
 
+from rich import box
 from rich.cells import cell_len
-from rich.console import Console, ConsoleDimensions
-from rich.progress import Column, Progress, ProgressColumn, Task, TaskID
+from rich.console import Console, ConsoleDimensions, RenderableType
+from rich.padding import Padding
+from rich.progress import Progress, Task, TaskID
 from rich.table import Table
 from rich.text import Text
 
@@ -53,86 +55,45 @@ _METRIC_PRESENTATION = {
     "embedded": ("vectores", "green"),
     "generation": ("generación", "bright_black"),
     "status": ("estado", "white"),
+    "atomic": ("ZIP atómicos", "white"),
+    "generic": ("ZIP genéricos", "white"),
+    "frames": ("fotogramas", "white"),
+    "ocr_positive": ("OCR positivo", "white"),
+    "transcript_chars": ("caracteres", "white"),
 }
-
-_COMPACT_METRIC_LABELS = {
-    "new_work": "nuevo",
-    "new_jobs": "trabajos",
-}
-
-_ZERO_VISIBLE_METRICS = {
-    "cache_hits",
-    "new_work",
-    "new_jobs",
-    "cache_refreshes",
-    "retries",
-    "errors",
-    "in_flight",
-    "active_work",
-    "queued_work",
-    "remaining",
-}
-
-_CORE_METRIC_ORDER = (
-    "cache_hits",
-    "feature_cache_hits",
-    "cached_errors",
-    "cache_refreshes",
-    "cache_synced",
-    "reused",
-    "new_work",
-    "new_jobs",
-    "errors",
-    "timeouts",
-    "memory_waits",
-)
-
-# Narrow terminals retain the exact progress count and state first. When space
-# is available, errors and waits precede the cache/new-work counters; the final
-# row is then assembled in the stable presentation order above.
-_METRIC_SELECTION_PRIORITY = (
-    "errors",
-    "timeouts",
-    "memory_waits",
-    "new_work",
-    "new_jobs",
-    "cache_hits",
-    "feature_cache_hits",
-    "cached_errors",
-    "cache_refreshes",
-    "cache_synced",
-    "reused",
-)
 
 _STATUS_LABELS = {
-    "running": "en curso",
-    "complete": "completo",
-    "completed": "completo",
-    "success": "correcto",
-    "failed": "fallido",
-    "cancelled": "cancelado",
-    "canceled": "cancelado",
-    "partial": "parcial",
-    "incomplete": "incompleto",
-    "blocked": "bloqueado",
-    "unavailable": "no disponible",
-    "paused": "en pausa",
-    "pending": "pendiente",
-    "skipped": "omitido",
+    "running": "En curso",
+    "complete": "Completo",
+    "completed": "Completo",
+    "success": "Correcto",
+    "ok": "Completo",
+    "error": "Incompleto",
+    "interrumpido": "Interrumpido",
+    "failed": "Fallido",
+    "cancelled": "Cancelado",
+    "canceled": "Cancelado",
+    "partial": "Parcial",
+    "incomplete": "Incompleto",
+    "blocked": "Bloqueado",
+    "unavailable": "No disponible",
+    "paused": "En pausa",
+    "pending": "Pendiente",
+    "skipped": "Omitido",
 }
 
 _ROUTE_LABELS = {
-    "archive": "ARCHIVE",
-    "audio": "AUDIO",
-    "docx": "DOCX",
-    "image": "IMAGEN",
-    "office": "OFFICE",
     "pdf": "PDF",
-    "text": "TEXTO",
-    "video": "VIDEO",
+    "docx": "DOCX",
+    "office": "Office",
+    "archive": "Archive",
     "zip-intake": "ZIP",
+    "text": "Texto",
+    "audio": "Audio",
+    "video": "Video",
+    "image": "Imagen",
 }
-
+_ROUTE_ORDER = {name: index for index, name in enumerate(_ROUTE_LABELS)}
 _GROUP_LABELS = (
     "Preparación",
     "Inventario y validación",
@@ -140,18 +101,31 @@ _GROUP_LABELS = (
     "Catálogos y Semantic",
     "Cierre",
 )
-
-_COMPACT_UNITS = {
-    "archivos": "arch.",
-    "directorios": "dirs.",
-    "documentos": "docs",
-    "elementos": "elem.",
-    "ejecución": "ejec.",
-    "imágenes": "imgs",
-    "operaciones": "ops.",
-    "páginas": "pág.",
-    "trabajos": "trab.",
+_FIELD_LABELS = {
+    "label": "Tarea",
+    "advance": "Avance",
+    "unit": "Unidad",
+    "cache": "Caché",
+    "new": "Nuevo",
+    "errors": "Errores",
+    "waits": "Esperas",
+    "elapsed": "Tiempo",
+    "status": "Estado",
 }
+_GENERAL_FIELDS = ("label", "advance", "unit", "errors", "elapsed", "status")
+_ROUTE_FIELDS = (
+    "label", "advance", "unit", "cache", "new", "errors", "waits", "elapsed", "status",
+)
+# A metric that a producer does not publish stays unknown, rather than becoming
+# a made-up zero or a subtraction whose semantics differ between routes.
+_METRIC_FIELDS = {
+    "cache": "cache_hits",
+    "new": "new_work",
+    "errors": "errors",
+    "waits": "memory_waits",
+}
+_PRIMARY_METRICS = frozenset((*_METRIC_FIELDS.values(), "status"))
+_DROP_PRIORITY = ("elapsed", "waits", "new", "cache", "unit", "errors")
 
 
 def _terminal_dimensions() -> tuple[int, int] | None:
@@ -205,13 +179,10 @@ def _default_console() -> Console:
 def _group_index(operation: str, phase: str) -> int:
     if operation == "framework" and phase == "prepare":
         return 0
-    if operation == "dedup":
-        return 1
-    if operation == "framework" and phase in {
-        "content-types",
-        "duplicates",
-        "zip-intake-reconciliation",
-    }:
+    if operation == "dedup" or (
+        operation == "framework"
+        and phase in {"content-types", "duplicates", "zip-intake-reconciliation"}
+    ):
         return 1
     if operation in _ROUTE_LABELS:
         return 2
@@ -220,295 +191,253 @@ def _group_index(operation: str, phase: str) -> int:
     return 4
 
 
-def _group_label(operation: str, phase: str) -> str:
-    return _GROUP_LABELS[_group_index(operation, phase)]
-
-
 def _task_label(operation: str, phase: str) -> str:
     if operation in _ROUTE_LABELS:
-        return _ROUTE_LABELS[operation]
+        route = _ROUTE_LABELS[operation]
+        suffix = {"fts": "Texto", "profile": "Perfil"}.get(phase)
+        return f"{route} / {suffix}" if suffix else route
     if operation == "framework":
         return {
-            "prepare": "EJECUCIÓN",
-            "content-types": "TIPOS",
-            "duplicates": "DUPLICADOS",
-            "empty-directories": "DIR. VACÍOS",
-            "empty-files": "ARCHIVOS VACÍOS",
-            "redlist": "REDLIST",
-            "result": "RESULTADO",
-            "complete": "ETAPA",
-            "zip-effects": "ZIP",
-            "zip-intake-reconciliation": "ZIP",
-        }.get(phase, "MARCO")
+            "prepare": "Ejecución",
+            "content-types": "Tipos de contenido",
+            "duplicates": "Aplicar duplicados",
+            "empty-directories": "Directorios vacíos",
+            "empty-files": "Archivos vacíos",
+            "redlist": "Redlist",
+            "result": "Resultado",
+            "complete": "Etapa previa",
+            "zip-effects": "Efectos ZIP",
+            "zip-intake-reconciliation": "Conciliar inventario",
+        }.get(phase, phase.replace("-", " ").capitalize())
     if operation == "dedup":
-        return "INVENTARIO" if phase == "inventory" else "DUPLICADOS"
-    if operation == "semantic":
-        return "SEMANTIC"
+        return "Inventario" if phase == "inventory" else "Validar duplicados"
     if operation.startswith("catalog-"):
-        source = operation.removeprefix("catalog-")
-        return f"CAT. {source.upper()}"
-    if operation.startswith("organization"):
-        return "ORGANIZACIÓN"
-    return operation.upper() or "TAREA"
+        return f"Catálogo {operation.removeprefix('catalog-').upper()}"
+    if operation == "semantic":
+        kind, _, scope = phase.partition(":")
+        label = {
+            "integrated": "Semantic",
+            "stage": "Preparar",
+            "generation": "Vectores",
+            "exact-replay": "Reutilizar",
+            "unavailable": "Modelo",
+            "blocked": "Modelo",
+            "retry": "Reintento",
+        }.get(kind, "Semantic")
+        return f"{label} {scope.upper()}" if scope and kind != "generation" else label
+    if phase == "organization-plan":
+        return "Planificar organización"
+    if phase == "organization-apply":
+        return "Aplicar organización"
+    return f"{operation} / {phase}".replace("_", " ").replace("-", " ")
 
 
-def _format_count(value: float | int) -> str:
-    numeric = float(value)
-    return str(int(numeric)) if numeric.is_integer() else f"{numeric:g}"
+def _task_order(task: Task) -> tuple[int, int, int]:
+    operation = str(task.fields.get("operation", ""))
+    phase = str(task.fields.get("phase", ""))
+    stage_order = {
+        ("dedup", "inventory"): 0,
+        ("framework", "zip-intake-reconciliation"): 1,
+        ("framework", "content-types"): 2,
+        ("dedup", "verify"): 3,
+        ("framework", "duplicates"): 4,
+    }
+    group = _group_index(operation, phase)
+    rank = _ROUTE_ORDER.get(operation, 99) if group == 2 else stage_order.get(
+        (operation, phase), 99,
+    )
+    return group, rank, task.id
 
 
 def _format_duration(seconds: float) -> str:
-    total = max(0, int(seconds))
-    hours, remainder = divmod(total, 3600)
+    hours, remainder = divmod(max(0, int(seconds)), 3600)
     minutes, seconds_part = divmod(remainder, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{seconds_part:02d}"
-    return f"{minutes:02d}:{seconds_part:02d}"
+    return (
+        f"{hours}:{minutes:02d}:{seconds_part:02d}"
+        if hours else f"{minutes:02d}:{seconds_part:02d}"
+    )
 
 
 def _metric_values(task: Task) -> dict[str, int | str]:
-    metrics = task.fields.get("metrics", ())
     return {
         metric.name: metric.value
-        for metric in metrics
+        for metric in task.fields.get("metrics", ())
         if isinstance(metric, ProgressMetric)
     }
 
 
-def _metric_text(name: str, value: int | str, *, compact: bool = False) -> tuple[str, str]:
-    default_label, style = _METRIC_PRESENTATION.get(
-        name,
-        (name.replace("_", "-"), "white"),
-    )
-    label = _COMPACT_METRIC_LABELS.get(name, default_label) if compact else default_label
-    return f"{label} {value}", style
-
-
 def _status_value(task: Task, metrics: dict[str, int | str]) -> str:
-    raw_status = metrics.get("status")
-    if raw_status is None:
-        return "finalizado" if task.fields.get("event_finished", False) else "en curso"
-    status = str(raw_status)
-    return _STATUS_LABELS.get(status.lower(), status)
+    raw = metrics.get("status", metrics.get("completion_status"))
+    if raw is None:
+        return "Finalizado" if task.fields.get("event_finished", False) else "En curso"
+    return _STATUS_LABELS.get(str(raw).lower(), str(raw))
 
 
-def _progress_text(task: Task, width: int) -> str:
-    completed = _format_count(task.completed)
-    total = "?" if task.total is None else _format_count(task.total)
-    count = f"{completed}/{total}"
-    unit = str(task.fields.get("unit", "elementos"))
-    if width < 90 or task.total is None:
-        return f"{count} {unit}"
-    if task.total <= 0:
-        percentage = 100 if task.fields.get("event_finished", False) else 0
-    else:
-        percentage = min(100, max(0, round(task.completed / task.total * 100)))
-    if width < 100:
-        return f"{percentage}% {count} {unit}"
-    return f"avance {percentage}% · {count} {unit}"
-
-
-class _TaskLineColumn(ProgressColumn):
-    """One width-aware row with exact counts/state and prioritized metrics."""
-
-    def __init__(self, console: Console) -> None:
-        super().__init__(table_column=Column(no_wrap=True, overflow="crop", ratio=1))
-        self._console = console
-
-    @staticmethod
-    def _segments(
-        *,
-        prefix: str | None,
-        progress: str,
-        selected_metrics: set[str],
-        metrics: dict[str, int | str],
-        timing: str | None,
-        status: str,
-        status_label: bool = True,
-        description: str | None = None,
-        secondary: tuple[str, ...] = (),
-        compact_labels: bool = False,
-    ) -> list[tuple[str, str]]:
-        segments: list[tuple[str, str]] = []
-        if prefix:
-            segments.append((prefix, "bold cyan"))
-        if description:
-            segments.append((description, "white"))
-        segments.append((progress, "bright_white"))
-        for name in _CORE_METRIC_ORDER:
-            if name in selected_metrics and name in metrics:
-                segment, style = _metric_text(name, metrics[name], compact=compact_labels)
-                segments.append((segment, style))
-        for name in secondary:
-            if name in metrics:
-                segment, style = _metric_text(name, metrics[name], compact=compact_labels)
-                segments.append((segment, style))
-        if timing:
-            segments.append((timing, "bright_black"))
-        state_text = f"estado {status}" if status_label else status
-        segments.append((state_text, "white"))
-        return segments
-
-    @staticmethod
-    def _line_width(segments: list[tuple[str, str]]) -> int:
-        return sum(cell_len(value) for value, _ in segments) + max(0, len(segments) - 1) * 3
-
-    @staticmethod
-    def _render_segments(segments: list[tuple[str, str]]) -> Text:
-        result = Text(no_wrap=True, overflow="crop")
-        for index, (value, style) in enumerate(segments):
-            if index:
-                result.append(" · ", style="bright_black")
-            result.append(value, style=style)
-        return result
-
-    def render(self, task: Task) -> Text:
-        width = max(1, self._console.width)
-        operation = str(task.fields.get("operation", ""))
-        phase = str(task.fields.get("phase", ""))
-        prefix: str | None = _task_label(operation, phase)
-        progress = _progress_text(task, width)
-        metrics = _metric_values(task)
-        status = _status_value(task, metrics)
-        unit = str(task.fields.get("unit", "elementos"))
-        if prefix and prefix.casefold() == unit.casefold():
-            prefix = None
-        selected_metrics: set[str] = set()
-        secondary: list[str] = []
-        timing: str | None = None
-        description: str | None = None
-        status_label = True
-
-        def assemble() -> list[tuple[str, str]]:
-            return self._segments(
-                prefix=prefix,
-                description=description,
-                progress=progress,
-                selected_metrics=selected_metrics,
-                metrics=metrics,
-                timing=timing,
-                status=status,
-                status_label=status_label,
-                secondary=tuple(secondary),
-                compact_labels=width < 90,
-            )
-
-        # Keep the exact count/unit and status together before admitting any
-        # optional display field. The route/stage tag is the first field shed.
-        segments = assemble()
-        if self._line_width(segments) > width:
-            prefix = None
-            segments = assemble()
-        if self._line_width(segments) > width and width < 64:
-            progress = _progress_text(task, 40)
-            segments = assemble()
-        if self._line_width(segments) > width and width < 42:
-            unit = str(task.fields.get("unit", "elementos"))
-            short_unit = _COMPACT_UNITS.get(unit, unit)
-            total = "?" if task.total is None else _format_count(task.total)
-            progress = f"{_format_count(task.completed)}/{total} {short_unit}"
-            segments = assemble()
-        if self._line_width(segments) > width:
-            # Very narrow terminals may not fit the "estado" label, but the
-            # complete state value remains visible alongside the count.
-            status_label = False
-            segments = assemble()
-
-        # Select optional core counters by importance, then render them in the
-        # fixed cache/new/error/wait order declared above.
-        for name in _METRIC_SELECTION_PRIORITY:
-            if name not in metrics:
-                continue
-            selected_metrics.add(name)
-            candidate_segments = assemble()
-            if self._line_width(candidate_segments) <= width:
-                segments = candidate_segments
-            else:
-                selected_metrics.remove(name)
-                break
-
-        # Wider terminals also get elapsed/ETA and secondary typed counters.
-        if width >= 100 and task.elapsed is not None:
-            timing = f"tiempo {_format_duration(task.elapsed)}"
-            remaining = task.time_remaining
-            if remaining is not None and not task.fields.get("event_finished", False):
-                timing += f" · ETA {_format_duration(remaining)}"
-            candidate_segments = assemble()
-            if self._line_width(candidate_segments) <= width:
-                segments = candidate_segments
-            else:
-                timing = None
-
-        if width >= 128:
-            known = set(_CORE_METRIC_ORDER) | {"status"}
-            for name, value in metrics.items():
-                if name in known or (value == 0 and name not in _ZERO_VISIBLE_METRICS):
-                    continue
-                secondary.append(name)
-                candidate_segments = assemble()
-                if self._line_width(candidate_segments) <= width:
-                    segments = candidate_segments
-                else:
-                    secondary.pop()
-
-        description = task.description.strip()
-        if width >= 100 and description:
-            description = None
-            base_segments = assemble()
-            available = width - self._line_width(base_segments) - 3
-            if available >= 8:
-                description_text = Text(task.description.strip())
-                description_text.truncate(min(available, 36), overflow="ellipsis")
-                description = description_text.plain
-                described_segments = assemble()
-                if self._line_width(described_segments) <= width:
-                    segments = described_segments
-                else:
-                    description = None
-
-        return self._render_segments(segments)
+def _task_cells(task: Task) -> dict[str, Text]:
+    metrics = _metric_values(task)
+    completed = task.fields.get("completed_count", int(task.completed))
+    total = task.fields.get("total_count", task.total)
+    total_text = "?" if total is None else str(int(total))
+    status = _status_value(task, metrics)
+    status_style = {
+        "Fallido": "bold red", "Cancelado": "yellow", "Incompleto": "yellow",
+        "Bloqueado": "yellow", "Parcial": "yellow", "Finalizado": "green",
+        "Completo": "green",
+        "Interrumpido": "yellow",
+    }.get(status, "white")
+    cells = {
+        "label": Text(_task_label(
+            str(task.fields.get("operation", "")), str(task.fields.get("phase", "")),
+        ), style="bold cyan"),
+        "advance": Text(f"{completed}/{total_text}"),
+        "unit": Text(str(task.fields.get("unit", "elementos"))),
+        "elapsed": Text("—", style="dim") if task.elapsed is None
+        else Text(_format_duration(task.elapsed)),
+        "status": Text(status, style=status_style),
+    }
+    for field, name in _METRIC_FIELDS.items():
+        value = metrics.get(name)
+        style = "bold red" if field == "errors" and isinstance(value, int) and value > 0 else ""
+        if value is None:
+            cells[field] = Text("—", style="dim")
+        else:
+            cells[field] = Text(str(value), style=style or ("dim" if value == 0 else "white"))
+    return cells
 
 
 class _GroupedProgress(Progress):
-    """Sort stable tasks by workflow stage and draw a heading per stage."""
+    """One common table schema per section, with explicit optional details."""
+
+    def __init__(
+        self, *, console: Console, transient: bool = False,
+        refresh_per_second: float = 10.0, details: bool = False,
+    ) -> None:
+        self.details = details
+        self.compact = False
+        self._displayed_metrics: dict[TaskID, frozenset[str]] = {}
+        super().__init__(
+            console=console, transient=transient, refresh_per_second=refresh_per_second,
+        )
 
     def make_tasks_table(self, tasks: Iterable[Task]) -> Table:
-        visible = sorted(
-            (task for task in tasks if task.visible),
-            key=lambda task: (
-                _group_index(
-                    str(task.fields.get("operation", "")),
-                    str(task.fields.get("phase", "")),
-                ),
-                task.id,
-            ),
+        visible = sorted((task for task in tasks if task.visible), key=_task_order)
+        route_section = any(
+            _group_index(str(task.fields.get("operation", "")), str(task.fields.get("phase", "")))
+            in {2, 3} for task in visible
         )
-        columns = tuple(
-            Column(no_wrap=True, overflow="crop")
-            if isinstance(column, str)
-            else column.get_table_column().copy()
-            for column in self.columns
-        )
-        table = Table.grid(*columns, padding=(0, 0), expand=self.expand)
-        current_group: int | None = None
-        for task in visible:
-            operation = str(task.fields.get("operation", ""))
-            phase = str(task.fields.get("phase", ""))
-            group = _group_index(operation, phase)
-            if group != current_group:
-                heading = Text(
-                    f"── {_group_label(operation, phase)} ──",
-                    style="bold bright_blue",
-                )
-                table.add_row(heading)
-                current_group = group
-            table.add_row(
-                *(
-                    column.format(task=task) if isinstance(column, str) else column(task)
-                    for column in self.columns
-                )
+        fields = list(_ROUTE_FIELDS if route_section else _GENERAL_FIELDS)
+        cells = [_task_cells(task) for task in visible]
+        headers = dict(_FIELD_LABELS)
+        headers["label"] = "Ruta" if visible and all(
+            _group_index(str(task.fields.get("operation", "")), str(task.fields.get("phase", "")))
+            == 2 for task in visible
+        ) else "Tarea"
+        width = max(1, min(self.console.width - 2, 136))
+        sizes = {
+            field: max(
+                cell_len(headers[field]),
+                max((row[field].cell_len for row in cells), default=0),
             )
+            for field in fields
+        }
+        # Labels may abbreviate; counters, units and state cells never do.
+        label_min = max(cell_len(headers["label"]), min(sizes["label"], 8))
+
+        def required_width() -> int:
+            return label_min + sum(sizes[field] for field in fields if field != "label") + (
+                2 * (len(fields) - 1)
+            )
+
+        for field in _DROP_PRIORITY:
+            if required_width() <= width:
+                break
+            if field in fields:
+                fields.remove(field)
+        self.compact = self.compact or fields != list(
+            _ROUTE_FIELDS if route_section else _GENERAL_FIELDS
+        )
+        label_budget = width - sum(sizes[field] for field in fields if field != "label") - (
+            2 * (len(fields) - 1)
+        )
+        sizes["label"] = max(1, min(sizes["label"], 25, label_budget))
+        table = Table(
+            box=box.SIMPLE_HEAD,
+            show_edge=False,
+            padding=(0, 1),
+            pad_edge=False,
+            collapse_padding=True,
+            header_style="dim",
+        )
+        for field in fields:
+            size = sizes[field]
+            table.add_column(
+                headers[field],
+                justify="left" if field in {"label", "unit", "status"} else "right",
+                width=size,
+                min_width=size,
+                max_width=size,
+                no_wrap=True,
+                overflow="ellipsis" if field == "label" else "crop",
+            )
+        displayed = frozenset(
+            name for field, name in _METRIC_FIELDS.items() if field in fields
+        ) | {"status"}
+        for task, row in zip(visible, cells, strict=True):
+            self._displayed_metrics[task.id] = displayed
+            table.add_row(*(row[field] for field in fields))
         return table
+
+    def get_renderables(self) -> Iterable[RenderableType]:
+        tasks = sorted((task for task in self.tasks if task.visible), key=_task_order)
+        self.compact = False
+        self._displayed_metrics = {}
+        shown_group = False
+        for group, title in enumerate(_GROUP_LABELS):
+            members = [
+                task for task in tasks
+                if _group_index(
+                    str(task.fields.get("operation", "")), str(task.fields.get("phase", "")),
+                ) == group
+            ]
+            if not members:
+                continue
+            if shown_group:
+                yield Text("")
+            yield Text(title, style="bold blue")
+            yield Padding(self.make_tasks_table(members), (0, 0, 0, 2), expand=False)
+            shown_group = True
+        if tasks:
+            yield Text("")
+            if self.compact:
+                yield Text("Amplía la terminal para ver todas las columnas.", style="dim")
+            if any(
+                name not in _metric_values(task)
+                for task in tasks for name in _METRIC_FIELDS.values()
+                if _group_index(
+                    str(task.fields.get("operation", "")), str(task.fields.get("phase", "")),
+                ) in {2, 3}
+            ):
+                yield Text("— dato no informado", style="dim")
+        if self.details and tasks:
+            yield Text("")
+            yield Text("Detalles de las tareas", style="bold blue")
+            for task in tasks:
+                label = _task_label(
+                    str(task.fields.get("operation", "")), str(task.fields.get("phase", "")),
+                )
+                detail = Text(f"{label}  ", style="bold")
+                detail.append(task.description, style="white")
+                for name, value in _metric_values(task).items():
+                    if name in self._displayed_metrics.get(task.id, _PRIMARY_METRICS):
+                        continue
+                    metric_label = _METRIC_PRESENTATION.get(
+                        name, (name.replace("_", " "), "white"),
+                    )[0]
+                    detail.append(f"  ·  {metric_label}: {value}", style="dim")
+                remaining = task.time_remaining
+                if remaining is not None and not task.fields.get("event_finished", False):
+                    detail.append(f"  ·  ETA: {_format_duration(remaining)}", style="dim")
+                yield Padding(detail, (0, 0, 0, 2), expand=False)
 
 
 class RichProgress:
@@ -520,10 +449,12 @@ class RichProgress:
         console: Console | None = None,
         transient: bool = False,
         refresh_per_second: float = 10.0,
+        details: bool | None = None,
     ) -> None:
         self._console = console if console is not None else _default_console()
         self._progress = _GroupedProgress(
-            _TaskLineColumn(self._console),
+            details=(os.environ.get("NEOCORTEX_PROGRESS_DETAILS") == "1")
+            if details is None else details,
             console=self._console,
             transient=transient,
             refresh_per_second=refresh_per_second,
@@ -555,6 +486,8 @@ class RichProgress:
                 "operation": event.operation,
                 "phase": event.phase,
                 "event_finished": event.finished,
+                "completed_count": event.completed,
+                "total_count": event.total,
             }
             if task_id is None:
                 task_id = self._progress.add_task(

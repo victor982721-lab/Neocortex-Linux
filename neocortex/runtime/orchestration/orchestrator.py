@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import cast
 
 from neocortex.deduplication.inventory.index import validate_inventory_root
-from neocortex.progress import NullProgress, ProgressCallback, ProgressEvent
+from neocortex.progress import NullProgress, ProgressCallback, ProgressEvent, ProgressMetric
 from neocortex.runtime.config.application_config_projections import (
     global_resource_limits_from_application,
 )
@@ -356,7 +356,10 @@ class FrameworkOrchestrator(
                     event.total if outcome == "completed" else None,
                     event.unit,
                     True,
-                    event.metrics,
+                    (
+                        *(metric for metric in event.metrics if metric.name != "status"),
+                        ProgressMetric("status", outcome),
+                    ),
                 )
                 self._active_progress.pop(event.key, None)
                 self.progress(terminal)

@@ -5,6 +5,20 @@ exacta vive en `neocortex/api/cli/cli_parser.py` y en los subparsers de
 `neocortex.api.cli.human`; este documento organiza su uso, no sustituye
 `Neocortex --help`.
 
+## Progreso de las corridas
+
+La terminal muestra tablas separadas por etapa. Las rutas comparten las mismas
+columnas: avance, unidad, caché, trabajo nuevo, errores, esperas, tiempo y estado.
+`—` indica un dato que la tarea no informó; `0` representa un cero real. Una
+terminal estrecha oculta columnas completas para todas las filas de la tabla,
+conservando los conteos de avance y los estados completos.
+
+La vista principal mantiene el mismo contenido en terminales amplias. Para ver
+descripciones, ETA y contadores específicos de cada ruta en un bloque separado,
+usa `NEOCORTEX_PROGRESS_DETAILS=1` al invocar el comando. El flujo para
+automatización sigue disponible con `NEOCORTEX_PROGRESS_STREAM=1`, que conserva
+el envelope JSON de progreso.
+
 ## Inventario federado bounded de máquina
 
 `machine-inventory` es una consulta local de metadata, siempre read-only. Sin

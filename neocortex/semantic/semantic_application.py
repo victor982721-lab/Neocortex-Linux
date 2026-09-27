@@ -2634,6 +2634,7 @@ def run_integrated_all_semantic_index(
                 1,
                 "fase",
                 True,
+                (ProgressMetric("status", "partial" if unavailable else "skipped"),),
             ),
         )
         return 2 if unavailable else 0

@@ -1160,6 +1160,9 @@ def test_image_and_ocr_share_new_job_budget_and_resume_same_generations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from neocortex.progress import RecordingProgress
+
+    progress = RecordingProgress()
     _patch_backend(monkeypatch)
     _declare_source_state(tmp_path, "image")
     record = _image_record(tmp_path, "shared-job-budget")
@@ -1173,9 +1176,12 @@ def test_image_and_ocr_share_new_job_budget_and_resume_same_generations(
         tmp_path,
         embed_ocr_text=True,
         work_budget=service.SemanticWorkBudget(max_items=1, max_new_jobs=1),
+        progress=progress,
     )
 
     assert paused.truncated
+    stage_event = [event for event in progress.events if event.phase == "stage:image"][-1]
+    assert {metric.name: metric.value for metric in stage_event.metrics}["status"] == "partial"
     assert paused.truncation_reason == "max_new_jobs"
     assert paused.new_jobs_staged == 1
     assert len(paused.generations) == 2
@@ -1200,9 +1206,12 @@ def test_image_and_ocr_share_new_job_budget_and_resume_same_generations(
         tmp_path,
         embed_ocr_text=True,
         work_budget=service.SemanticWorkBudget(max_items=1, max_new_jobs=1),
+        progress=progress,
     )
 
     assert resumed.complete
+    stage_event = [event for event in progress.events if event.phase == "stage:image"][-1]
+    assert {metric.name: metric.value for metric in stage_event.metrics}["status"] == "completed"
     assert resumed.new_jobs_staged == 1
     assert tuple(result.summary.generation_id for result in resumed.generations) == tuple(
         result.summary.generation_id for result in paused.generations

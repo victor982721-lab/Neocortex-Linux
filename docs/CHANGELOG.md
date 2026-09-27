@@ -4,6 +4,18 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-27 — Tablas legibles y columnas comunes de progreso
+
+- Las etapas tienen espacio visual entre sus tablas. Todas las rutas muestran
+  las mismas columnas alineadas; una métrica ausente se distingue de un cero.
+- La vista principal conserva conteos y estado completos y oculta columnas
+  enteras al estrechar el terminal. El ancho adicional no añade contadores
+  específicos a unas filas y a otras no.
+- `NEOCORTEX_PROGRESS_DETAILS=1` activa un bloque separado con descripciones,
+  ETA y detalles de cada tarea. El envelope JSON de progreso conserva su esquema.
+- Los cierres de rutas fallidas/canceladas y Semantic sin fuentes publican el
+  estado mediante la métrica tipada existente, sin depender de la descripción.
+
 ## 2026-09-27 — Progreso CLI adaptable y agrupado
 
 - La vista interactiva vuelve a medir el PTY en cada redibujado y mantiene una

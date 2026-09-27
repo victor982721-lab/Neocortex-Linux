@@ -832,6 +832,9 @@ def test_write_lock_is_released_after_every_bounded_commit(
 def test_new_job_budget_pauses_large_item_and_replay_resumes_without_recharging(
     tmp_path: Path,
 ) -> None:
+    from neocortex.progress import RecordingProgress
+
+    progress = RecordingProgress()
     database = tmp_path / "semantic.sqlite3"
     generation_id = _generation(database, "bounded-job-resume")
     records = _records(1, sections_per_item=260)
@@ -846,9 +849,13 @@ def test_new_job_budget_pauses_large_item_and_replay_resumes_without_recharging(
         chunking=CHUNKING,
         source_record_iterator=_iterator(records),
         work_budget=first_budget,
+        progress=progress,
     )
 
     assert first == (1, 256, 129, False)
+    assert {metric.name: metric.value for metric in progress.events[-1].metrics}[
+        "status"
+    ] == "partial"
     assert first_budget.new_jobs_admitted == 129
     assert first_budget.truncation_reason == "max_new_jobs"
     assert _counts(database) == (1, 256, 129)
@@ -864,9 +871,13 @@ def test_new_job_budget_pauses_large_item_and_replay_resumes_without_recharging(
         chunking=CHUNKING,
         source_record_iterator=_iterator(records),
         work_budget=second_budget,
+        progress=progress,
     )
 
     assert second == (1, 261, 261, True)
+    assert {metric.name: metric.value for metric in progress.events[-1].metrics}[
+        "status"
+    ] == "completed"
     assert second_budget.new_jobs_admitted == 132
     assert second_budget.truncation_reason is None
     assert _counts(database) == (1, 261, 261)

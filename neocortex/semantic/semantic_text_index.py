@@ -885,6 +885,7 @@ def _stage_source(
             "documentos",
             True,
             (
+                ProgressMetric("status", "completed" if source_complete else "partial"),
                 ProgressMetric("chunks", chunks_staged),
                 ProgressMetric("queued_work", queued),
                 ProgressMetric(
