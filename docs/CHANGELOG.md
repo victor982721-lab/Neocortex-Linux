@@ -4,6 +4,16 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-27 — Progreso CLI adaptable y agrupado
+
+- La vista interactiva vuelve a medir el PTY en cada redibujado y mantiene una
+  sola fila por operación/fase aun cuando cambia el ancho de la terminal.
+- El progreso se ordena por preparación, inventario/validación, rutas,
+  catálogos/Semantic y cierre. Cada fila prioriza avance, unidad, caché, trabajo
+  nuevo, errores, esperas y estado; amplía métricas y tiempos cuando hay espacio.
+- La presentación consume los eventos y métricas tipados. Los payloads JSON y
+  el flujo de progreso para automatización permanecen sin cambios.
+
 ## 2026-09-26 — Menos trabajo repetido y retiro de rutas privadas obsoletas
 
 - Scratch consolida observaciones repetidas dentro de una transición, sin
