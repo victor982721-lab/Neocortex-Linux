@@ -1,5 +1,28 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-CLI-PROGRESS-TABLES-20260927.
+**Estado:** código publicado, release instalada y verificación terminada.
+**Detalle:** [NEOCORTEX_CLI_PROGRESS_TABLES_2026-09-27.md](NEOCORTEX_CLI_PROGRESS_TABLES_2026-09-27.md).
+
+La vista principal usa tablas alineadas con las mismas columnas para todas las
+rutas y separación visual entre etapas. Los campos específicos quedan en una
+vista de detalle explícita. Los conteos proceden de los eventos originales y
+un dato ausente se representa con `—`, distinto de cero.
+
+La release activa es `0.14.1-9ce341cf2f1d-cp313-linux-x86_64`, construida del
+commit `9ce341cf2f1d7f43f8dc80d2796a9cb3555f625c`. Se conservó
+`0.14.1-62d3c608231b-cp313-linux-x86_64` como rollback. El proceso de Corpus que
+estaba activo terminó naturalmente; antes de promover no quedaban procesos
+CLI ni intérpretes de releases en uso.
+
+Pasaron 43 pruebas focales y la revisión independiente. La verificación final y
+el PTY del paquete instalado usaron datos sintéticos y rutas temporales. No se
+procesó el Corpus real para validar la corrección ni se prepararon modelos.
+
+---
+
+# Handoff anterior — NeoCortex
+
 **Ronda:** NEO-CLI-PROGRESS-20260927.
 **Estado:** implementación, publicación, instalación y verificación terminadas.
 **Fuente de detalle:** [NEOCORTEX_CLI_PROGRESS_2026-09-27.md](NEOCORTEX_CLI_PROGRESS_2026-09-27.md).
