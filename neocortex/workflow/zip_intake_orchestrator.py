@@ -54,6 +54,13 @@ class ZipIntakeAdmission:
     size_skipped_files: int
     size_skipped_bytes: int
     max_file_bytes: int | None
+    # These counters are derived only from the already-completed Inventory
+    # snapshots.  They are intentionally not ZIP candidates: a ``.docx`` or
+    # ``.odt`` is a ZIP-backed *container* without being a file whose suffix is
+    # ``.zip``.  Keep both totals so consumers can explain the distinction
+    # without a second directory walk or a header read.
+    zip_files_inventoried: int = 0
+    zip_files_admitted: int = 0
 
     def payload(self) -> dict[str, object]:
         return {
@@ -62,6 +69,8 @@ class ZipIntakeAdmission:
             "size_skipped_files": self.size_skipped_files,
             "size_skipped_bytes": self.size_skipped_bytes,
             "max_file_bytes": self.max_file_bytes,
+            "zip_files_inventoried": self.zip_files_inventoried,
+            "zip_files_admitted": self.zip_files_admitted,
         }
 
 
@@ -93,7 +102,7 @@ def build_zip_intake_admission(
     """Filter Inventory metadata without opening or stat'ing corpus paths.
 
     The caller supplies snapshots from the completed Inventory generation.
-    This function only reads ``FileSnapshot.size``.  In particular, a source
+    This function only reads snapshot metadata (size and the basename). A source
     ZIP above the global ceiling never reaches the engine and cannot be
     classified, hashed, staged, or opened by this stage.
     """
@@ -101,13 +110,23 @@ def build_zip_intake_admission(
     limit = validate_max_file_bytes(max_file_bytes)
     admitted: list[FileSnapshot] = []
     total_files = eligible_files = size_skipped_files = size_skipped_bytes = 0
+    zip_files_inventoried = zip_files_admitted = 0
     for snapshot in snapshots:
         if not isinstance(snapshot, FileSnapshot):
             raise TypeError("ZIP Intake admission requires FileSnapshot values")
         total_files += 1
+        # ``path`` is an Inventory value, not a path to inspect here.  Do not
+        # use exists/stat/open (or a fresh walk) to derive this presentation
+        # counter: it must describe exactly the snapshot generation supplied
+        # by the caller.
+        is_zip_suffix = Path(snapshot.path).name.casefold().endswith(".zip")
+        if is_zip_suffix:
+            zip_files_inventoried += 1
         if size_is_admitted(snapshot.size, limit):
             eligible_files += 1
             admitted.append(snapshot)
+            if is_zip_suffix:
+                zip_files_admitted += 1
         else:
             size_skipped_files += 1
             size_skipped_bytes += int(snapshot.size)
@@ -118,6 +137,8 @@ def build_zip_intake_admission(
         size_skipped_files,
         size_skipped_bytes,
         limit,
+        zip_files_inventoried,
+        zip_files_admitted,
     )
 
 
@@ -140,6 +161,56 @@ def _engine_result_payload(value: object) -> dict[str, object]:
     # facts and are always overwritten at the boundary.  This also ensures a
     # stale per-file decision cannot masquerade as a global admission result.
     return payload
+
+
+_SUCCESS_STATUSES = frozenset({"planned", "atomic", "applied"})
+
+
+def _classification_kind(decision: object, payload: Mapping[str, object]) -> str | None:
+    """Return the bounded classification kind without inspecting the source.
+
+    The engine normally echoes the identity-bound decision in its result.  A
+    compatibility adapter/test double may omit that echo, so fall back to the
+    decision that this orchestrator already holds.  This is deliberately a
+    DTO-only operation: it must not reopen the source or infer a kind from its
+    suffix.
+    """
+
+    classification = payload.get("classification")
+    if isinstance(classification, Mapping):
+        value = classification.get("kind")
+        if isinstance(value, str):
+            return value
+    selected = getattr(decision, "classification", None)
+    value = getattr(selected, "kind", None)
+    return value if isinstance(value, str) else None
+
+
+def _trusted_extracted_files(
+    payload: Mapping[str, object],
+    *,
+    classification_kind: str | None,
+    status: str,
+) -> int | None:
+    """Read an explicit physical-file extraction count, if the owner supplied one.
+
+    ``members`` is not such a count: it can include directories and nested
+    members, and it is populated for a dry-run plan.  Likewise ``published``
+    is a boolean/container-level fact.  Only the explicit file counters are
+    safe to expose as ``extracted_files``.  Returning ``None`` keeps the UI at
+    an honest unknown state instead of manufacturing a number from containers.
+    """
+
+    if classification_kind != "generic_zip" or status not in {
+        "applied",
+        "recovery_required",
+    }:
+        return 0
+    for name in ("extracted_files", "published_files"):
+        value = payload.get(name)
+        if type(value) is int and value >= 0:
+            return value
+    return None
 
 
 def _zip_limits(config: object) -> ZipIntakeLimits:
@@ -254,11 +325,11 @@ def _atomic_detected_type(decision: object) -> "DetectedType | None":
             "application/vnd.oasis.opendocument.graphics": (".odg", (".odg", ".otg")),
         }.get(str(getattr(classification, "mime", "")).casefold())
         if odf is not None:
-            extension, accepted = odf
+            odf_extension, odf_accepted = odf
             value = (
                 str(classification.mime),
-                extension,
-                accepted,
+                odf_extension,
+                odf_accepted,
                 "zip:intake-atomic-odf",
             )
     if value is None:
@@ -267,8 +338,8 @@ def _atomic_detected_type(decision: object) -> "DetectedType | None":
         return None
     from neocortex.platform.content_types import DetectedType
 
-    mime, extension, accepted, evidence = value
-    return DetectedType(mime, extension, frozenset(accepted), evidence)
+    mime, extension, accepted_extensions, evidence = value
+    return DetectedType(mime, extension, frozenset(accepted_extensions), evidence)
 
 
 class _KioTrashHook:
@@ -378,8 +449,14 @@ def run_zip_intake_stage(
 
     counters: dict[str, int] = {
         "candidates": 0,
+        # ``candidates`` remains the source-compatible spelling.  The typed
+        # name is what consumers should use for the container progress row.
+        "containers_examined": 0,
         "generic_candidates": 0,
+        "generic_identified": 0,
         "atomic_packages": 0,
+        "unclassified": 0,
+        "blocked": 0,
         "planned": 0,
         "applied": 0,
         "published": 0,
@@ -387,6 +464,8 @@ def run_zip_intake_stage(
         "members": 0,
         "uncompressed_bytes": 0,
     }
+    extracted_files = 0
+    extracted_files_known = True
     statuses: dict[str, int] = {}
     samples: list[dict[str, object]] = []
     atomic_decisions: list[tuple[FileSnapshot, "DetectedType"]] = []
@@ -407,6 +486,7 @@ def run_zip_intake_stage(
         if decision is None:
             continue
         counters["candidates"] += 1
+        counters["containers_examined"] += 1
         if apply and staging_factory is None:
             from neocortex.capabilities.formats.archive.intake import ScratchStageFactory
             from neocortex.workflow.mutations import KioTrashBackend
@@ -429,16 +509,25 @@ def run_zip_intake_stage(
         source_payload = _engine_result_payload(outcome)
         source_status = str(source_payload.get("status", "unknown"))
         statuses[source_status] = statuses.get(source_status, 0) + 1
-        classification = source_payload.get("classification")
-        if isinstance(classification, Mapping):
-            kind = classification.get("kind")
-            if kind == "generic_zip":
-                counters["generic_candidates"] += 1
-            elif kind == "atomic_package":
-                counters["atomic_packages"] += 1
+        kind = _classification_kind(decision, source_payload)
+        if kind == "generic_zip":
+            counters["generic_candidates"] += 1
+            counters["generic_identified"] += 1
+        elif kind == "atomic_package":
+            counters["atomic_packages"] += 1
+            # Presentation can describe the held decision without an echo.
+            # Cache publication keeps its original engine-result gate.
+            classification = source_payload.get("classification")
+            if isinstance(classification, Mapping) and classification.get("kind") == "atomic_package":
                 detected = _atomic_detected_type(decision)
                 if detected is not None:
                     atomic_decisions.append((snapshot, detected))
+        else:
+            # ``invalid``/unknown is a classification outcome, not evidence
+            # that the source was a generic ZIP.  Keep it separate from the
+            # status-based blocked count below; a generic collision, for
+            # example, is generic *and* blocked.
+            counters["unclassified"] += 1
         if source_status == "planned":
             counters["planned"] += 1
         if source_status == "applied":
@@ -451,6 +540,20 @@ def run_zip_intake_stage(
             filesystem_changed = True
         if bool(source_payload.get("filesystem_changed")):
             filesystem_changed = True
+        if source_status not in _SUCCESS_STATUSES:
+            counters["blocked"] += 1
+        extracted = _trusted_extracted_files(
+            source_payload,
+            classification_kind=kind,
+            status=source_status,
+        )
+        if extracted is None:
+            # One applied generic without an explicit regular-file count makes
+            # the aggregate unknown.  Do not fall back to ``members`` or the
+            # boolean ``published`` field.
+            extracted_files_known = False
+        elif extracted_files_known:
+            extracted_files += extracted
         for name in ("members", "uncompressed_bytes"):
             value = source_payload.get(name)
             if type(value) is int and value >= 0:
@@ -479,9 +582,10 @@ def run_zip_intake_stage(
                 "ZIPs",
                 metrics=(
                     *(ProgressMetric(name, value) for name, value in counters.items()),
-                    ProgressMetric("blocked", sum(
-                        count for name, count in statuses.items()
-                        if name not in {"planned", "atomic", "applied"}
+                    ProgressMetric("zip_files_inventoried", admission.zip_files_inventoried),
+                    ProgressMetric("zip_files_admitted", admission.zip_files_admitted),
+                    *(() if not extracted_files_known else (
+                        ProgressMetric("extracted_files", extracted_files),
                     )),
                     ProgressMetric("status", "running"),
                 ),
@@ -516,6 +620,10 @@ def run_zip_intake_stage(
         "eligible_files": admission.eligible_files,
         "size_skipped_files": admission.size_skipped_files,
         "size_skipped_bytes": admission.size_skipped_bytes,
+        "zip_files_inventoried": admission.zip_files_inventoried,
+        "zip_files_admitted": admission.zip_files_admitted,
+        "containers_examined": counters["containers_examined"],
+        "containers_total": counters["containers_examined"],
         "filesystem_changed": filesystem_changed,
         "reconciliation_required": bool(apply and filesystem_changed),
         **counters,
@@ -524,6 +632,12 @@ def run_zip_intake_stage(
         "failures": failure_statuses,
         "failure_samples": samples,
     }
+    if extracted_files_known:
+        payload["extracted_files"] = extracted_files
+    else:
+        # Keep the distinction explicit in durable stage evidence while
+        # omitting the typed count from progress so the UI can render ``—``.
+        payload["extracted_files_known"] = False
     reconciliation_required = bool(apply and filesystem_changed)
     if not apply:
         # A plan is never allowed to trigger a rescan merely because the

@@ -17,6 +17,7 @@ from neocortex.capabilities.formats.archive.intake import (
 from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.fingerprinting import snapshot_path
 from neocortex.progress import ProgressEvent
+from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.workflow import zip_intake_orchestrator as intake
 
 
@@ -75,6 +76,32 @@ def test_admission_keeps_inventory_visibility_but_excludes_oversize_before_engin
         "/corpus/small.zip",
         "/corpus/mislabeled.bin",
     )
+
+
+def test_admission_counts_zip_suffixes_from_snapshots_without_extra_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The .zip presentation split is metadata-only and case-insensitive."""
+
+    monkeypatch.setattr(
+        Path,
+        "open",
+        lambda *args, **kwargs: pytest.fail("admission opened a corpus path"),
+    )
+    admission = intake.build_zip_intake_admission(
+        (
+            _snapshot("/corpus/report.DOCX", 4),
+            _snapshot("/corpus/archive.ZIP", 5),
+            _snapshot("/corpus/oversize.zip", 11),
+            _snapshot("/corpus/photo.bin", 2),
+        ),
+        10,
+    )
+
+    assert admission.zip_files_inventoried == 2
+    assert admission.zip_files_admitted == 1
+    assert admission.payload()["zip_files_inventoried"] == 2
+    assert admission.payload()["zip_files_admitted"] == 1
 
 
 def test_unlimited_admission_does_not_create_hidden_size_ceiling() -> None:
@@ -204,6 +231,149 @@ def test_engine_contract_is_lazy_and_apply_reconciles(monkeypatch: pytest.Monkey
     assert observed["source"] == "/corpus/source.zip"
     assert observed["staging"] is not None
     assert observed["trash"] is not None
+
+
+def test_stage_reports_overlapping_typed_categories_without_inventing_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots = tuple(
+        _snapshot(path, 4)
+        for path in (
+            "/corpus/document.docx",
+            "/corpus/project.zip",
+            "/corpus/collision.zip",
+            "/corpus/bad.zip",
+            "/corpus/readme.txt",
+        )
+    )
+    decisions = {
+        "/corpus/document.docx": SimpleNamespace(
+            classification=SimpleNamespace(kind="atomic_package", unit_kind="docx")
+        ),
+        "/corpus/project.zip": SimpleNamespace(
+            classification=SimpleNamespace(kind="generic_zip")
+        ),
+        "/corpus/collision.zip": SimpleNamespace(
+            classification=SimpleNamespace(kind="generic_zip")
+        ),
+        "/corpus/bad.zip": SimpleNamespace(
+            classification=SimpleNamespace(kind="invalid")
+        ),
+    }
+    events: list[ProgressEvent] = []
+
+    def decide_zip_candidate(source: Path, **kwargs: object) -> object | None:
+        return decisions.get(os.fspath(source))
+
+    def run_zip_intake(source: str, **kwargs: object) -> object:
+        if source.endswith("document.docx"):
+            return {
+                "status": "atomic",
+                "classification": {"kind": "atomic_package"},
+                "members": 10,
+            }
+        if source.endswith("project.zip"):
+            return {
+                "status": "planned",
+                "classification": {"kind": "generic_zip"},
+                "members": 5,
+            }
+        if source.endswith("collision.zip"):
+            return {
+                "status": "collision",
+                "classification": {"kind": "generic_zip"},
+                "published": False,
+                "members": 8,
+            }
+        return {
+            "status": "blocked",
+            "classification": {"kind": "invalid"},
+            "members": 3,
+        }
+
+    monkeypatch.setattr(
+        intake,
+        "import_module",
+        lambda name: SimpleNamespace(
+            decide_zip_candidate=decide_zip_candidate,
+            run_zip_intake=run_zip_intake,
+        ),
+    )
+    result = intake.run_zip_intake_stage(
+        root=Path("/corpus"),
+        admission=intake.build_zip_intake_admission(snapshots, None),
+        config=SimpleNamespace(),
+        apply=False,
+        state_directory=Path("/state"),
+        run_id=12,
+        state=object(),
+        progress=events.append,
+        cancellation=CancellationToken(),
+    )
+
+    details = result.details
+    # 4 candidates were actually classified; the ordinary text snapshot was
+    # not a container.  The three .zip suffixes remain a separate, overlapping
+    # inventory count (the .docx package is not silently added to it).
+    assert details["containers_examined"] == 4
+    assert details["containers_total"] == 4
+    assert details["zip_files_inventoried"] == 3
+    assert details["zip_files_admitted"] == 3
+    assert details["generic_identified"] == 2
+    assert details["atomic_packages"] == 1
+    assert details["unclassified"] == 1
+    assert details["blocked"] == 2
+    assert details["applied"] == 0
+    assert details["extracted_files"] == 0
+    assert details.get("extracted_files_known", True) is True
+
+    metrics = {metric.name: metric.value for metric in events[-1].metrics}
+    assert metrics["containers_examined"] == 4
+    assert metrics["zip_files_inventoried"] == 3
+    assert metrics["zip_files_admitted"] == 3
+    assert metrics["generic_identified"] == 2
+    assert metrics["atomic_packages"] == 1
+    assert metrics["unclassified"] == 1
+    assert metrics["blocked"] == 2
+    assert metrics["extracted_files"] == 0
+
+
+def test_stage_exposes_explicit_published_file_count_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = _snapshot("/corpus/project.zip", 4)
+    decision = SimpleNamespace(classification=SimpleNamespace(kind="generic_zip"))
+
+    monkeypatch.setattr(
+        intake,
+        "import_module",
+        lambda name: SimpleNamespace(
+            decide_zip_candidate=lambda source, **kwargs: decision,
+            run_zip_intake=lambda source, **kwargs: {
+                "status": "applied",
+                "classification": {"kind": "generic_zip"},
+                "published": True,
+                # A regular-file count supplied by the owner is trustworthy;
+                # ``members`` intentionally disagrees to prove it is ignored.
+                "published_files": 2,
+                "members": 99,
+            },
+        ),
+    )
+    result = intake.run_zip_intake_stage(
+        root=Path("/corpus"),
+        admission=intake.build_zip_intake_admission((snapshot,), None),
+        config=SimpleNamespace(),
+        apply=True,
+        state_directory=Path("/state"),
+        run_id=13,
+        state=object(),
+        progress=None,
+        cancellation=CancellationToken(),
+    )
+
+    assert result.details["extracted_files"] == 2
+    assert result.details.get("extracted_files_known", True) is True
 
 
 def test_stage_forwards_identity_decision_cancellation_and_progress(
@@ -558,3 +728,23 @@ def test_source_replacement_before_kio_rolls_back_publication(
     assert not destination.exists()
     assert source.read_bytes() == b"replacement at the same path"
     assert backend.calls == []
+
+
+def test_presentation_fallback_cannot_authorize_an_atomic_cache_seed(monkeypatch) -> None:
+    snapshot = _snapshot('/corpus/document.zip', 4)
+    decision = SimpleNamespace(classification=SimpleNamespace(kind='atomic_package', unit_kind='docx'))
+    monkeypatch.setattr(
+        intake, 'import_module',
+        lambda name: SimpleNamespace(
+            decide_zip_candidate=lambda source, **kwargs: decision,
+            run_zip_intake=lambda source, **kwargs: {'status': 'blocked', 'reason': 'source_changed'},
+        ),
+    )
+    result = intake.run_zip_intake_stage(
+        root=Path('/corpus'), admission=intake.build_zip_intake_admission((snapshot,), None),
+        config=SimpleNamespace(), apply=False, state_directory=Path('/state'), run_id=8,
+        state=object(), progress=None, cancellation=CancellationToken(),
+    )
+    assert result.details['atomic_packages'] == 1
+    assert result.details['blocked'] == 1
+    assert result.atomic_decisions == ()

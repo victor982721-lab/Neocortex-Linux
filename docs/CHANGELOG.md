@@ -4,6 +4,20 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-27 — Jerarquía visual de la CLI y conteos ZIP explícitos
+
+- Etapas enmarcadas con títulos centrados y numerados, padding adaptativo y
+  tablas alineadas dentro de un ancho común. La paleta hereda el foreground
+  del terminal y reserva el color para estructura/estado.
+- En terminal estrecho se conservan conteos, estado y errores con filas
+  apiladas cuando hace falta. Con poca altura el foco muestra trabajo/avisos
+  y vuelve al historial completo al finalizar, sin filtrar el stream.
+- `Revisar contenedores` distingue el avance de estructuras ZIP del conteo de
+  archivos `.zip` por nombre; el desglose de paquetes/genéricos/bloqueos no
+  fabrica ceros ni cambia políticas de extracción o efectos.
+- ASCII humano opt-in/terminal dumb y NO_COLOR mantienen los eventos y el
+  envelope JSON; los cierres parciales/unknown conservan sus números reales.
+
 ## 2026-09-27 — Identidad Whisper y progreso de ingestión ZIP
 
 - Whisper valida la identidad efectiva de procesamiento (versiones backend y

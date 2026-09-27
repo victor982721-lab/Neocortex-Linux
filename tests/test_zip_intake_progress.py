@@ -108,6 +108,35 @@ def test_partial_batch_reports_only_settled_containers_not_member_counts() -> No
     assert _metrics(terminal)["status"] == "cancelled"
 
 
+def test_bounded_projection_does_not_fabricate_unobserved_categories() -> None:
+    recording = RecordingProgress()
+    reporter = _BoundedZipProgress(recording, total_hint=11)
+
+    reporter.finish(
+        {
+            "status": "blocked",
+            "containers_examined": 2,
+            "containers_total": 2,
+            "zip_files_inventoried": 11,
+            "zip_files_admitted": 10,
+            "blocked": 2,
+            # No generic/atomic/unclassified/extracted_files evidence was
+            # supplied.  Those values must stay absent (= unknown), not 0.
+        }
+    )
+
+    metrics = _metrics(recording.events[-1])
+    assert metrics["containers_examined"] == 2
+    assert metrics["containers_total"] == 2
+    assert metrics["zip_files_inventoried"] == 11
+    assert metrics["zip_files_admitted"] == 10
+    assert metrics["blocked"] == 2
+    assert "generic" not in metrics
+    assert "atomic" not in metrics
+    assert "unclassified" not in metrics
+    assert "extracted_files" not in metrics
+
+
 def test_zip_progress_does_not_leave_a_task_when_no_zip_exists() -> None:
     recording = RecordingProgress()
     reporter = _BoundedZipProgress(recording, total_hint=1_000)
@@ -115,6 +144,25 @@ def test_zip_progress_does_not_leave_a_task_when_no_zip_exists() -> None:
     reporter.finish({"status": "planned", "candidates": 0})
 
     assert recording.events == []
+
+
+def test_zip_progress_explains_named_zips_excluded_before_content_admission() -> None:
+    recording = RecordingProgress()
+    reporter = _BoundedZipProgress(
+        recording, total_hint=0, zip_files_inventoried=11, zip_files_admitted=0,
+    )
+    reporter.finish({"status": "planned", "candidates": 0,
+                     "generic_candidates": 0, "atomic_packages": 0, "blocked": 0})
+    terminal = recording.events[-1]
+    assert terminal.finished and (terminal.completed, terminal.total) == (0, 0)
+    assert _metrics(terminal)["zip_files_inventoried"] == 11
+    assert _metrics(terminal)["zip_files_admitted"] == 0
+    assert _metrics(terminal)["containers_examined"] == 0
+
+
+def test_zip_counter_aliases_reject_invalid_values_instead_of_inventing_zero() -> None:
+    for value in (None, True, "unknown", -1):
+        assert _BoundedZipProgress._metric_value({"atomic": value}, ("atomic",)) is None
 
 
 def test_successor_inventory_progress_is_distinct_and_reports_new_total() -> None:

@@ -73,20 +73,50 @@ class _BoundedZipProgress:
     """
 
     _COUNTER_ALIASES = {
-        "generic": ("generic", "generic_candidates", "generic_zip"),
+        # Keep the short/source spellings in the envelope while also exposing
+        # typed names for the ZIP UI.  The two views are aliases of the same
+        # observed counter, never arithmetic derived from unrelated totals.
+        "generic": ("generic", "generic_candidates", "generic_identified", "generic_zip"),
+        "generic_identified": ("generic_identified", "generic_candidates", "generic", "generic_zip"),
         "atomic": ("atomic", "atomic_packages", "atomic_package"),
+        "atomic_packages": ("atomic_packages", "atomic", "atomic_package"),
+        "unclassified": ("unclassified", "unclassified_containers"),
+        "containers_examined": ("containers_examined", "candidates", "examined"),
+        "zip_files_inventoried": (
+            "zip_files_inventoried",
+            "zip_extension_inventoried",
+        ),
+        "zip_files_admitted": ("zip_files_admitted", "zip_extension_admitted"),
         "applied": ("applied", "applied_containers"),
         "blocked": ("blocked", "blocked_containers"),
         "members": ("members", "member_count"),
-        "extracted": ("extracted", "extracted_files", "published_files", "published"),
+        # ``extracted`` is retained as a legacy source counter.  It is not the
+        # file-count metric consumed by the UI; ``extracted_files`` below is
+        # populated only when the owner supplied an explicit reliable count.
+        "extracted": ("extracted", "published_files", "published", "extracted_files"),
     }
 
-    def __init__(self, callback, *, total_hint: int) -> None:
+    def __init__(
+        self,
+        callback,
+        *,
+        total_hint: int,
+        zip_files_inventoried: int | None = None,
+        zip_files_admitted: int | None = None,
+    ) -> None:
         self._callback = callback
         self._total_hint = max(0, int(total_hint))
         self._completed = 0
         self._total: int | None = None
         self._counters = dict.fromkeys(self._COUNTER_ALIASES, 0)
+        self._observed_counters: set[str] = set()
+        if zip_files_inventoried is not None:
+            self._counters["zip_files_inventoried"] = max(0, int(zip_files_inventoried))
+            self._observed_counters.add("zip_files_inventoried")
+        if zip_files_admitted is not None:
+            self._counters["zip_files_admitted"] = max(0, int(zip_files_admitted))
+            self._observed_counters.add("zip_files_admitted")
+        self._extracted_files: int | None = None
         self._status = "running"
         self._started = False
         self._finished = False
@@ -96,21 +126,40 @@ class _BoundedZipProgress:
         self._clock = time.monotonic
 
     @staticmethod
-    def _metric_value(metrics: Mapping[str, object], names: tuple[str, ...]) -> int:
+    def _metric_value(
+        metrics: Mapping[str, object], names: tuple[str, ...]
+    ) -> int | None:
+        values: list[int] = []
         for name in names:
-            if name in metrics:
-                return _bounded_counter(metrics[name])
-        return 0
+            value = metrics.get(name)
+            if type(value) is int and value >= 0:
+                values.append(value)
+        return max(values) if values else None
 
     def _merge_event(self, event: ProgressEvent) -> None:
         metrics = {metric.name: metric.value for metric in event.metrics}
-        for name, aliases in self._COUNTER_ALIASES.items():
+        # Per-source engine callbacks use the same operation name but their
+        # classification counters are one-source facts (``generic=1``), not
+        # cumulative batch totals.  Only the Framework ``process`` event is
+        # allowed to merge category/container counters.  Member/legacy
+        # physical counters remain observable from internal phases.
+        batch_event = event.key == (_ZIP_PROGRESS_OPERATION, _ZIP_PROGRESS_PHASE)
+        aliases_to_merge: Iterable[tuple[str, tuple[str, ...]]] = (
+            self._COUNTER_ALIASES.items()
+        )
+        if not batch_event:
+            aliases_to_merge = (
+                (name, self._COUNTER_ALIASES[name])
+                for name in ("members", "extracted")
+            )
+        for name, aliases in aliases_to_merge:
             # Engine counters are cumulative.  Max protects the projection
             # from a retry or a backend that reports a stale intermediate
             # snapshot without ever inventing progress.
-            self._counters[name] = max(
-                self._counters[name], self._metric_value(metrics, aliases)
-            )
+            value = self._metric_value(metrics, aliases)
+            if value is not None:
+                self._observed_counters.add(name)
+                self._counters[name] = max(self._counters[name], value)
         # Only the Framework batch adapter counts containers. Engine events
         # count members/bytes and finish individual phases, not the ZIP stage.
         if event.key == (_ZIP_PROGRESS_OPERATION, _ZIP_PROGRESS_PHASE):
@@ -119,8 +168,18 @@ class _BoundedZipProgress:
                 self._status = status[:64]
             if type(event.completed) is int and event.completed >= 0:
                 self._completed = max(self._completed, event.completed)
+                self._observed_counters.add("containers_examined")
+                self._counters["containers_examined"] = max(
+                    self._counters["containers_examined"], event.completed
+                )
             if type(event.total) is int and event.total >= 0:
                 self._total = event.total
+        for metric in event.metrics:
+            if metric.name == "extracted_files" and type(metric.value) is int and metric.value >= 0:
+                self._extracted_files = max(
+                    self._extracted_files or 0,
+                    metric.value,
+                )
 
     def _event(self, *, finished: bool, total: int | None = None) -> ProgressEvent:
         effective_total = self._total if self._total is not None else total
@@ -129,10 +188,16 @@ class _BoundedZipProgress:
         completed = self._completed
         if effective_total is not None:
             completed = min(completed, effective_total)
-        metrics = (
-            *(ProgressMetric(name, value) for name, value in self._counters.items()),
-            ProgressMetric("status", self._status),
-        )
+        typed_metrics = [
+            ProgressMetric(name, self._counters[name])
+            for name in self._counters
+            if name in self._observed_counters
+        ]
+        if effective_total is not None:
+            typed_metrics.append(ProgressMetric("containers_total", effective_total))
+        if self._extracted_files is not None:
+            typed_metrics.append(ProgressMetric("extracted_files", self._extracted_files))
+        typed_metrics.append(ProgressMetric("status", self._status))
         return ProgressEvent(
             _ZIP_PROGRESS_OPERATION,
             _ZIP_PROGRESS_PHASE,
@@ -141,7 +206,7 @@ class _BoundedZipProgress:
             effective_total,
             "ZIPs",
             finished,
-            metrics,
+            tuple(typed_metrics),
         )
 
     def _emit(self, *, finished: bool = False, total: int | None = None) -> None:
@@ -177,8 +242,10 @@ class _BoundedZipProgress:
 
         if self._finished:
             return
-        candidates = _bounded_counter(payload.get("candidates"))
-        self._total = candidates or self._total
+        observed_total = self._metric_value(payload, ("containers_total", "candidates"))
+        candidates = observed_total or 0
+        if observed_total is not None:
+            self._total = observed_total
         if status is None and isinstance(payload.get("status"), str):
             status = str(payload["status"])
         if status:
@@ -187,17 +254,41 @@ class _BoundedZipProgress:
             values = [payload.get(alias) for alias in aliases]
             for value in values:
                 if type(value) is int and value >= 0:
+                    self._observed_counters.add(name)
                     self._counters[name] = max(self._counters[name], value)
+        containers_examined = _bounded_counter(payload.get("containers_examined"))
+        if containers_examined:
+            self._observed_counters.add("containers_examined")
+            self._counters["containers_examined"] = max(
+                self._counters["containers_examined"], containers_examined
+            )
+        extracted_value = payload.get("extracted_files")
+        if type(extracted_value) is int and extracted_value >= 0:
+            self._extracted_files = extracted_value
+        elif payload.get("extracted_files_known") is False:
+            self._extracted_files = None
         statuses = payload.get("statuses")
         if isinstance(statuses, dict):
             self._counters["blocked"] = max(
                 self._counters["blocked"], _bounded_counter(statuses.get("blocked"))
             )
-        self._completed = max(self._completed, candidates)
-        if candidates and not self._started:
-            self._emit(total=candidates)
-        if candidates or self._started:
-            self._emit(finished=True, total=candidates or None)
+            if "blocked" in statuses:
+                self._observed_counters.add("blocked")
+        if observed_total is not None:
+            # ``candidates`` is the established aggregate spelling in older
+            # stage payloads; it is sufficient evidence for the typed terminal
+            # container count even when ``containers_examined`` is absent.
+            self._observed_counters.add("containers_examined")
+            self._counters["containers_examined"] = max(
+                self._counters["containers_examined"], candidates
+            )
+        self._completed = max(self._completed, containers_examined, candidates)
+        named_zips = self._counters["zip_files_inventoried"]
+        show = bool(candidates or self._started or named_zips)
+        if show and not self._started:
+            self._emit(total=self._total)
+        if show:
+            self._emit(finished=True, total=self._total)
         self._finished = True
 
     def partial(self, *, status: str) -> dict[str, object]:
@@ -207,10 +298,16 @@ class _BoundedZipProgress:
         if self._started and not self._finished:
             self._emit(finished=True)
             self._finished = True
+        observed = {
+            name: self._counters[name]
+            for name in self._counters
+            if name in self._observed_counters
+        }
         return {
             "status": self._status,
             "candidates": self._completed,
-            **self._counters,
+            "containers_examined": self._completed,
+            **observed,
             "progress_events": self._events,
         }
 
@@ -916,7 +1013,12 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             )
         zip_progress = _BoundedZipProgress(
             self.progress,
-            total_hint=int(admission.eligible_files),
+            # Cadence hint only; the visible total remains unknown until the
+            # candidate traversal settles.  Inventory eligibility is not a
+            # ZIP/container count (DOCX/XLSX/ODT may be containers too).
+            total_hint=int(admission.zip_files_admitted),
+            zip_files_inventoried=int(admission.zip_files_inventoried),
+            zip_files_admitted=int(admission.zip_files_admitted),
         )
         try:
             outcome = run_zip_intake_stage(

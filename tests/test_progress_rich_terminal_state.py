@@ -37,8 +37,8 @@ def test_zip_intake_is_shown_before_identify_and_content_routes() -> None:
     console.file = StringIO()
     console.print(reporter._progress.get_renderable())
     rendered = console.file.getvalue()
-    assert rendered.index("Ingestión ZIP") < rendered.index("Tipos de contenido")
-    assert rendered.index("Ingestión ZIP") < rendered.index("Procesamiento por rutas")
+    assert rendered.index("Revisar contenedores") < rendered.index("Tipos de contenido")
+    assert rendered.index("Revisar contenedores") < rendered.index("Procesamiento por rutas")
     assert "Aplicado" in rendered
     reporter.stop()
 

@@ -418,13 +418,20 @@ resumen de esos efectos (`N` contenedores aplicados y `M` archivos físicos
 publicados); no simula rollback total y factory reset no restaura originales ya
 enviados a Trash.
 
-La tabla coloca `Ingestión ZIP` entre Inventario e Identify, no entre las rutas
+La tabla coloca `Revisar contenedores` entre Inventario e Identify, no entre las rutas
 de contenido. El avance cuenta contenedores resueltos por el adaptador del lote;
 durante la clasificación el total es desconocido (`X/?`), porque los archivos
 admitidos no equivalen al número de ZIPs. Los eventos internos de miembros,
 bytes y cierres de fase no finalizan el lote: sólo su resultado agregado o una
 interrupción publican el estado terminal. Los paquetes atómicos participan en
 esa clasificación inicial, pero no se descomprimen como archivos genéricos.
+El desglose usa metadatos del snapshot para contar nombres `.zip` inventariados
+y admitidos; el mismo adaptador agrega tipos conocidos, no clasificados y
+bloqueados. Un bloqueo puede coexistir con una clasificación genérica. No se
+deriva el conteo `.zip` restando paquetes al total, ni se reinterpretan miembros
+o publicaciones booleanas como archivos extraídos. Ausencia de evidencia queda
+como desconocida. Las métricas de presentación no amplían el gate del resultado
+del engine que permite publicar seeds atómicos en la caché de Identify.
 
 ### Lifecycle durable de `--all` (implementado; aceptación en curso)
 

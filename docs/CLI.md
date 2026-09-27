@@ -7,17 +7,34 @@ exacta vive en `neocortex/api/cli/cli_parser.py` y en los subparsers de
 
 ## Progreso de las corridas
 
-La terminal muestra tablas separadas por etapa. Las rutas comparten las mismas
+La terminal interactiva muestra etapas enmarcadas, títulos numerados y centrados,
+con aire alrededor de las tablas y un ancho común de hasta 136 columnas. Las rutas comparten las mismas
 columnas: avance, unidad, caché, trabajo nuevo, errores, esperas, tiempo y estado.
 `—` indica un dato que la tarea no informó; `0` representa un cero real. Una
-terminal estrecha oculta columnas completas para todas las filas de la tabla,
-conservando los conteos de avance y los estados completos.
+terminal estrecha retira primero columnas secundarias para todas las filas;
+si es necesario apila tarea, avance, estado y errores sin recortar números.
+Con poca altura se priorizan fallos de rutas, otros avisos y trabajo activo;
+se indica cuántas tareas quedan fuera de la vista y al terminar se recupera el
+historial completo. El stream estructurado nunca se filtra por el tamaño.
+
+`Revisar contenedores` incluye estructuras ZIP de documentos/paquetes y usa la
+unidad `conten.`, no el número de archivos llamados `.zip`. Su desglose separa
+archivos `.zip` por nombre (inventariados/admitidos), genéricos identificados,
+paquetes atómicos, sin clasificar, bloqueados y contenedores aplicados. Las
+categorías de contenido y el nombre no son conjuntos que puedan sumarse entre
+sí. El renderer no recorre el corpus para obtener estos números.
 
 La vista principal mantiene el mismo contenido en terminales amplias. Para ver
 descripciones, ETA y contadores específicos de cada ruta en un bloque separado,
 usa `NEOCORTEX_PROGRESS_DETAILS=1` al invocar el comando. El flujo para
 automatización sigue disponible con `NEOCORTEX_PROGRESS_STREAM=1`, que conserva
 el envelope JSON de progreso.
+
+`NO_COLOR=1` elimina color, no negrita ni controles necesarios de redibujado.
+`TERM=dumb`, una salida ASCII o `NEOCORTEX_PROGRESS_ASCII=1` activan una
+presentación humana ASCII sin cambiar los eventos o el JSON. La salida humana
+a pipe no usa animación/color y puede conservar UTF-8; stdout JSON permanece
+separado del progreso de stderr. No se requieren iconos ni Nerd Fonts.
 
 ## Inventario federado bounded de máquina
 
