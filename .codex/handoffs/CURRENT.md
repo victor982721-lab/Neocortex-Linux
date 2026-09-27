@@ -1,5 +1,18 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-CLI-DESIGN-20260927.
+**Estado:** código publicado, release instalada y verificación terminada.
+**Detalle:** [NEOCORTEX_CLI_DESIGN_2026-09-27.md](NEOCORTEX_CLI_DESIGN_2026-09-27.md).
+
+Release activa: `0.14.1-12dddb20d227-cp313-linux-x86_64`. Títulos enmarcados/centrados con aire, tablas
+adaptables y desglose ZIP que distingue archivos .zip y paquetes/contenedores.
+228 pruebas + 2 subtests, revisión visual e interfaz instalada aprobadas. Ruff/
+Semgrep pasan; tipos mantienen deuda sin errores nuevos. Sin corpus real/modelos.
+
+---
+
+# Handoff anterior — NeoCortex
+
 **Ronda:** NEO-WHISPER-ZIP-QA-20260927.
 **Estado:** código publicado, release instalada y verificación terminada.
 **Detalle:** [NEOCORTEX_WHISPER_ZIP_QA_2026-09-27.md](NEOCORTEX_WHISPER_ZIP_QA_2026-09-27.md).
