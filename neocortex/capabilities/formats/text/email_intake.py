@@ -224,6 +224,8 @@ class EmailAttachment:
     previous_child_device: int | None = None
     previous_child_inode: int | None = None
     previous_child_mtime_ns: int | None = None
+    # Ephemeral owner-verified history; deliberately not accepted from a manifest.
+    historical_successor_paths: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -958,11 +960,18 @@ def _resolve_relocated_children(
                 or source_identity.get("mtime_ns") != old.child_mtime_ns
             ):
                 raise EmailAttachmentError("recovery_required", "consumed_archive_identity_mismatch")
+            raw_successors = provenance.get("successor_paths", ())
+            if not isinstance(raw_successors, (list, tuple)) or any(
+                not isinstance(path, str) or not Path(path).is_absolute()
+                for path in raw_successors
+            ):
+                raise EmailAttachmentError("recovery_required", "consumed_archive_successors_invalid")
             resolved.append(
                 replace(
                     fresh,
                     child_path=old.child_path,
                     status="consumed_archive",
+                    historical_successor_paths=tuple(raw_successors),
                     child_device=old.child_device,
                     child_inode=old.child_inode,
                     child_mtime_ns=old.child_mtime_ns,
@@ -1028,7 +1037,7 @@ def _validate_replay_manifest(
     manifest_file: Path,
     *,
     directory_fd: int | None = None,
-    consumed_names: frozenset[str] = frozenset(),
+    resolved_children: tuple[EmailAttachment, ...] | None = None,
 ) -> None:
     """Reject stale/edited manifests before opening any child path."""
 
@@ -1038,14 +1047,25 @@ def _validate_replay_manifest(
         raise EmailAttachmentError("collision", "manifest_parent_collision")
     if len(existing.attachments) != len(planned.attachments):
         raise EmailAttachmentError("corrupt", "manifest_attachment_count_mismatch")
-    expected = tuple(_attachment_manifest_fingerprint(item) for item in planned.attachments)
-    observed = tuple(_attachment_manifest_fingerprint(item) for item in existing.attachments)
+    fingerprint = (
+        _attachment_manifest_fingerprint
+        if resolved_children is None else _attachment_lineage_fingerprint
+    )
+    expected = tuple(fingerprint(item) for item in planned.attachments)
+    observed = tuple(fingerprint(item) for item in existing.attachments)
     if observed != expected:
         raise EmailAttachmentError("corrupt", "manifest_attachment_lineage_mismatch")
-    expected_names = {
-        Path(item.child_path or "").name
-        for item in planned.attachments
-    }
+    if resolved_children is None:
+        expected_names = {Path(item.child_path or "").name for item in planned.attachments}
+    else:
+        # The trusted resolver has already verified every child's identity and
+        # bytes (or canonical historical consumption). Only its currently local
+        # children belong in this directory; old basenames are not authority.
+        expected_names = {
+            Path(item.child_path or "").name for item in resolved_children
+            if item.child_reuse_kind != "consumed_archive"
+            and Path(item.child_path or "").parent == destination
+        }
     # This directory is dedicated to one parent.  Ignore only the manifest;
     # any other entry is an unbound/foreign child and invalidates replay.
     try:
@@ -1068,8 +1088,25 @@ def _validate_replay_manifest(
                 os.close(duplicate)
     except OSError as exc:
         raise EmailAttachmentError("blocked", "manifest_children_list_failed", str(exc)) from exc
-    missing = expected_names - names
-    if (names - expected_names) or (missing - set(consumed_names)):
+    historical_names = set()
+    for child in resolved_children or ():
+        for value in child.historical_successor_paths:
+            successor = Path(os.path.abspath(value))
+            if successor.parent != destination or successor.name not in names:
+                continue
+            try:
+                metadata = (
+                    successor.lstat() if directory_fd is None
+                    else os.stat(successor.name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+            except OSError as exc:
+                raise EmailAttachmentError("source_changed", "historical_successor_changed") from exc
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise EmailAttachmentError("unsafe", "historical_successor_not_directory")
+            # This is only a known historical publication root, not evidence
+            # that any of its current children have been verified or indexed.
+            historical_names.add(successor.name)
+    if names - historical_names != expected_names:
         raise EmailAttachmentError("corrupt", "manifest_extra_or_missing_child")
 
 
@@ -1322,19 +1359,13 @@ def materialize_email_attachments(
                     )
                 replay_children = existing_manifest.attachments
             else:
-                consumed_names = frozenset(
-                    Path(item.child_path or "").name
-                    for item in rebound
-                    if item.child_reuse_kind == "consumed_archive"
-                    or Path(item.child_path or "").parent != destination_path
-                )
                 _validate_replay_manifest(
                     existing_manifest,
                     planned,
                     destination_path,
                     manifest_file,
                     directory_fd=destination_fd,
-                    consumed_names=consumed_names,
+                    resolved_children=rebound,
                 )
                 for child in rebound:
                     if child.child_reuse_kind == "consumed_archive":

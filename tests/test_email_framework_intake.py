@@ -545,6 +545,17 @@ def test_historical_consumed_zip_is_typed_without_claiming_current_children(
         child.unlink()
         destination.rmdir()
         destination.parent.rmdir()
+        if unrelated_recent:
+            # Seventy separate replay runs carry the SHA in provenance. They
+            # must not fill the candidate limit and hide the actual ZIP fact.
+            for _ in range(70):
+                noise_run = state.begin_initial_run(root, None, inventory_policy_signature="fixture-policy")
+                state.publish_run_manifest(noise_run, _real_stage_manifest(noise_run, root))
+                state.publish_run_stage(
+                    noise_run, "email-intake", "completed",
+                    details={"source_sha256": source_outcome["source_sha256"]},
+                )
+                state.fail_initial_run(noise_run)
         run_two = state.begin_initial_run(root, None, inventory_policy_signature="fixture-policy")
         state.publish_run_manifest(run_two, _real_stage_manifest(run_two, root))
         if unrelated_recent:
@@ -576,7 +587,7 @@ def test_historical_consumed_zip_is_typed_without_claiming_current_children(
             identified_types=identified, apply=True,
             cancellation=SimpleNamespace(checkpoint=lambda: None), progress=None,
         )
-        assert second.status == "completed"
+        assert second.status == "completed", second.errors
         assert second.filesystem_changed is False
         assert second.attachments_replayed == 0
         assert second.attachments_consumed == 1
@@ -672,3 +683,31 @@ def test_historical_zip_lookup_accepts_terminal_partial_not_running_stage(
         )
         assert running_results
         assert all(item["run_id"] != running for item in running_results)
+
+
+def test_history_sql_progress_does_not_recursively_query_its_budget_owner(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    root.mkdir()
+    with FrameworkState(tmp_path / "framework.sqlite3") as state:
+        run_id = state.begin_initial_run(root, None, inventory_policy_signature="fixture")
+        state.publish_run_manifest(run_id, _real_stage_manifest(run_id, root))
+        for index in range(100):
+            state.publish_run_stage(run_id, f"fixture-{index}", "completed", details={"data": index})
+        sql_calls = 0
+        budget_calls = 0
+
+        def budget_checkpoint():
+            nonlocal budget_calls
+            budget_calls += 1
+            state.check_run_budget(run_id)
+
+        def sql_checkpoint():
+            nonlocal sql_calls
+            sql_calls += 1
+
+        assert state.read_historical_zip_consumption(
+            root, source_sha256="a" * 64, current_run_id=run_id,
+            checkpoint=budget_checkpoint, sql_checkpoint=sql_checkpoint,
+        ) == ()
+        assert budget_calls >= 2
+        assert sql_calls > 0

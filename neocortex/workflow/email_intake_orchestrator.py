@@ -9,6 +9,7 @@ deduplication and routes.  It is not a second content-ingestion pipeline.
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ from neocortex.deduplication import DedupIndex, FileSnapshot
 from neocortex.deduplication.admission import size_is_admitted, validate_max_file_bytes
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.persistence.framework_state_types import RunBudgetExceeded
 
 if TYPE_CHECKING:
     from neocortex.integrations.inventory.inventory_boundary import NormalInventoryBoundary
@@ -256,10 +258,34 @@ def run_email_intake_stage(
         raise TypeError("email intake requires a cancellation checkpoint")
     run_budget_check = getattr(state, "check_run_budget", None)
 
+    latest_budget: Mapping[str, object] | None = None
+
     def checkpoint() -> None:
+        nonlocal latest_budget
         cancellation_checkpoint()
         if callable(run_budget_check):
-            run_budget_check(run_id)
+            observed_budget = run_budget_check(run_id)
+            if isinstance(observed_budget, Mapping):
+                latest_budget = observed_budget
+
+    def sql_checkpoint() -> None:
+        # SQLite progress callbacks must not recursively query the same owner.
+        # Reservations cannot change on this owner thread during a statement;
+        # enforce its captured deadline plus the live cancellation token here,
+        # then refresh durable cancellation/budget state at the row boundary.
+        cancellation_checkpoint()
+        if latest_budget is None:
+            return
+        deadline = latest_budget.get("deadline_ns")
+        now = time.time_ns()
+        if type(deadline) is int and now >= deadline:
+            expired = dict(latest_budget)
+            expired["expired"] = True
+            expired["elapsed_until_ns"] = now
+            started = expired.get("started_ns")
+            if type(started) is int:
+                expired["elapsed_seconds"] = max(0.0, (now - started) / 1_000_000_000)
+            raise RunBudgetExceeded("time", expired)
     guard_factory = getattr(state, "corpus_mutation_guard", None)
     mutation_guard = guard_factory(run_id) if callable(guard_factory) else None
     if apply and mutation_guard is None:
@@ -279,6 +305,7 @@ def run_email_intake_stage(
             current_run_id=run_id,
             max_candidates=64,
             checkpoint=checkpoint,
+            sql_checkpoint=sql_checkpoint,
         )
         if not isinstance(values, (list, tuple)):
             return None

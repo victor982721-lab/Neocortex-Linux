@@ -1509,13 +1509,16 @@ class FrameworkStateRunsMixin(_FrameworkStateOwner):
         current_run_id: int | None = None,
         max_candidates: int = 64,
         checkpoint: Callable[[], None] | None = None,
+        sql_checkpoint: Callable[[], None] | None = None,
     ) -> tuple[dict[str, Any], ...]:
         """Read bounded owner-authored ZIP consumption facts for replay.
 
         This is a projection of existing manifest-bound lifecycle events.  It
         never opens the corpus or creates a second receipt store; callers may
         use the source digest/identity to distinguish a historically consumed
-        child from a currently verified file.
+        child from a currently verified file. ``sql_checkpoint`` must not run
+        SQL on this connection; a caller whose full checkpoint reads budget
+        state supplies a separate cancellation/deadline-only callback.
         """
 
         if (
@@ -1542,13 +1545,19 @@ class FrameworkStateRunsMixin(_FrameworkStateOwner):
         parameters.append(floor)
         parameters.extend((source_sha256, max_candidates))
         receipts: list[dict[str, Any]] = []
-        bridge = SQLiteCancellationBridge(checkpoint)
+        bridge = SQLiteCancellationBridge(sql_checkpoint if sql_checkpoint is not None else checkpoint)
         with sqlite_cancellation_scope(self._connection, bridge, instructions=100):
             rows = self._connection.execute(
                 f"""SELECT e.run_id,e.event_id,e.details_json FROM run_events e
                 JOIN initial_runs r ON r.run_id=e.run_id
                 WHERE e.phase='lifecycle-stage'
                 AND e.message='Lifecycle stage transitioned'
+                AND CASE WHEN json_valid(e.details_json)
+                    THEN json_extract(e.details_json,'$.stage') ELSE NULL END
+                    IN ('zip-intake','email-zip-intake')
+                AND CASE WHEN json_valid(e.details_json)
+                    THEN json_extract(e.details_json,'$.status') ELSE NULL END
+                    IN ('completed','partial','failed')
                 AND r.root=? COLLATE {_PATH_COLLATION}
                 AND {run_clause}
                 AND e.details_json LIKE '%' || ? || '%'
@@ -1604,6 +1613,8 @@ class FrameworkStateRunsMixin(_FrameworkStateOwner):
                     receipt["stage_event_id"] = event_id
                     receipt["stage_name"] = stage.get("stage")
                     receipts.append(receipt)
+        if checkpoint is not None:
+            checkpoint()
         return tuple(receipts)
 
     def _pending_organization_stages(self, run_id: int) -> tuple[str, ...]:
