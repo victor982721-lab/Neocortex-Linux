@@ -1687,6 +1687,71 @@ def image_search_ranking(
 # region [03] Rank fusion
 
 
+def _filter_structured_fusion_scope(
+    rankings: Sequence[SemanticRanking],
+    lexical_rankings: Sequence[LexicalRanking],
+    *,
+    query: str,
+) -> tuple[tuple[SemanticRanking, ...], tuple[LexicalRanking, ...]]:
+    """Drop fallback channel neighbours only when a witness exists anywhere."""
+    fused_rankings = tuple(
+        ranking
+        for ranking in rankings
+        if ranking.provenance.get("auto_requested_title_channel") is not True
+    )
+    if structured_query_constraints(query).get("applicable") is not True:
+        return tuple(rankings), tuple(lexical_rankings)
+
+    def is_coherent(resolved: ResolvedSearchHit) -> bool:
+        support = _resolved_query_support(query, resolved).get("structured_support", {})
+        return isinstance(support, Mapping) and support.get("coherent") is True
+
+    semantic_coherent: list[set[tuple[int, str, str, int]]] = []
+    for ranking in fused_rankings:
+        semantic_coherent.append({
+            _search_hit_key(value.hit)
+            for value in ranking.resolved if is_coherent(value)
+        })
+    lexical_coherent: list[set[tuple[int, str, str, int]]] = []
+    for ranking in lexical_rankings:
+        lexical_coherent.append({
+            _search_hit_key(value.hit)
+            for value in ranking.hits if is_coherent(value)
+        })
+    if not any(semantic_coherent) and not any(lexical_coherent):
+        return tuple(rankings), tuple(lexical_rankings)
+
+    filtered_fused = tuple(
+        replace(
+            ranking,
+            hits=tuple(
+                hit for hit in ranking.hits
+                if _search_hit_key(hit) in semantic_coherent[index]
+            ),
+            resolved=tuple(
+                value for value in ranking.resolved
+                if _search_hit_key(value.hit) in semantic_coherent[index]
+            ),
+        )
+        for index, ranking in enumerate(fused_rankings)
+    )
+    filtered_fused_iter = iter(filtered_fused)
+    filtered_rankings = tuple(
+        ranking if ranking.provenance.get("auto_requested_title_channel") is True
+        else next(filtered_fused_iter)
+        for ranking in rankings
+    )
+    filtered_lexical = tuple(
+        replace(
+            ranking,
+            hits=tuple(value for value in ranking.hits
+                       if _search_hit_key(value.hit) in lexical_coherent[index]),
+        )
+        for index, ranking in enumerate(lexical_rankings)
+    )
+    return filtered_rankings, filtered_lexical
+
+
 def _resolve_fused_hits(
     rankings: Sequence[SemanticRanking],
     lexical_rankings: Sequence[LexicalRanking],
@@ -2149,6 +2214,9 @@ def search_semantic_index(
         cancellation_check=cancellation_check,
     )
     _cancellation_point(cancellation_check)
+    rankings, lexical_rankings = _filter_structured_fusion_scope(
+        rankings, lexical_rankings, query=context.query,
+    )
     fused = _resolve_fused_hits(rankings, lexical_rankings, limit=context.limit)
     return SemanticSearchResult(
         context.query,

@@ -232,7 +232,13 @@ def _constraint_profile(query: str) -> _StructuredConstraintProfile:
     if not identifiers:
         for match in _CODE_IDENTIFIER.finditer(bounded):
             prefix, number = _fold(match.group(1)), match.group(2)
-            if prefix in _CODE_PREFIX_STOPWORDS:
+            # Month/year phrases are already represented by ``dates``; the
+            # generic code regex must not manufacture ``agosto2026``.  The
+            # word-form unit aliases are likewise covered by _UNIT_ALIAS and
+            # should not duplicate the canonical ``u2`` witness.
+            if prefix in _CODE_PREFIX_STOPWORDS or prefix in _MONTHS or prefix in {
+                "unidad", "unit", "unite", "unité", "einheit",
+            }:
                 continue
             value = (prefix, str(int(number)))
             if value not in codes:

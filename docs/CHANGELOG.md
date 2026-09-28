@@ -39,6 +39,10 @@ fuera de `docs/`.
   física vigente, sin enlaces múltiples ni reservas extranjeras; el replay no
   alterna sufijos. La búsqueda exige IDs exactos antes de fusionar contenido,
   títulos y lexical, sin confundir un ID con el prefijo de una cifra decimal.
+- Las fuentes de imagen siguen la generación publicada sucesora del inventario
+  después de un movimiento, sin volver al checkpoint ancestral ni perder el
+  requisito de SHA completo. Los errores integrados exponen la fuente y causa
+  concreta de la abstención también en el sobre JSON de la CLI.
 - Los ZIP descubiertos desde EML tienen etapa e idempotency propias; su consumo
   histórico no se confunde con verificación actual de sus hijos. Organización
   adquiere el lock global antes de inicializar owners o cruzar efectos físicos,

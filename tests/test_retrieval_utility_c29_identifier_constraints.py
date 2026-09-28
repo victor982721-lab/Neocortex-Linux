@@ -137,3 +137,68 @@ def test_c29_numeric_amount_is_not_an_identifier_or_decimal_prefix() -> None:
     missing = order_support["missing_constraints"]
     assert isinstance(missing, list)
     assert "numeric_identifier" in missing
+
+
+def test_c29_code_date_alias_coherence_promotes_witness_before_fusion() -> None:
+    query = "presión registrada unidad 2 fase A 6 agosto 2027"
+    wrong = "Normativa general de seguridad y presión de equipos."
+    right = "Unit 2 - Phase A. Inspection Date August 6, 2027. Pressure 0.04 MPa."
+    ranking = _ranking_with_texts(wrong, right)
+    scoped = service.apply_structured_query_constraints(ranking, query=query, limit=1)
+    assert scoped.hits and scoped.hits[0].ref_id == 2
+
+
+def test_c29_code_date_fallback_remains_when_no_witness_exists() -> None:
+    query = "presión registrada unidad 2 fase A 6 agosto 2027"
+    ranking = _ranking_with_texts("Normativa general de seguridad y presión de equipos.")
+    scoped = service.apply_structured_query_constraints(ranking, query=query, limit=1)
+    assert scoped.hits == ranking.hits
+    details = scoped.provenance["structured_query_constraints"]
+    assert isinstance(details, Mapping)
+    assert details["fallback_no_coherent_witness"] is True
+
+
+def test_c29_wrong_unit_or_date_never_becomes_coherent() -> None:
+    query = "presión registrada unidad 2 fase A 6 agosto 2027"
+    wrong_unit = "Unit 6 - Phase A. Inspection Date August 6, 2027. Pressure 0.04 MPa."
+    wrong_date = "Unit 2 - Phase A. Inspection Date July 6, 2027. Pressure 0.04 MPa."
+    assert structured_query_support(query, wrong_unit)["coherent"] is False
+    assert structured_query_support(query, wrong_date)["coherent"] is False
+
+
+def test_c29_cross_channel_filter_drops_lexical_fallback_when_semantic_witness_exists() -> None:
+    query = "presión registrada unidad 2 fase A 6 agosto 2027"
+    right = _ranking_with_texts(
+        "Unit 2 - Phase A. Inspection Date August 6, 2027. Pressure 0.04 MPa."
+    )
+    wrong = _ranking_with_texts("Normativa general de seguridad y presión de equipos.")
+    lexical = LexicalRanking(
+        "docx", None, LexicalAvailability.AVAILABLE, query, wrong.resolved,
+    )
+    scoped, lexical_scoped = service._filter_structured_fusion_scope(
+        (right,), (lexical,), query=query,
+    )
+    assert scoped[0].hits
+    assert lexical_scoped[0].hits == ()
+
+    fallback_semantic, fallback_lexical = service._filter_structured_fusion_scope(
+        (wrong,), (lexical,), query=query,
+    )
+    assert fallback_semantic[0].hits
+    assert fallback_lexical[0].hits
+
+
+def test_c29_auto_title_ranking_stays_public_but_out_of_witness_scope() -> None:
+    query = "PLANT-ABC-05-001 presión 12 de marzo de 2027"
+    content = _ranking_with_texts(_RIGHT_TEXT)
+    title = replace(
+        _ranking_with_texts(_WRONG_TEXT),
+        name="semantic_title",
+        provenance={"auto_requested_title_channel": True, "advisory_only": True},
+    )
+    rankings, _lexical = service._filter_structured_fusion_scope(
+        (content, title), (), query=query,
+    )
+    assert len(rankings) == 2
+    assert rankings[0].hits
+    assert rankings[1].hits == title.hits

@@ -179,10 +179,12 @@ def test_cancelled_all_json_emits_machine_envelope(
     assert "Traceback" not in captured.err
 
 
+@pytest.mark.parametrize("failure_kind", ("generic", "source", "exception"))
 def test_nonzero_semantic_stage_is_not_followed_by_framework_success(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
+    failure_kind: str,
 ) -> None:
     def fake_framework(
         _args: argparse.Namespace,
@@ -195,7 +197,17 @@ def test_nonzero_semantic_stage_is_not_followed_by_framework_success(
         lifecycle_stage_runner(41)
         return SimpleNamespace(run_id=41, route_results={}, actions=None)
 
-    def failed_semantic(*_args: object, **_kwargs: object) -> int:
+    def failed_semantic(args: argparse.Namespace, **kwargs: object) -> int:
+        if failure_kind == "source":
+            args._semantic_source_unavailable = {"image": "dedup_full_fingerprint_missing"}
+        elif failure_kind == "exception":
+            sink = kwargs["result_sink"]
+            assert callable(sink)
+            sink("__error__", {
+                "schema": "neocortex.semantic-index-failure/v1",
+                "error_type": "SemanticSourceError",
+                "error": "synthetic source changed",
+            })
         return 2
 
     monkeypatch.setattr(cli_app, "run_framework", fake_framework)
@@ -226,6 +238,10 @@ def test_nonzero_semantic_stage_is_not_followed_by_framework_success(
     assert "failed_routes" not in payload
     assert "exit code 2" in payload["error"]["message"]
     assert payload["error"]["code"] == "semantic_stage_partial"
+    if failure_kind == "source":
+        assert "image:dedup_full_fingerprint_missing" in payload["error"]["message"]
+    elif failure_kind == "exception":
+        assert "SemanticSourceError: synthetic source changed" in payload["error"]["message"]
     assert "COMPLETADA" not in captured.err
     assert "Traceback" not in captured.err
 

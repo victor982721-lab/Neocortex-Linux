@@ -2611,6 +2611,11 @@ def run_integrated_all_semantic_index(
             )
             return 2
     selected_sources = tuple(integrated_args.semantic_source or ())
+    # Keep the public lifecycle caller's failure envelope as informative as
+    # the durable stage receipt; selection happens on this private namespace.
+    args._semantic_source_unavailable = dict(
+        getattr(integrated_args, "_semantic_source_unavailable", {})
+    )
     integrated_args.semantic_index = (
         "all" if selected_sources and image_available else "text" if selected_sources else "image"
     )

@@ -239,6 +239,7 @@ def test_semantic_no_sources_producer_reports_partial_or_skipped(tmp_path, monke
             args, progress=recording, print_output=False, framework_lock_held=True,
         )
         assert result == (2 if unavailable else 0)
+        assert args._semantic_source_unavailable == ({"pdf": "unavailable"} if unavailable else {})
         terminal = recording.events[-1]
         reporter = RichProgress(console=Console(file=StringIO(), width=120), transient=True)
         reporter(terminal)

@@ -1369,6 +1369,83 @@ def _dedup_uses_isolated_generations(connection: sqlite3.Connection) -> bool:
     return primary_key == ("scan_id", "path")
 
 
+def _dedup_has_successor_graph(connection: sqlite3.Connection) -> bool:
+    """Return whether Inventory exposes immutable generation successors."""
+
+    return (
+        connection.execute(
+            "SELECT 1 FROM dedup.sqlite_master "
+            "WHERE type='table' AND name='inventory_scan_successors'"
+        ).fetchone()
+        is not None
+    )
+
+
+def _dedup_image_scan_selector(connection: sqlite3.Connection) -> str:
+    """Select the terminal generation reachable from a valid published root.
+
+    Legacy readers used only ``inventory_checkpoints``.  Organization COW
+    intentionally preserves those roots and publishes successor generations
+    without rewriting the checkpoint, so a checkpoint-only join misses the
+    moved path (and consequently its full fingerprint).  A successor is
+    traversable only when its scan is complete, error-free, and has a durable
+    generation head; otherwise the source abstains instead of reviving the
+    predecessor.  Keep the old query for pre-successor schemas, while modern
+    schemas follow the durable edge graph to the terminal generation.
+    """
+
+    if not _dedup_has_successor_graph(connection):
+        return f"""(
+            SELECT candidate.scan_id FROM dedup.files candidate
+            JOIN dedup.inventory_checkpoints checkpoint
+              ON checkpoint.scan_id=candidate.scan_id
+             AND checkpoint.valid=1
+            WHERE candidate.path=i.path COLLATE {_PATH_COLLATION}
+              AND candidate.size=i.size
+              AND candidate.mtime_ns=i.mtime_ns
+              AND candidate.birthtime_ns=i.birthtime_ns
+            ORDER BY checkpoint.updated_ns DESC,
+                     candidate.scan_id DESC LIMIT 1
+        )"""
+    return f"""(
+        WITH RECURSIVE published_scans(scan_id) AS (
+            SELECT checkpoint.scan_id
+            FROM dedup.inventory_checkpoints checkpoint
+            JOIN dedup.scans root_scan ON root_scan.scan_id=checkpoint.scan_id
+            JOIN dedup.inventory_generation_heads root_head
+              ON root_head.scan_id=checkpoint.scan_id
+            WHERE checkpoint.valid=1
+              AND root_scan.status='complete'
+              AND root_scan.completed_ns IS NOT NULL
+              AND root_scan.errors=0
+            UNION
+            SELECT edge.successor_scan_id
+            FROM dedup.inventory_scan_successors edge
+            JOIN published_scans parent
+              ON parent.scan_id=edge.predecessor_scan_id
+            JOIN dedup.scans successor_scan
+              ON successor_scan.scan_id=edge.successor_scan_id
+            JOIN dedup.inventory_generation_heads successor_head
+              ON successor_head.scan_id=edge.successor_scan_id
+            WHERE successor_scan.status='complete'
+              AND successor_scan.completed_ns IS NOT NULL
+              AND successor_scan.errors=0
+        )
+        SELECT candidate.scan_id
+        FROM dedup.files candidate
+        JOIN published_scans published ON published.scan_id=candidate.scan_id
+        WHERE candidate.path=i.path COLLATE {_PATH_COLLATION}
+          AND candidate.size=i.size
+          AND candidate.mtime_ns=i.mtime_ns
+          AND candidate.birthtime_ns=i.birthtime_ns
+          AND NOT EXISTS(
+              SELECT 1 FROM dedup.inventory_scan_successors edge
+              WHERE edge.predecessor_scan_id=candidate.scan_id
+          )
+        ORDER BY candidate.scan_id DESC LIMIT 1
+    )"""
+
+
 def _image_rows(
     image_database: Path,
     dedup_database: Path | None,
@@ -1404,23 +1481,16 @@ def _image_rows(
             assert dedup_database is not None
             if _dedup_uses_isolated_generations(connection):
                 # A path may coexist in several roots or unpublished scans.
-                # Reuse only the newest valid checkpoint generation.
+                # Reuse only the terminal generation reachable from a valid
+                # checkpoint; COW successors deliberately leave the root
+                # checkpoint unchanged.
+                scan_selector = _dedup_image_scan_selector(connection)
                 query = f"""SELECT {image_projection}{ocr_projection},
                 fp.digest AS full_digest FROM images i
                 LEFT JOIN dedup.files f ON f.path=i.path COLLATE {_PATH_COLLATION}
                     AND f.size=i.size AND f.mtime_ns=i.mtime_ns
                     AND f.birthtime_ns=i.birthtime_ns
-                    AND f.scan_id=(
-                        SELECT candidate.scan_id FROM dedup.files candidate
-                        JOIN dedup.inventory_checkpoints checkpoint
-                          ON checkpoint.scan_id=candidate.scan_id
-                         AND checkpoint.valid=1
-                        WHERE candidate.path=i.path COLLATE {_PATH_COLLATION}
-                          AND candidate.size=i.size
-                          AND candidate.mtime_ns=i.mtime_ns
-                          AND candidate.birthtime_ns=i.birthtime_ns
-                        ORDER BY checkpoint.updated_ns DESC,
-                                 candidate.scan_id DESC LIMIT 1)
+                    AND f.scan_id={scan_selector}
                 LEFT JOIN dedup.fingerprints fp ON fp.volume_id=f.volume_id
                     AND fp.file_id=f.file_id AND fp.size=f.size
                     AND fp.mtime_ns=f.mtime_ns AND fp.birthtime_ns=f.birthtime_ns

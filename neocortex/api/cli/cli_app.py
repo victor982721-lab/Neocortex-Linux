@@ -851,6 +851,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
             if raw_exit_code != 0:
                 details: list[str] = []
                 for scope, value in semantic_results:
+                    if (
+                        scope == "__error__"
+                        and isinstance(value, Mapping)
+                        and value.get("schema") == "neocortex.semantic-index-failure/v1"
+                    ):
+                        details.append(sanitize_untrusted_text(
+                            f"{value.get('error_type', 'SemanticError')}: "
+                            f"{value.get('error', '')}", limit=512,
+                        ))
+                        continue
                     counters = []
                     for name in ("errors", "stale", "incomplete"):
                         count = getattr(value, name, None)
@@ -861,6 +871,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
                         counters.append(f"truncation_reason={reason}")
                     if counters:
                         details.append(f"{scope}:" + ",".join(counters))
+                unavailable = getattr(args, "_semantic_source_unavailable", {})
+                if isinstance(unavailable, Mapping):
+                    for scope, reason in list(unavailable.items())[:16]:
+                        details.append(sanitize_untrusted_text(
+                            f"source_unavailable {scope}:{reason}", limit=256,
+                        ))
                 detail = " (" + "; ".join(details) + ")" if details else ""
                 raise _SemanticStageError(
                     "Semantic lifecycle stage returned exit code "
