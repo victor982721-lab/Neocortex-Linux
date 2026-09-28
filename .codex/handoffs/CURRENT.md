@@ -1,12 +1,16 @@
 # Handoff operativo vigente — NeoCortex
 
 **Ronda:** NEO-UTILIDAD-LINUX-20260928.
-**Estado:** candidato instalado; aceptación E2E en curso, no entrega final.
+**Estado:** correcciones publicadas, release instalada/verificada y corpus real aceptado con límites explícitos.
 **Detalle:** [NEOCORTEX_CORPUS_UTILITY_2026-09-28.md](NEOCORTEX_CORPUS_UTILITY_2026-09-28.md).
 
-La autorización incluye corpus real/replay. Backup de originales y once owners
-verificado; no interpretar una prueba focal como cierre de release/utilidad.
-El expediente enlazado conserva gates y límites observados.
+Código instalado `fd17360ccb303f29a1d794e070f6453a79c52b5c`; rollback `c7beacaca81a`.
+143 contenidos originales conservados, 38 movimientos, 197 carpetas vacías a
+Papelera; 145 archivos finales. Replay real: 5,412 s, cero efectos o embeddings
+nuevos. Búsquedas híbridas: 15/18 top1 y 16/18 top5 (antes 9/18 y 12/18).
+La calibración visual está ready, no es infalible; ZIP corruptos no se reparan
+ni borran por inferencia, y 100 fuentes siguen requiriendo identificación/revisión.
+El expediente conserva fallos previos, métricas, respaldo y receipts.
 
 ---
 
