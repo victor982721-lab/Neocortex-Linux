@@ -12,11 +12,13 @@ import sqlite3
 import stat as stat_module
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
 from neocortex.platform.policy import sqlite_path_collation, stat_birthtime_ns
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityEncoding
+from neocortex.runtime.control.locking import FrameworkRunLock
 
 from neocortex.deduplication import FileSnapshot, snapshot_path
 from neocortex.progress import (
@@ -184,30 +186,39 @@ def apply_document_organization(
 ) -> OrganizationApplySummary:
     """Apply plans and mark them complete only after every cache is synchronized."""
 
+    if type(framework_lock_held) is not bool:
+        raise TypeError("framework_lock_held must be boolean")
     root = _validated_organization_apply_request(
         catalog_path,
         organization_root,
         mutation_guard=mutation_guard,
         max_actions=max_actions,
     )
-    with document_catalog_database(catalog_path) as connection:
-        run_id = _begin_organization_run(connection, "apply", root)
-        rows = _select_organization_apply_rows(connection, root, max_actions)
-        try:
-            return _execute_organization_apply_run(
-                connection,
-                catalog_path,
-                root,
-                run_id,
-                rows,
-                mutation_guard,
-                on_progress,
-                framework_lock_held,
-                checkpoint,
-            )
-        except BaseException as exc:
-            _fail_organization_run(connection, run_id, exc)
-            raise
+    lock = (
+        nullcontext()
+        if framework_lock_held
+        else FrameworkRunLock(catalog_path.parent / "framework.lock")
+    )
+    with lock:
+        initialize_document_catalog(catalog_path)
+        with document_catalog_database(catalog_path) as connection:
+            run_id = _begin_organization_run(connection, "apply", root)
+            rows = _select_organization_apply_rows(connection, root, max_actions)
+            try:
+                return _execute_organization_apply_run(
+                    connection,
+                    catalog_path,
+                    root,
+                    run_id,
+                    rows,
+                    mutation_guard,
+                    on_progress,
+                    True,
+                    checkpoint,
+                )
+            except BaseException as exc:
+                _fail_organization_run(connection, run_id, exc)
+                raise
 
 
 def _validated_organization_apply_request(
@@ -227,7 +238,6 @@ def _validated_organization_apply_request(
     if root_reason is not None:
         raise ValueError(f"organization root is protected: {root_reason}")
     _reject_state_destination(catalog_path, root)
-    initialize_document_catalog(catalog_path)
     return root
 
 
@@ -837,13 +847,45 @@ def apply_all_document_organization(
     batch_size: int = ORGANIZATION_APPLY_BATCH_SIZE,
     progress: ProgressCallback | None = None,
     progress_operation: str = "framework",
+    framework_lock_held: bool = False,
     checkpoint: Callable[[], None] | None = None,
 ) -> OrganizationApplySummary:
     """Consume every actionable plan in bounded, resumable apply batches."""
 
     mutation_guard.reject_run_mutation()
+    if type(framework_lock_held) is not bool:
+        raise TypeError("framework_lock_held must be boolean")
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
+    lock = (
+        nullcontext()
+        if framework_lock_held
+        else FrameworkRunLock(catalog_path.parent / "framework.lock")
+    )
+    with lock:
+        return _apply_all_document_organization_locked(
+            catalog_path,
+            organization_root,
+            mutation_guard=mutation_guard,
+            batch_size=batch_size,
+            progress=progress,
+            progress_operation=progress_operation,
+            checkpoint=checkpoint,
+        )
+
+
+def _apply_all_document_organization_locked(
+    catalog_path: Path,
+    organization_root: Path,
+    *,
+    mutation_guard: CorpusMutationGuard,
+    batch_size: int,
+    progress: ProgressCallback | None,
+    progress_operation: str,
+    checkpoint: Callable[[], None] | None,
+) -> OrganizationApplySummary:
+    """Run all organization batches while the caller owns framework.lock."""
+
     selected = applied = stale = blocked = failed = cache_synced = advisory_blocked = 0
     batches = 0
     last_run_id = 0

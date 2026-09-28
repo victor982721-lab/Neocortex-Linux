@@ -244,6 +244,7 @@ def run_organization_stages(
             organization_root,
             progress=checked_progress,
             mutation_guard=state.corpus_mutation_guard(run_id),
+            framework_lock_held=True,
             checkpoint=checkpoint_cancellation,
         )
         # Only validated advisory proposals are terminal, effect-free

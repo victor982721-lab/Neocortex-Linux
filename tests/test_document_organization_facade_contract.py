@@ -92,7 +92,8 @@ def test_document_organization_public_signatures_require_mutation_guard() -> Non
             "(catalog_path: 'Path', organization_root: 'Path', *, "
             "mutation_guard: 'CorpusMutationGuard', batch_size: 'int' = 100, "
             "progress: 'ProgressCallback | None' = None, progress_operation: 'str' "
-            "= 'framework', checkpoint: 'Callable[[], None] | None' = None) -> 'OrganizationApplySummary'"
+            "= 'framework', framework_lock_held: 'bool' = False, "
+            "checkpoint: 'Callable[[], None] | None' = None) -> 'OrganizationApplySummary'"
         ),
         "list_organization_plans": (
             "(catalog_path: 'Path', *, limit: 'int', status: 'str | None' = None) "

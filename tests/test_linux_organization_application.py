@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import zlib
@@ -17,11 +18,13 @@ from neocortex.documents.document_catalog import (
     update_document_catalog,
 )
 from neocortex.documents.document_organization import (
+    apply_all_document_organization,
     apply_document_organization,
     capture_organization_input_scope,
     plan_document_organization,
 )
 from neocortex.safety.corpus_access import CorpusAccessPolicy, CorpusMutationGuard
+from neocortex.runtime.control.locking import FrameworkRunLock
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 
@@ -319,3 +322,69 @@ def test_linux_organization_post_syscall_failure_is_recovery_required(
     with document_catalog_database(fixture.catalog, readonly=True) as connection:
         row = connection.execute("SELECT status FROM organization_plans").fetchone()
     assert row is not None and row[0] == "recovery_required"
+
+
+def test_standalone_organization_apply_owns_lock_before_physical_effect(
+    organization_fixture: _OrganizationFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = organization_fixture
+    before_catalog = hashlib.sha256(fixture.catalog.read_bytes()).digest()
+    initialized = False
+
+    def unexpected_initialize(_path: Path) -> None:
+        nonlocal initialized
+        initialized = True
+        raise AssertionError("catalog initialization must occur after framework lock")
+
+    monkeypatch.setattr(
+        organization_application,
+        "initialize_document_catalog",
+        unexpected_initialize,
+    )
+    with FrameworkRunLock(fixture.state / "framework.lock"):
+        with pytest.raises(RuntimeError, match="another framework execution"):
+            apply_document_organization(
+                fixture.catalog,
+                fixture.destination_root,
+                mutation_guard=fixture.guard,
+                max_actions=1,
+            )
+    assert initialized is False
+    assert hashlib.sha256(fixture.catalog.read_bytes()).digest() == before_catalog
+    assert fixture.source.exists()
+    assert not fixture.destination.exists()
+
+
+def test_standalone_apply_all_holds_one_lock_and_syncs_cache(
+    organization_fixture: _OrganizationFixture,
+) -> None:
+    fixture = organization_fixture
+    result = apply_all_document_organization(
+        fixture.catalog,
+        fixture.destination_root,
+        mutation_guard=fixture.guard,
+        batch_size=1,
+    )
+    assert result.applied == 1
+    assert result.cache_synced == 1
+    assert result.cache_pending == 0
+    assert not fixture.source.exists()
+    assert fixture.destination.exists()
+
+
+def test_integrated_lock_held_path_does_not_relock(
+    organization_fixture: _OrganizationFixture,
+) -> None:
+    fixture = organization_fixture
+    with FrameworkRunLock(fixture.state / "framework.lock"):
+        result = apply_document_organization(
+            fixture.catalog,
+            fixture.destination_root,
+            mutation_guard=fixture.guard,
+            max_actions=1,
+            framework_lock_held=True,
+        )
+    assert result.applied == 1
+    assert result.cache_synced == 1
+    assert result.cache_pending == 0

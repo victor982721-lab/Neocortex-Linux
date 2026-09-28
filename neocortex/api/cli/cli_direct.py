@@ -606,6 +606,7 @@ def run_organization_apply(args: argparse.Namespace) -> int:
                 organization_root,
                 mutation_guard=mutation_guard,
                 max_actions=args.organization_max_actions,
+                framework_lock_held=True,
             )
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
         print(f"ERROR organization-apply {type(exc).__name__}: {exc}")

@@ -386,6 +386,7 @@ class OrganizationApplyBoundaryTests(unittest.TestCase):
             apply_mock.assert_called_once()
             call = apply_mock.call_args
             guard = call.kwargs["mutation_guard"]
+            self.assertIs(call.kwargs["framework_lock_held"], True)
             self.assertIsInstance(guard, CorpusMutationGuard)
             self.assertIs(guard.internal_paths_policy, internal_policy)
             self.assertIs(guard.protected_content_policy, protected_policy)
