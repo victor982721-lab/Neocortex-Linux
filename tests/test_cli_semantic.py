@@ -893,9 +893,11 @@ def _search_result(
     )
 
 
+@pytest.mark.parametrize("include_title", (False, True))
 def test_semantic_search_reports_rank_availability_fusion_and_completeness(
     tmp_path,
     capsys,
+    include_title,
 ) -> None:
     args = build_parser().parse_args(
         [
@@ -909,6 +911,7 @@ def test_semantic_search_reports_rank_availability_fusion_and_completeness(
             "99",
             "--semantic-search-mode",
             "all",
+            *(["--semantic-search-include-title"] if include_title else []),
         ]
     )
     validate_arguments(args)
@@ -923,13 +926,45 @@ def test_semantic_search_reports_rank_availability_fusion_and_completeness(
     assert kwargs["include_text"] is True
     assert kwargs["include_images"] is True
     assert kwargs["include_lexical"] is True
+    assert kwargs["include_title"] is include_title
     assert kwargs["limit"] == 7
     assert kwargs["max_vectors"] == 99
     output = capsys.readouterr().out
     assert "SEMANTIC_RANKING name=semantic_text available=1 complete=1" in output
     assert "LEXICAL_RANKING name=fts_pdf availability=available" in output
     assert "SEMANTIC_HIT rank=1" in output
+    assert "evidence_role=retrieved_content" in output
     assert not (tmp_path / "framework.lock").exists()
+
+
+@pytest.mark.parametrize("mode", ("image", "lexical"))
+def test_semantic_title_flag_rejects_modes_without_text(mode: str) -> None:
+    args = build_parser().parse_args([
+        "--semantic-search", "synthetic title", "--semantic-search-mode", mode,
+        "--semantic-search-include-title",
+    ])
+    with pytest.raises(SystemExit, match="requires --semantic-search with all/text mode"):
+        validate_arguments(args)
+
+
+def test_semantic_title_hit_is_labelled_advisory(tmp_path, capsys) -> None:
+    from tests.test_semantic_service import _calibrated_ranking_hit
+
+    _hit, witness = _calibrated_ranking_hit(1, source_kind="pdf", score=0.8)
+    advisory = replace(
+        witness, section_kind="semantic_metadata_title",
+        section_provenance={"advisory_only": True},
+    )
+    result = _search_result()
+    result = replace(result, fused=(replace(result.fused[0], primary_evidence=advisory),))
+    args = build_parser().parse_args([
+        "--state-directory", str(tmp_path), "--semantic-search", "synthetic title",
+        "--semantic-search-include-title",
+    ])
+    validate_arguments(args)
+    with patch("neocortex.semantic.semantic_service.search_semantic_index", return_value=result):
+        assert dispatch_direct(args) == 0
+    assert "evidence_role=advisory_metadata" in capsys.readouterr().out
 
 
 def test_semantic_search_emits_bounded_item_diagnostic_trace(

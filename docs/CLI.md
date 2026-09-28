@@ -829,6 +829,13 @@ Neocortex --semantic-search "pink flower" --semantic-search-mode image
 Los localizadores dependen del productor. Si una ruta no conserva página, celda,
 segmento o región, la salida no inventa esa precisión.
 
+Para localizar por nombre además de contenido, usa explícitamente
+`Neocortex --semantic-search "nombre del documento" --semantic-search-mode text --semantic-search-include-title`.
+Las coincidencias de nombre se etiquetan `evidence_role=advisory_metadata`:
+permiten encontrar el archivo, pero no prueban que su cuerpo contenga lo pedido.
+El flag no cambia las consultas de contenido por omisión y no aplica a los
+modos exclusivamente lexical o image.
+
 La búsqueda visual usa CLIP local sólo cuando existe una calibración durable
 compatible con el modelo, el pipeline y el `processing_signature` de la
 generación de imágenes publicada; sin ella, o ante deriva de cualquiera de

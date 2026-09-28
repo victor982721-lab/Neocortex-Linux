@@ -43,6 +43,9 @@ fuera de `docs/`.
   después de un movimiento, sin volver al checkpoint ancestral ni perder el
   requisito de SHA completo. Los errores integrados exponen la fuente y causa
   concreta de la abstención también en el sobre JSON de la CLI.
+- Las listas explícitas de unidades conservan su evidencia sin convertir rangos
+  en mediciones de amperios. `--semantic-search-include-title` permite localizar
+  nombres de forma opt-in y muestra su rol advisory, separado del contenido.
 - Los ZIP descubiertos desde EML tienen etapa e idempotency propias; su consumo
   histórico no se confunde con verificación actual de sus hijos. Organización
   adquiere el lock global antes de inicializar owners o cruzar efectos físicos,

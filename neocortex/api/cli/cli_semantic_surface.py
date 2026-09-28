@@ -176,6 +176,11 @@ def register_semantic_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="N",
     )
     semantic.add_argument(
+        "--semantic-search-include-title",
+        action="store_true",
+        help="include advisory filename/title matches, not verified document content",
+    )
+    semantic.add_argument(
         "--semantic-diagnostic-item", action="append", metavar="ITEM_ID",
         help="trace a known item through the same bounded search (repeat up to 20 times)",
     )
@@ -291,6 +296,7 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
         "semantic_text_profile",
         "semantic_search_mode",
         "semantic_search_limit",
+        "semantic_search_include_title",
         "semantic_evidence_limit",
         "semantic_max_vectors",
         "semantic_model_cache",
@@ -342,10 +348,15 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
     search_only = {
         "semantic_search_mode",
         "semantic_search_limit",
+        "semantic_search_include_title",
         "semantic_max_vectors",
         "semantic_diagnostic_item",
         "semantic_exact_index",
     }
+    if getattr(args, "semantic_search_include_title", False) and (
+        args.semantic_search is None or args.semantic_search_mode not in {"all", "text"}
+    ):
+        raise SystemExit("--semantic-search-include-title requires --semantic-search with all/text mode")
     diagnostic_items = getattr(args, "semantic_diagnostic_item", None) or ()
     if len(diagnostic_items) > 20 or any(not item.strip() or len(item) > 512 for item in diagnostic_items):
         raise SystemExit("--semantic-diagnostic-item requires 1..512 characters per item and at most 20 items")

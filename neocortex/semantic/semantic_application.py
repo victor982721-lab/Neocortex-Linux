@@ -63,6 +63,7 @@ class _SemanticSearchKeywordArgs(TypedDict):
     include_text: bool
     include_images: bool
     include_lexical: bool
+    include_title: bool
     text_model: EmbeddingModelSpec | None
     model_cache: Path | None
     local_files_only: bool
@@ -2922,6 +2923,7 @@ def _run_semantic_search_with_handle(
         "include_text": mode in {"all", "text"},
         "include_images": mode in {"all", "image"},
         "include_lexical": mode in {"all", "lexical"},
+        "include_title": bool(getattr(args, "semantic_search_include_title", False)),
         "text_model": _semantic_text_model(args.semantic_text_profile),
         "model_cache": args.semantic_model_cache,
         "local_files_only": True,
@@ -3005,6 +3007,12 @@ def _run_semantic_search_with_handle(
                 f"{json.dumps(trace, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
             )
     for rank, hit in enumerate(result.fused, start=1):
+        primary = hit.primary_evidence
+        evidence_role = (
+            "advisory_metadata"
+            if primary is not None and primary.section_provenance.get("advisory_only") is True
+            else "retrieved_content"
+        )
         evidence = ",".join(
             f"{value.ranking}:{value.rank}:{value.raw_score:.6f}:{value.contribution:.6f}"
             for value in hit.fused.evidence
@@ -3015,6 +3023,7 @@ def _run_semantic_search_with_handle(
             f"identity={json.dumps(hit.source_identity, ensure_ascii=False)} "
             f"path={json.dumps(hit.path, ensure_ascii=False)} "
             f"snippet={json.dumps(hit.snippet, ensure_ascii=False)} "
+            f"evidence_role={evidence_role} "
             f"evidence={evidence or '-'}"
         )
     if exact_index is not None:

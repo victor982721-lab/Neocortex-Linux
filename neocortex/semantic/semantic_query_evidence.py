@@ -173,6 +173,18 @@ def _normal_unit(value: str) -> str:
     return re.sub(r"\s+", "", _fold(value)).replace("·", "*")
 
 
+def _unit_value_matches(value: str) -> Iterator[re.Match[str]]:
+    """Yield measurements except ``unidades 2 a 6`` range fragments."""
+    for match in _UNIT_VALUE.finditer(value):
+        if (
+            _normal_unit(match.group(2)) == "a"
+            and _UNIT_RANGE_PREFIX.search(value[max(0, match.start() - 48) : match.start()])
+            and re.match(r"\s*\d", value[match.end() :])
+        ):
+            continue
+        yield match
+
+
 def _date_values(value: str) -> tuple[tuple[tuple[int, int, int], tuple[int, int]], ...]:
     """Extract full day/month/year witnesses with original folded spans."""
 
@@ -250,7 +262,7 @@ def _constraint_profile(query: str) -> _StructuredConstraintProfile:
     measurements = tuple(
         dict.fromkeys(
             (_normal_number(match.group(1)), _normal_unit(match.group(2)))
-            for match in _UNIT_VALUE.finditer(bounded)
+            for match in _unit_value_matches(bounded)
         )
     )
     return {
@@ -292,6 +304,15 @@ def _code_matches(text: str, prefix: str, number: str) -> tuple[tuple[int, int],
             re.IGNORECASE,
         )
         matches.extend(match.span() for match in alias.finditer(folded))
+        normalized_number = str(int(number))
+        matches.extend(
+            match.span()
+            for match in _UNIT_LIST_ALIAS.finditer(folded)
+            if any(
+                str(int(candidate)) == normalized_number
+                for candidate in re.findall(r"\d+", match.group())
+            )
+        )
     return tuple(matches)
 
 
@@ -390,7 +411,7 @@ def structured_query_support(query: str, text: str) -> dict[str, object]:
     for number, unit in profile["measurements"]:
         spans = tuple(
             match.span()
-            for match in _UNIT_VALUE.finditer(text)
+            for match in _unit_value_matches(text)
             if _normal_number(match.group(1)) == number
             and _normal_unit(match.group(2)) == unit
         )
@@ -805,6 +826,10 @@ _CODE_IDENTIFIER = re.compile(
     r"(?<![\w])[-]?([A-Z]{1,6})[- ]?(\d{1,5})(?![\w-])",
     re.IGNORECASE,
 )
+_UNIT_RANGE_PREFIX = re.compile(
+    r"(?i)(?:unidad(?:es)?|unit(?:s)?|unite(?:s)?|unités?|einheit(?:en)?)"
+    r"\s*[-#]?\s*$"
+)
 _UNIT_VALUE = re.compile(
     r"(?<![\w.])([+-]?\d+(?:[.,]\d+)?)\s*"
     r"(mva|mpa|kpa|pa|bar|psi|kv|v|ka|a|hz|mhz|°?c|°?f|n\s*[·.*]\s*m|nm|mm|cm|kg|%)"
@@ -837,6 +862,13 @@ _DATE_WORD = re.compile(
 )
 _UNIT_ALIAS = re.compile(
     r"\b(?:unidad|unit|unite|unité|einheit)\s*[-#]?\s*(\d{1,5})\b",
+    re.IGNORECASE,
+)
+_UNIT_LIST_ALIAS = re.compile(
+    r"\b(?:unidad(?:es)?|unit(?:s)?|unite(?:s)?|unités?|einheit(?:en)?)"
+    r"\s*[-#]?\s*0*\d{1,5}"
+    r"(?:\s*,\s*0*\d{1,5}|\s+(?:y|and)\s+0*\d{1,5}){0,2}"
+    r"(?!\s*(?:-|a|to)\s*\d)\b",
     re.IGNORECASE,
 )
 _CODE_PREFIX_STOPWORDS = frozenset(

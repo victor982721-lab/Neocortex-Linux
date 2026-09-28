@@ -242,6 +242,11 @@ EXPECTED_SEMANTIC_ACTIONS = (
         type_name="int",
         metavar="N",
     ),
+    _expected_flag(
+        "--semantic-search-include-title",
+        "semantic_search_include_title",
+        "include advisory filename/title matches, not verified document content",
+    ),
     _expected_store(
         "--semantic-diagnostic-item",
         "semantic_diagnostic_item",
@@ -347,6 +352,9 @@ EXPECTED_SEMANTIC_HELP = (
     "                        rank all spaces by default, or select one independent\n"
     "                        mode\n"
     "  --semantic-search-limit N\n"
+    "  --semantic-search-include-title\n"
+    "                        include advisory filename/title matches, not verified\n"
+    "                        document content\n"
     "  --semantic-diagnostic-item ITEM_ID\n"
     "                        trace a known item through the same bounded search\n"
     "                        (repeat up to 20 times)\n"

@@ -202,3 +202,30 @@ def test_c29_auto_title_ranking_stays_public_but_out_of_witness_scope() -> None:
     assert len(rankings) == 2
     assert rankings[0].hits
     assert rankings[1].hits == title.hits
+
+
+def test_c29_explicit_plural_unit_lists_are_coherent_but_ranges_are_not() -> None:
+    query = "correo reportes de presión U2 y U6 23 de julio"
+    assert structured_query_support(
+        query,
+        "Se comparten reportes de presión interna de los transformadores de las unidades 2 y 6.",
+    )["coherent"] is True
+    assert structured_query_support(query, "Reporte unidades 2, 6 de presión.")["coherent"] is True
+    assert structured_query_support(query, "Reporte unidades 2 and 6 de presión.")["coherent"] is True
+    for text in ("Reporte unidades 2-6 de presión.", "Reporte unidades 2 a 6 de presión."):
+        support = structured_query_support(query, text)
+        assert support["coherent"] is False
+        assert support["hard_mismatch"] is True
+    distant = structured_query_support(query, "Unidad 2 en un documento; el anexo menciona equipo 6.")
+    assert distant["coherent"] is False
+
+
+def test_c29_unit_range_is_not_an_amp_measurement_or_expanded_witness() -> None:
+    range_query = "¿Qué ocurrió con unidades 2 a 6?"
+    constraints = service.structured_query_constraints(range_query)
+    assert constraints["applicable"] is False
+    support = structured_query_support(range_query, "El informe describe unidades 2 a 7.")
+    assert support["status"] == "not_applicable"
+    assert support["coherent"] is False
+    amp = structured_query_support("corriente 2 A", "Corriente 2 A estable durante la prueba.")
+    assert amp["coherent"] is True
