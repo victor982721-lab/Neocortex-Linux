@@ -481,6 +481,8 @@ def run_zip_intake_stage(
     extracted_files_known = True
     statuses: dict[str, int] = {}
     samples: list[dict[str, object]] = []
+    source_outcomes: list[dict[str, object]] = []
+    source_outcomes_truncated = False
     atomic_decisions: list[tuple[FileSnapshot, "DetectedType"]] = []
     filesystem_changed = False
     for snapshot in admission.snapshots:
@@ -522,6 +524,30 @@ def run_zip_intake_stage(
         source_payload = _engine_result_payload(outcome)
         source_status = str(source_payload.get("status", "unknown"))
         statuses[source_status] = statuses.get(source_status, 0) + 1
+        if (
+            source_status == "applied"
+            and source_payload.get("published") is True
+            and source_payload.get("trashed") is True
+        ):
+            if len(source_outcomes) < 128:
+                raw_successors = source_payload.get("successor_paths", ())
+                successor_paths = (
+                    [value for value in raw_successors if isinstance(value, str)][:32]
+                    if isinstance(raw_successors, (tuple, list)) else []
+                )
+                source_outcomes.append(
+                    {
+                        "source_path": source_payload.get("source_path", snapshot.path),
+                        "source_identity": source_payload.get("source_identity"),
+                        "source_sha256": source_payload.get("source_sha256"),
+                        "status": source_status,
+                        "published": True,
+                        "trashed": True,
+                        "successor_paths": successor_paths,
+                    }
+                )
+            else:
+                source_outcomes_truncated = True
         kind = _classification_kind(decision, source_payload)
         if kind == "generic_zip":
             counters["generic_candidates"] += 1
@@ -644,6 +670,8 @@ def run_zip_intake_stage(
         "statuses": statuses,
         "failures": failure_statuses,
         "failure_samples": samples,
+        "source_outcomes": source_outcomes,
+        "source_outcomes_truncated": source_outcomes_truncated,
     }
     if extracted_files_known:
         payload["extracted_files"] = extracted_files

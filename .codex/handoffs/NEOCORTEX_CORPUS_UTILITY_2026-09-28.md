@@ -1,7 +1,10 @@
 # Corpus útil y efectos Linux — 2026-09-28
 
-Estado: implementación y aceptación en curso; este registro no acredita todavía
-una release instalada ni una corrida productiva corregida.
+Estado: candidato7ae6b30 instalado y acreditado; aceptación E2E en curso.
+La canaria privada detectó C25/C26 antes de efectos sobre el corpus real.
+C26 está publicado en bbf05d3; C25 y C22 corregidos con aceptación independiente
+y312 pruebas focales. La promoción y canaria final siguen pendientes.
+Este registro no acredita una corrida productiva corregida.
 
 La autorización incluye repetir el corpus reducido y realizar publicación,
 instalación y verificación final. Se preserva un cambio ajeno en AGENTS.md; el
@@ -29,7 +32,7 @@ build debe salir de un checkout limpio del SHA publicado, nunca de ese diff.
 
 ## Aceptación pendiente
 
-El expediente externo conserva matriz24 contratos, manifest de fuente,
+El expediente externo conserva matriz26 contratos, manifest de fuente,
 pruebas y revisiones por dominio, baseline y gates individuales. La primera
 suite global reveló fixtures legacy y consumidores de storage que se corrigieron;
 no se presenta una suite fallida como verde. La clasificación debe comprobarse

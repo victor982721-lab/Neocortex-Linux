@@ -512,6 +512,15 @@ ha de conservar el original hasta demostrar integridad de todos los miembros.
 EML conserva el padre y publica adjuntos completos con manifest fuera del
 Corpus. El replay usa identidad y hashes para localizar hijos movidos o el
 keeper exacto tras deduplicación, sin reinflar el corpus por cada corrida.
+Un ZIP adjunto que Intake publicó y retiró legítimamente se distingue como
+`consumed_archive`: el replay coteja el SHA recién leído del correo y la
+identidad del adjunto con un evento canónico de Framework. Cuenta como
+`attachments_consumed`, no como un archivo actual verificado ni como prueba
+de que todos sus hijos sigan presentes. Así no se recrea un ZIP retirado ni
+un árbol vacío después de organizar sus hijos. Un manifest editable por sí
+solo no autoriza esa reutilización; sin evidencia durable compatible se informa
+`recovery_required`. La búsqueda histórica es acotada y cancelable; una
+retención que retire esa evidencia requiere recuperación explícita.
 
 ## Reanudación
 

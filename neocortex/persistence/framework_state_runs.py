@@ -8,7 +8,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from collections.abc import Mapping
 
 from neocortex.safety.corpus_access import CorpusAccessPolicy, CorpusMutationGuard
@@ -21,6 +21,10 @@ from neocortex.persistence.framework_state_types import (
     bounded_lifecycle_name as _bounded_lifecycle_name,
 )
 from neocortex.persistence.framework_connection import connect_existing_framework
+from neocortex.persistence.sqlite_cancellation import (
+    SQLiteCancellationBridge,
+    sqlite_cancellation_scope,
+)
 from neocortex.persistence.operational_freshness import require_operational_identity
 from neocortex.persistence.operational_freshness import operational_identity_floor
 from neocortex.runtime.orchestration.run_manifest import (
@@ -1496,6 +1500,111 @@ class FrameworkStateRunsMixin(_FrameworkStateOwner):
         for event in self.read_run_stages(run_id):
             latest[str(event["stage"])] = dict(event)
         return latest
+
+    def read_historical_zip_consumption(
+        self,
+        root: Path,
+        *,
+        source_sha256: str,
+        current_run_id: int | None = None,
+        max_candidates: int = 64,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        """Read bounded owner-authored ZIP consumption facts for replay.
+
+        This is a projection of existing manifest-bound lifecycle events.  It
+        never opens the corpus or creates a second receipt store; callers may
+        use the source digest/identity to distinguish a historically consumed
+        child from a currently verified file.
+        """
+
+        if (
+            not isinstance(source_sha256, str)
+            or len(source_sha256) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in source_sha256)
+        ):
+            raise ValueError("source_sha256 must be a SHA-256 string")
+        if type(max_candidates) is not int or not 1 <= max_candidates <= 256:
+            raise ValueError("max_candidates must be between 1 and 256")
+        if current_run_id is not None and (type(current_run_id) is not int or current_run_id < 1):
+            raise ValueError("current_run_id must be positive or null")
+        if not isinstance(root, Path) or not root.is_absolute():
+            raise ValueError("root must be an absolute Path")
+        if callable(checkpoint):
+            checkpoint()
+        normalized_root = str(Path(os.path.abspath(os.path.realpath(root))))
+        floor = operational_identity_floor(self._connection, "framework")
+        run_clause = "(r.status IN ('completed','failed','cancelled','interrupted') AND r.run_id>?)"
+        parameters: list[object] = [normalized_root]
+        if current_run_id is not None:
+            run_clause = f"(r.run_id=? OR {run_clause})"
+            parameters.append(current_run_id)
+        parameters.append(floor)
+        parameters.extend((source_sha256, max_candidates))
+        receipts: list[dict[str, Any]] = []
+        bridge = SQLiteCancellationBridge(checkpoint)
+        with sqlite_cancellation_scope(self._connection, bridge, instructions=100):
+            rows = self._connection.execute(
+                f"""SELECT e.run_id,e.event_id,e.details_json FROM run_events e
+                JOIN initial_runs r ON r.run_id=e.run_id
+                WHERE e.phase='lifecycle-stage'
+                AND e.message='Lifecycle stage transitioned'
+                AND r.root=? COLLATE {_PATH_COLLATION}
+                AND {run_clause}
+                AND e.details_json LIKE '%' || ? || '%'
+                ORDER BY e.event_id DESC LIMIT ?""",
+                tuple(parameters),
+            ).fetchall()
+            for row in rows:
+                if callable(checkpoint):
+                    checkpoint()
+                run_id = int(row[0])
+                event_id = int(row[1])
+                stages = self.read_run_stages(run_id)
+                stage = next((item for item in stages if item.get("event_id") == event_id), None)
+                if stage is None or stage.get("stage") not in {"zip-intake", "email-zip-intake"}:
+                    continue
+                if stage.get("status") not in {"completed", "partial", "failed"}:
+                    continue
+                details = stage.get("details")
+                if (
+                    not isinstance(details, Mapping)
+                    or details.get("schema") != "neocortex.zip-intake/v1"
+                    or not isinstance(details.get("source_outcomes"), list)
+                ):
+                    continue
+                for outcome in details["source_outcomes"]:
+                    if callable(checkpoint):
+                        checkpoint()
+                    if not isinstance(outcome, Mapping) or outcome.get("source_sha256") != source_sha256:
+                        continue
+                    if (
+                        outcome.get("status") != "applied"
+                        or outcome.get("published") is not True
+                        or outcome.get("trashed") is not True
+                        or not isinstance(outcome.get("source_identity"), Mapping)
+                    ):
+                        continue
+                    identity = outcome["source_identity"]
+                    identity_fields = ("path", "device", "inode", "size", "mtime_ns", "ctime_ns", "nlink")
+                    if (
+                        any(field not in identity for field in identity_fields)
+                        or not isinstance(identity.get("path"), str)
+                        or not Path(str(identity["path"])).is_absolute()
+                        or not Path(os.path.abspath(str(identity["path"]))).is_relative_to(normalized_root)
+                        or identity.get("nlink") != 1
+                        or any(
+                            type(identity.get(field)) is not int or int(identity[field]) < 0
+                            for field in identity_fields[1:]
+                        )
+                    ):
+                        continue
+                    receipt = dict(outcome)
+                    receipt["run_id"] = run_id
+                    receipt["stage_event_id"] = event_id
+                    receipt["stage_name"] = stage.get("stage")
+                    receipts.append(receipt)
+        return tuple(receipts)
 
     def _pending_organization_stages(self, run_id: int) -> tuple[str, ...]:
         latest = self.read_run_stage_state(run_id)

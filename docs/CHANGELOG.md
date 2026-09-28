@@ -29,6 +29,10 @@ fuera de `docs/`.
   la altura disponible continúa hacia abajo en scrollback, sin vista compacta
   que oculte tareas. El cierre distingue propuestas, efectos y búsqueda visual
   calibrada; publicar vectores no equivale a habilitar búsquedas de imagen.
+- Los ZIP descubiertos desde EML tienen etapa e idempotency propias; su consumo
+  histórico no se confunde con verificación actual de sus hijos. Organización
+  adquiere el lock global antes de inicializar owners o cruzar efectos físicos,
+  tanto desde la API individual como desde la CLI y el flujo integrado.
 - Se retiran helpers privados sin consumidores, conservando contratos públicos
   y seams de compatibilidad. Replay Text evita una consulta de capacidad por
   archivo sin eliminar lectura/hash ni validación de materializaciones.

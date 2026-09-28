@@ -24,8 +24,11 @@ from email import policy
 from email.message import Message
 from email.parser import BytesFeedParser
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Iterator
+
+from neocortex.persistence.framework_state_types import RunBudgetExceeded
+from neocortex.runtime.control.cancellation import CancellationRequested
 
 
 EMAIL_ATTACHMENT_SCHEMA = "neocortex.email-attachments/v1"
@@ -54,8 +57,9 @@ class EmailAttachmentError(ValueError):
 class EmailAttachmentResolution:
     """Trusted resolver result; content-equivalent reuse is opt-in."""
 
-    path: str | os.PathLike[str]
+    path: str | os.PathLike[str] | None
     reuse_kind: str = "identity"
+    provenance: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -903,16 +907,74 @@ def _resolve_relocated_children(
     for old, fresh in zip(existing.attachments, planned.attachments, strict=True):
         try:
             candidate_value = resolver(old)
-        except BaseException as exc:
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except (CancellationRequested, RunBudgetExceeded):
+            raise
+        except Exception as exc:
             raise EmailAttachmentError("blocked", "child_resolver_failed", type(exc).__name__) from exc
         if candidate_value is None:
             raise EmailAttachmentError("corrupt", "child_resolver_missing")
         if isinstance(candidate_value, EmailAttachmentResolution):
             reuse_kind = candidate_value.reuse_kind
-            candidate = Path(candidate_value.path)
+            candidate = None if candidate_value.path is None else Path(candidate_value.path)
         else:
             reuse_kind = "identity"
             candidate = Path(candidate_value)
+        if reuse_kind == "consumed_archive":
+            provenance = candidate_value.provenance if isinstance(candidate_value, EmailAttachmentResolution) else None
+            if not isinstance(provenance, Mapping):
+                raise EmailAttachmentError("recovery_required", "consumed_archive_receipt_missing")
+            if (
+                provenance.get("status") != "applied"
+                or provenance.get("published") is not True
+                or provenance.get("trashed") is not True
+                or provenance.get("source_sha256") != fresh.sha256
+            ):
+                raise EmailAttachmentError("recovery_required", "consumed_archive_receipt_mismatch")
+            source_identity = provenance.get("source_identity")
+            if not isinstance(source_identity, Mapping):
+                raise EmailAttachmentError("recovery_required", "consumed_archive_identity_missing")
+            required_identity = ("path", "device", "inode", "size", "mtime_ns", "ctime_ns", "nlink")
+            if (
+                any(field not in source_identity for field in required_identity)
+                or not isinstance(source_identity.get("path"), str)
+                or not Path(source_identity["path"]).is_absolute()
+                or source_identity.get("nlink") != 1
+                or any(
+                    type(source_identity.get(field)) is not int
+                    or int(source_identity[field]) < 0
+                    for field in required_identity[1:]
+                )
+            ):
+                raise EmailAttachmentError("recovery_required", "consumed_archive_identity_invalid")
+            if (
+                old.child_device is None
+                or old.child_inode is None
+                or old.child_mtime_ns is None
+                or source_identity.get("device") != old.child_device
+                or source_identity.get("inode") != old.child_inode
+                or source_identity.get("size") != old.size
+                or source_identity.get("mtime_ns") != old.child_mtime_ns
+            ):
+                raise EmailAttachmentError("recovery_required", "consumed_archive_identity_mismatch")
+            resolved.append(
+                replace(
+                    fresh,
+                    child_path=old.child_path,
+                    status="consumed_archive",
+                    child_device=old.child_device,
+                    child_inode=old.child_inode,
+                    child_mtime_ns=old.child_mtime_ns,
+                    child_reuse_kind="consumed_archive",
+                    previous_child_device=old.child_device,
+                    previous_child_inode=old.child_inode,
+                    previous_child_mtime_ns=old.child_mtime_ns,
+                )
+            )
+            continue
+        if candidate is None:
+            raise EmailAttachmentError("unsafe", "child_resolver_path_missing")
         if reuse_kind not in {"identity", "content_equivalent"}:
             raise EmailAttachmentError("unsafe", "child_resolver_reuse_kind_invalid")
         if reuse_kind == "content_equivalent" and not allow_content_equivalent:
@@ -966,6 +1028,7 @@ def _validate_replay_manifest(
     manifest_file: Path,
     *,
     directory_fd: int | None = None,
+    consumed_names: frozenset[str] = frozenset(),
 ) -> None:
     """Reject stale/edited manifests before opening any child path."""
 
@@ -1005,7 +1068,8 @@ def _validate_replay_manifest(
                 os.close(duplicate)
     except OSError as exc:
         raise EmailAttachmentError("blocked", "manifest_children_list_failed", str(exc)) from exc
-    if names != expected_names:
+    missing = expected_names - names
+    if (names - expected_names) or (missing - set(consumed_names)):
         raise EmailAttachmentError("corrupt", "manifest_extra_or_missing_child")
 
 
@@ -1258,6 +1322,34 @@ def materialize_email_attachments(
                     )
                 replay_children = existing_manifest.attachments
             else:
+                consumed_names = frozenset(
+                    Path(item.child_path or "").name
+                    for item in rebound
+                    if item.child_reuse_kind == "consumed_archive"
+                    or Path(item.child_path or "").parent != destination_path
+                )
+                _validate_replay_manifest(
+                    existing_manifest,
+                    planned,
+                    destination_path,
+                    manifest_file,
+                    directory_fd=destination_fd,
+                    consumed_names=consumed_names,
+                )
+                for child in rebound:
+                    if child.child_reuse_kind == "consumed_archive":
+                        continue
+                    _verify_child(
+                        Path(child.child_path or ""),
+                        size=child.size,
+                        digest=child.sha256,
+                        parent_fd=(
+                            destination_fd
+                            if Path(child.child_path or "").parent == destination_path
+                            else None
+                        ),
+                        checkpoint=checkpoint,
+                    )
                 replay_children = rebound
             if rebound is not None or not existing_manifest.parent_identity == identity:
                 replayed = EmailAttachmentManifest(

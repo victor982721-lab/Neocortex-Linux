@@ -10,7 +10,7 @@ from rich.console import Console
 from neocortex.api.cli.cli_reporting import has_organization_errors, print_professional_summary
 from neocortex.documents.document_organization_models import OrganizationApplySummary
 from neocortex.progress import ProgressEvent, ProgressMetric, RichProgress
-from neocortex.progress.rich import _task_label
+from neocortex.progress.rich import _group_index, _task_label
 
 
 def test_terminal_overflow_switches_once_to_append_only_history(monkeypatch) -> None:
@@ -168,3 +168,11 @@ def test_post_run_readiness_uses_public_owner_reader_and_fails_closed(tmp_path, 
     assert calls == [tmp_path / "semantic.sqlite3"]
     assert observed is not None and observed["status"] == "unavailable"
     assert observed["action"] == "inspect_semantic_status_when_quiescent"
+
+
+def test_email_zip_progress_has_independent_label_and_inventory_group() -> None:
+    assert _task_label("email-zip-intake", "process") == "ZIP de adjuntos EML"
+    assert _task_label("zip-intake", "process") == "Revisar contenedores"
+    assert _group_index("email-zip-intake", "process") == 1
+    assert _group_index("framework", "email-zip-intake-reconciliation") == 1
+    assert _task_label("framework", "email-zip-intake-reconciliation") == "Conciliar ZIP de EML"

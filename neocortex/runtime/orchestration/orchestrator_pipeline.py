@@ -137,8 +137,16 @@ class _BoundedZipProgress:
         total_hint: int,
         zip_files_inventoried: int | None = None,
         zip_files_admitted: int | None = None,
+        operation: str = _ZIP_PROGRESS_OPERATION,
+        source_operation: str = _ZIP_PROGRESS_OPERATION,
+        phase: str = _ZIP_PROGRESS_PHASE,
+        description: str = _ZIP_PROGRESS_DESCRIPTION,
     ) -> None:
         self._callback = callback
+        self._operation = operation
+        self._source_operation = source_operation
+        self._phase = phase
+        self._description = description
         self._total_hint = max(0, int(total_hint))
         self._completed = 0
         self._total: int | None = None
@@ -177,7 +185,7 @@ class _BoundedZipProgress:
         # cumulative batch totals.  Only the Framework ``process`` event is
         # allowed to merge category/container counters.  Member/legacy
         # physical counters remain observable from internal phases.
-        batch_event = event.key == (_ZIP_PROGRESS_OPERATION, _ZIP_PROGRESS_PHASE)
+        batch_event = event.key == (self._source_operation, self._phase)
         aliases_to_merge: Iterable[tuple[str, tuple[str, ...]]] = (
             self._COUNTER_ALIASES.items()
         )
@@ -196,7 +204,7 @@ class _BoundedZipProgress:
                 self._counters[name] = max(self._counters[name], value)
         # Only the Framework batch adapter counts containers. Engine events
         # count members/bytes and finish individual phases, not the ZIP stage.
-        if event.key == (_ZIP_PROGRESS_OPERATION, _ZIP_PROGRESS_PHASE):
+        if event.key == (self._source_operation, self._phase):
             status = metrics.get("status")
             if isinstance(status, str) and status:
                 self._status = status[:64]
@@ -233,9 +241,9 @@ class _BoundedZipProgress:
             typed_metrics.append(ProgressMetric("extracted_files", self._extracted_files))
         typed_metrics.append(ProgressMetric("status", self._status))
         return ProgressEvent(
-            _ZIP_PROGRESS_OPERATION,
-            _ZIP_PROGRESS_PHASE,
-            _ZIP_PROGRESS_DESCRIPTION,
+            self._operation,
+            self._phase,
+            self._description,
             completed,
             effective_total,
             "ZIPs",
@@ -904,6 +912,8 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         successor_scan_id: int | None = None,
         status: str = "running",
         finished: bool = False,
+        operation: str = "zip-intake-reconciliation",
+        description: str = "Reconciliando inventario tras ZIP Intake",
     ) -> None:
         """Expose the physical successor scan as a distinct visible phase."""
 
@@ -919,8 +929,8 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             self.progress,
             ProgressEvent(
                 "framework",
-                "zip-intake-reconciliation",
-                "Reconciliando inventario tras ZIP Intake",
+                operation,
+                description,
                 max(0, completed),
                 max(0, total),
                 "fase",
@@ -968,6 +978,11 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         inventory: PreparedInventory,
         dedup_index: DedupIndex,
         snapshots: Iterable[FileSnapshot] | None = None,
+        stage_name: str = "zip-intake",
+        progress_operation: str | None = None,
+        reconciliation_operation: str | None = None,
+        reconciliation_phase: str = "inventory_reconciliation",
+        preserve_primary_result: bool = True,
     ) -> tuple[PreparedInventory, dict[str, object]]:
         """Run physical ZIP Intake between Inventory and Identify.
 
@@ -979,11 +994,24 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         see physical paths rather than the stale pre-intake generation.
         """
 
-        # Reset per-run evidence before the first source is considered.  The
-        # value is also used by terminal cancellation reporting when Identify
-        # is interrupted after ZIP effects have already crossed their commit
-        # frontier.
-        self._last_zip_intake_result: dict[str, object] = {}
+        if not isinstance(stage_name, str) or not stage_name.strip() or len(stage_name) > 128:
+            raise ValueError("ZIP Intake stage_name must be non-empty and bounded")
+        stage_name = stage_name.strip()
+        progress_operation = stage_name if progress_operation is None else progress_operation
+        reconciliation_operation = (
+            f"{stage_name}-reconciliation"
+            if reconciliation_operation is None
+            else reconciliation_operation
+        )
+        if not isinstance(progress_operation, str) or not progress_operation.strip():
+            raise ValueError("ZIP Intake progress_operation must be non-empty")
+        if not isinstance(reconciliation_operation, str) or not reconciliation_operation.strip():
+            raise ValueError("ZIP Intake reconciliation_operation must be non-empty")
+        # Keep the initial ZIP evidence as the primary cancellation/recovery
+        # projection. Nested EML ZIPs have a separate result envelope and must
+        # never overwrite the source stage's counters.
+        if preserve_primary_result:
+            self._last_zip_intake_result = {}
 
         empty_payload: dict[str, object] = {
             "schema": "neocortex.zip-intake/v1",
@@ -1019,11 +1047,11 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             effective_limit,
         )
         admission_payload = admission.payload()
-        state.set_run_phase(run_id, "zip_intake")
+        state.set_run_phase(run_id, stage_name.replace("-", "_"))
         state.record_event(
             run_id,
             "info",
-            "zip-intake",
+            stage_name,
             "Admisión de ZIP Intake preparada después del inventario",
             {
                 **admission_payload,
@@ -1036,7 +1064,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         if callable(publish_stage):
             publish_stage(
                 run_id,
-                "zip-intake",
+                stage_name,
                 "running",
                 details={
                     **admission_payload,
@@ -1044,7 +1072,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                     "effective_max_file_bytes": effective_limit,
                     "apply": bool(self.config.apply_actions),
                 },
-                idempotency_key="zip-intake:running",
+                idempotency_key=f"{stage_name}:running",
             )
         zip_progress = _BoundedZipProgress(
             self.progress,
@@ -1054,6 +1082,14 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             total_hint=int(admission.zip_files_admitted),
             zip_files_inventoried=int(admission.zip_files_inventoried),
             zip_files_admitted=int(admission.zip_files_admitted),
+            operation=progress_operation,
+            source_operation=_ZIP_PROGRESS_OPERATION,
+            phase=_ZIP_PROGRESS_PHASE,
+            description=(
+                "Procesando ZIPs"
+                if stage_name == "zip-intake"
+                else "Procesando ZIPs adjuntos de correo"
+            ),
         )
         try:
             outcome = run_zip_intake_stage(
@@ -1073,19 +1109,24 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             )
         except BaseException as exc:
             partial_status = "cancelled" if isinstance(exc, KeyboardInterrupt) else "failed"
-            self._last_zip_intake_result = zip_progress.partial(status=partial_status)
+            partial_payload = zip_progress.partial(status=partial_status)
+            partial_payload["stage_name"] = stage_name
+            if preserve_primary_result:
+                self._last_zip_intake_result = partial_payload
+            else:
+                self._last_email_zip_intake_result = partial_payload
             if callable(publish_stage):
                 try:
                     publish_stage(
                         run_id,
-                        "zip-intake",
+                        stage_name,
                         "failed",
                         details={
                             "error_type": type(exc).__name__,
                             "detail": str(exc)[:8192],
-                            "observed_progress": dict(self._last_zip_intake_result),
+                            "observed_progress": dict(partial_payload),
                         },
-                        idempotency_key="zip-intake:failed",
+                        idempotency_key=f"{stage_name}:failed",
                     )
                 except BaseException:
                     # Preserve the intake exception; Framework termination
@@ -1111,7 +1152,11 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         )
         zip_progress.finish(payload, status=str(payload.get("status", "completed")))
         payload["progress_events"] = zip_progress.event_count
-        self._last_zip_intake_result = payload
+        payload["stage_name"] = stage_name
+        if preserve_primary_result:
+            self._last_zip_intake_result = payload
+        else:
+            self._last_email_zip_intake_result = payload
         # ZIP Intake may change children but must never replace the corpus
         # root itself.  Revalidate the physical boundary before any successor
         # inventory or downstream route can consume the result.
@@ -1119,7 +1164,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         state.record_event(
             run_id,
             "warning" if outcome.status in {"partial", "failed", "blocked"} else "info",
-            "zip-intake",
+            stage_name,
             "ZIP Intake aplicado" if self.config.apply_actions else "ZIP Intake planificado",
             payload,
         )
@@ -1132,7 +1177,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             state.record_event(
                 run_id,
                 "info",
-                "zip-intake-reconciliation",
+                reconciliation_operation,
                 "Preparando inventario sucesor después de ZIP Intake",
                 {
                     "source_scan_id": inventory.scan.scan_id,
@@ -1143,6 +1188,12 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 completed=0,
                 total=1,
                 source_files=int(inventory.scan.files_seen),
+                operation=reconciliation_operation,
+                description=(
+                    "Reconciliando inventario tras ZIP Intake"
+                    if stage_name == "zip-intake"
+                    else "Reconciliando inventario tras ZIP adjunto de correo"
+                ),
             )
             try:
                 successor = self._prepare_normal_inventory(
@@ -1151,13 +1202,19 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                     boundary=boundary,
                     dedup_index=dedup_index,
                     journal_before=None,
-                    phase="inventory_reconciliation",
+                    phase=reconciliation_phase,
                 )
             except BaseException:
                 self._emit_zip_reconciliation_progress(
                     completed=0,
                     total=1,
                     source_files=int(inventory.scan.files_seen),
+                    operation=reconciliation_operation,
+                    description=(
+                        "Reconciliando inventario tras ZIP Intake"
+                        if stage_name == "zip-intake"
+                        else "Reconciliando inventario tras ZIP adjunto de correo"
+                    ),
                     status="cancelled",
                     finished=True,
                 )
@@ -1177,7 +1234,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             state.record_event(
                 run_id,
                 "info",
-                "zip-intake-reconciliation",
+                reconciliation_operation,
                 "Inventario sucesor listo para Identify",
                 {
                     "source_scan_id": inventory.scan.scan_id,
@@ -1193,6 +1250,12 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 successor_scan_id=int(successor.scan.scan_id),
                 status="completed",
                 finished=True,
+                operation=reconciliation_operation,
+                description=(
+                    "Reconciliando inventario tras ZIP Intake"
+                    if stage_name == "zip-intake"
+                    else "Reconciliando inventario tras ZIP adjunto de correo"
+                ),
             )
         if callable(publish_stage):
             stage_status = (
@@ -1202,10 +1265,10 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             )
             publish_stage(
                 run_id,
-                "zip-intake",
+                stage_name,
                 stage_status,
                 details=payload,
-                idempotency_key="zip-intake:completed",
+                idempotency_key=f"{stage_name}:completed",
             )
         return successor, payload
 
@@ -1264,7 +1327,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             publish_stage(
                 run_id,
                 "email-intake",
-                "partial" if result.failed else "completed",
+                "failed" if result.status == "recovery_required" else "partial" if result.failed else "completed",
                 details=payload,
                 idempotency_key="email-intake:completed",
             )
@@ -1607,6 +1670,11 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                         inventory=inventory,
                         dedup_index=dedup_index,
                         snapshots=nested_zip_snapshots,
+                        stage_name="email-zip-intake",
+                        progress_operation="email-zip-intake",
+                        reconciliation_operation="email-zip-intake-reconciliation",
+                        reconciliation_phase="inventory_email_zip_reconciliation",
+                        preserve_primary_result=False,
                     )
                     email_intake_result["nested_zip_intake"] = nested_zip
                     if bool(nested_zip.get("filesystem_changed")):
@@ -1669,12 +1737,18 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         route_results["zip_intake"] = dict(zip_intake_result)
         route_results["email_intake"] = dict(email_intake_result)
         route_failures = dict(getattr(self, "_unavailable_routes", {}))
+        if zip_intake_result.get("status") in {
+            "partial", "failed", "blocked", "recovery_required"
+        }:
+            route_failures["zip-intake"] = str(
+                zip_intake_result.get("status", "partial")
+            )
         nested_email_zip = email_intake_result.get("nested_zip_intake")
         email_failed = email_intake_result.get("status") not in {
             "completed", "skipped_scope", "skipped_disabled"
         }
         if isinstance(nested_email_zip, Mapping) and nested_email_zip.get("status") in {
-            "partial", "failed", "blocked"
+            "partial", "failed", "blocked", "recovery_required"
         }:
             email_failed = True
         if email_failed:

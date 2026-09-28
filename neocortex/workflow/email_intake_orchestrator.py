@@ -46,11 +46,13 @@ class EmailIntakeStageResult:
     attachments_planned: int = 0
     attachments_materialized: int = 0
     attachments_replayed: int = 0
+    attachments_consumed: int = 0
     failed: int = 0
     filesystem_changed: bool = False
     reconciliation_required: bool = False
     errors: tuple[Mapping[str, object], ...] = ()
     created_paths: tuple[str, ...] = ()
+    consumption_provenance: tuple[Mapping[str, object], ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -61,11 +63,13 @@ class EmailIntakeStageResult:
             "attachments_planned": self.attachments_planned,
             "attachments_materialized": self.attachments_materialized,
             "attachments_replayed": self.attachments_replayed,
+            "attachments_consumed": self.attachments_consumed,
             "failed": self.failed,
             "filesystem_changed": self.filesystem_changed,
             "reconciliation_required": self.reconciliation_required,
             "errors": [dict(error) for error in self.errors[:32]],
             "created_paths": list(self.created_paths[:256]),
+            "consumption_provenance": [dict(item) for item in self.consumption_provenance[:32]],
         }
 
 
@@ -160,6 +164,8 @@ def _resolver_for_inventory(
     root: Path,
     max_file_bytes: int | None,
     allow_content_equivalent: bool,
+    historical_consumed_lookup: Callable[[EmailAttachment], Mapping[str, object] | None],
+    consumption_provenance: list[Mapping[str, object]],
     checkpoint: Callable[[], None],
 ) -> Callable[[EmailAttachment], str | os.PathLike[str] | EmailAttachmentResolution | None]:
     def resolve(item: EmailAttachment):
@@ -172,6 +178,28 @@ def _resolver_for_inventory(
             )
             if snapshot is not None and _inside_corpus(Path(snapshot.path), root):
                 return snapshot.path
+        receipt = historical_consumed_lookup(item)
+        if receipt is not None:
+            identity = receipt.get("source_identity")
+            source_path = identity.get("path") if isinstance(identity, Mapping) else None
+            try:
+                if not isinstance(source_path, str) or not Path(os.path.abspath(source_path)).is_relative_to(root.resolve()):
+                    return None
+            except OSError:
+                return None
+            consumption_provenance.append(
+                {
+                    "run_id": receipt.get("run_id"),
+                    "stage_event_id": receipt.get("stage_event_id"),
+                    "stage_name": receipt.get("stage_name"),
+                    "source_sha256": item.sha256,
+                }
+            )
+            return EmailAttachmentResolution(
+                None,
+                reuse_kind="consumed_archive",
+                provenance=receipt,
+            )
         if not allow_content_equivalent:
             return None
         matches: list[FileSnapshot] = []
@@ -240,11 +268,46 @@ def run_email_intake_stage(
     if not callable(record_event):
         raise TypeError("email intake requires FrameworkState.record_event")
     manifest_root = state_directory / "email-intake"
+    historical_reader = getattr(state, "read_historical_zip_consumption", None)
+
+    def historical_consumed_lookup(item: EmailAttachment) -> Mapping[str, object] | None:
+        if not callable(historical_reader):
+            return None
+        values = historical_reader(
+            root,
+            source_sha256=item.sha256,
+            current_run_id=run_id,
+            max_candidates=64,
+            checkpoint=checkpoint,
+        )
+        if not isinstance(values, (list, tuple)):
+            return None
+        # Equal ZIP bytes may have several legitimate source identities. Do
+        # not let a more recent, unrelated occurrence hide this child's fact.
+        for value in values:
+            checkpoint()
+            if not isinstance(value, Mapping):
+                continue
+            identity = value.get("source_identity")
+            if not isinstance(identity, Mapping):
+                continue
+            if (
+                item.child_device is not None and item.child_inode is not None
+                and identity.get("device") == item.child_device
+                and identity.get("inode") == item.child_inode
+                and identity.get("size") == item.size
+                and identity.get("mtime_ns") == item.child_mtime_ns
+            ):
+                return value
+        return None
     errors: list[Mapping[str, object]] = []
     parents_examined = parents_with_attachments = planned_count = 0
     materialized_count = replayed_count = failed = 0
+    consumed_count = 0
+    consumption_provenance: list[Mapping[str, object]] = []
     filesystem_changed = False
     reconciliation_required = False
+    recovery_required = False
     created_paths: list[str] = []
     emit_progress(
         progress,
@@ -292,17 +355,22 @@ def run_email_intake_stage(
             parents_with_attachments += 1
             planned_count += len(descriptors)
             key = _parent_key(snapshot)
-            if apply:
-                attachments_root = _ensure_attachment_parent(root, mutation_guard)
-            else:
-                attachments_root = root / "Adjuntos_de_correos"
+            attachments_root = root / "Adjuntos_de_correos"
             destination = attachments_root / key
             manifest = manifest_root / f"{key}.json"
+            # A replay may have a durable external manifest while the
+            # attachment directory was intentionally consumed/cleaned.  Do
+            # not recreate the corpus parent merely to discover that replay
+            # must abstain or report historical consumption.
+            if apply and not (destination.exists() or manifest.exists()):
+                attachments_root = _ensure_attachment_parent(root, mutation_guard)
+                destination = attachments_root / key
             if mutation_guard is not None:
                 require_paths_allowed = getattr(mutation_guard, "require_paths_allowed", None)
                 if not callable(require_paths_allowed):
                     raise EmailAttachmentError("unsafe", "mutation_guard_invalid")
                 require_paths_allowed(source, destination)
+            parent_consumption_provenance: list[Mapping[str, object]] = []
             resolver = _resolver_for_inventory(
                 dedup_index=dedup_index,
                 scan_id=scan_id,
@@ -311,9 +379,11 @@ def run_email_intake_stage(
                 allow_content_equivalent=bool(
                     getattr(config, "email_allow_content_equivalent_reuse", False)
                 ),
+                historical_consumed_lookup=historical_consumed_lookup,
+                consumption_provenance=parent_consumption_provenance,
                 checkpoint=checkpoint,
             )
-            replay_resolver = resolver if not destination.exists() else None
+            replay_resolver = resolver if (not destination.exists() or callable(historical_reader)) else None
             result = materialize_email_attachments(
                 source,
                 destination,
@@ -343,7 +413,24 @@ def run_email_intake_stage(
                         if item.status == "materialized" and item.child_path is not None
                     )
                 elif result.status == "replayed":
-                    replayed_count += len(result.attachments)
+                    replayed_count += sum(
+                        item.child_reuse_kind != "consumed_archive"
+                        for item in result.attachments
+                    )
+                consumed = sum(
+                    item.child_reuse_kind == "consumed_archive"
+                    for item in result.attachments
+                )
+                if consumed:
+                    consumed_count += consumed
+                    consumption_provenance.append(
+                        {
+                            "parent": str(source),
+                            "attachments_consumed": consumed,
+                            "coverage": "historical_source_consumed_current_children_unverified",
+                            "receipts": parent_consumption_provenance[:8],
+                        }
+                    )
             record_event(
                 run_id,
                 "info",
@@ -358,6 +445,18 @@ def run_email_intake_stage(
             )
         except EmailAttachmentError as exc:
             failed += 1
+            if exc.reason in {
+                "child_resolver_missing",
+                "child_resolver_failed",
+                "manifest_extra_or_missing_child",
+                "manifest_child_missing",
+                "consumed_archive_receipt_missing",
+                "consumed_archive_receipt_mismatch",
+                "consumed_archive_identity_missing",
+                "consumed_archive_identity_mismatch",
+            }:
+                recovery_required = True
+                reconciliation_required = True
             if exc.reason in {
                 "stage_publish_failed",
                 "manifest_replace_failed",
@@ -398,17 +497,19 @@ def run_email_intake_stage(
     if filesystem_changed:
         boundary.verify()
     return EmailIntakeStageResult(
-        "completed" if failed == 0 else "partial",
+        "recovery_required" if recovery_required else "completed" if failed == 0 else "partial",
         parents_examined,
         parents_with_attachments,
         planned_count,
         materialized_count,
         replayed_count,
+        consumed_count,
         failed,
         filesystem_changed,
         reconciliation_required,
         tuple(errors),
         tuple(dict.fromkeys(created_paths))[:256],
+        tuple(consumption_provenance)[:32],
     )
 
 

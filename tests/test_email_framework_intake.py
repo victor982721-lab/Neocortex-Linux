@@ -11,12 +11,123 @@ from types import SimpleNamespace
 import pytest
 
 from neocortex.deduplication import FileSnapshot
+from neocortex.capabilities.formats.archive.intake import SourceIdentity
+from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.runtime.control.cancellation import CancellationRequested
+from neocortex.progress import ProgressEvent
 from neocortex.runtime.models import FrameworkConfig
-from neocortex.runtime.orchestration.orchestrator_pipeline import _select_new_zip_snapshots
+from neocortex.runtime.orchestration.orchestrator_pipeline import (
+    _BoundedZipProgress,
+    _select_new_zip_snapshots,
+)
+from neocortex.runtime.orchestration.run_manifest import RunManifest
 from neocortex.workflow.email_intake_orchestrator import run_email_intake_stage
 
 
 TEST_CAPABILITIES = ("base", "inference")
+
+
+def _real_stage_manifest(run_id: int, root: Path) -> dict[str, object]:
+    return RunManifest(
+        run_id=run_id,
+        run_kind="initial",
+        root=str(root),
+        root_identity=(1, 2, -1),
+        selected_routes=("text",),
+        route_capabilities={"text": "safe_replay"},
+        configuration={"fixture": "email-zip-stage"},
+    ).event_payload()
+
+
+def test_real_framework_state_keeps_initial_and_nested_zip_stage_identity(
+    tmp_path: Path,
+) -> None:
+    """A completed initial ZIP stage must not block the EML-child ZIP stage."""
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    database = tmp_path / "framework.sqlite3"
+    with FrameworkState(database) as state:
+        run_id = state.begin_initial_run(root, None)
+        state.publish_run_manifest(run_id, _real_stage_manifest(run_id, root))
+        assert state.publish_run_stage(
+            run_id,
+            "zip-intake",
+            "running",
+            details={"stage_name": "zip-intake", "source_scan_id": 1},
+            idempotency_key="zip-intake:running",
+        )
+        assert state.publish_run_stage(
+            run_id,
+            "zip-intake",
+            "completed",
+            details={"stage_name": "zip-intake", "source_scan_id": 1, "successor_scan_id": 2},
+            idempotency_key="zip-intake:completed",
+        )
+        assert state.publish_run_stage(
+            run_id,
+            "email-zip-intake",
+            "running",
+            details={"stage_name": "email-zip-intake", "source_scan_id": 3},
+            idempotency_key="email-zip-intake:running",
+        )
+        assert state.publish_run_stage(
+            run_id,
+            "email-zip-intake",
+            "completed",
+            details={
+                "stage_name": "email-zip-intake",
+                "source_scan_id": 3,
+                "successor_scan_id": 4,
+                "nested": True,
+            },
+            idempotency_key="email-zip-intake:completed",
+        )
+        assert not state.publish_run_stage(
+            run_id,
+            "email-zip-intake",
+            "completed",
+            details={
+                "stage_name": "email-zip-intake",
+                "source_scan_id": 3,
+                "successor_scan_id": 4,
+                "nested": True,
+            },
+            idempotency_key="email-zip-intake:completed",
+        )
+        latest = state.read_run_stage_state(run_id)
+        assert latest["zip-intake"]["status"] == "completed"
+        assert latest["email-zip-intake"]["status"] == "completed"
+        stages = state.read_run_stages(run_id)
+        assert [stage["stage"] for stage in stages] == [
+            "zip-intake",
+            "zip-intake",
+            "email-zip-intake",
+            "email-zip-intake",
+        ]
+
+
+def test_nested_zip_progress_has_separate_operation_identity() -> None:
+    events: list[ProgressEvent] = []
+    progress = _BoundedZipProgress(
+        events.append,
+        total_hint=1,
+        operation="email-zip-intake",
+    )
+    progress(
+        ProgressEvent(
+            "zip-intake",
+            "process",
+            "engine fixture",
+            1,
+            1,
+            "ZIPs",
+        )
+    )
+    progress.finish({"status": "applied", "containers_examined": 1})
+    assert events
+    assert {event.operation for event in events} == {"email-zip-intake"}
+    assert {event.phase for event in events} == {"process"}
 
 
 def test_real_framework_config_enables_safe_content_equivalent_policy() -> None:
@@ -69,6 +180,21 @@ def _eml(*, attachment: bool) -> bytes:
             subtype="pdf",
             filename="report.pdf",
         )
+    return message.as_bytes()
+
+
+def _eml_zip_attachment() -> bytes:
+    message = email.message.EmailMessage()
+    message["From"] = "sender@example.invalid"
+    message["To"] = "receiver@example.invalid"
+    message["Subject"] = "Synthetic nested ZIP"
+    message.set_content("body with nested ZIP")
+    message.add_attachment(
+        b"synthetic ZIP payload",
+        maintype="application",
+        subtype="zip",
+        filename="nested.zip",
+    )
     return message.as_bytes()
 
 
@@ -334,3 +460,215 @@ def test_content_equivalent_rebind_is_explicit_and_hash_bound(tmp_path: Path) ->
     assert result.status == "completed"
     assert result.filesystem_changed is False
     assert result.attachments_replayed == 1
+
+
+def test_missing_replayed_child_requires_recovery_without_recreation(tmp_path: Path) -> None:
+    root, _parent, snapshot, dedup, state, _first = _run(tmp_path, attachment=True)
+    destination = next(path for path in (root / "Adjuntos_de_correos").iterdir() if path.is_dir())
+    child = next(path for path in destination.iterdir() if path.suffix == ".pdf")
+    child.unlink()
+    config = SimpleNamespace(
+        email_intake_enabled=True, email_max_parts=100, email_max_depth=8,
+        email_max_part_bytes=1_000_000, email_max_total_bytes=2_000_000,
+        email_max_source_bytes=2_000_000, email_allow_content_equivalent_reuse=False,
+        max_file_bytes=None, route="all", route_only=False,
+    )
+    result = run_email_intake_stage(
+        root=root, state_directory=tmp_path / "state", config=config, state=state,
+        run_id=2, boundary=_Boundary(root), dedup_index=dedup, scan_id=1,
+        identified_types={(
+            snapshot.volume_id, snapshot.file_id, snapshot.size,
+            snapshot.mtime_ns, snapshot.birthtime_ns,
+        ): SimpleNamespace(mime="message/rfc822")},
+        apply=True, cancellation=SimpleNamespace(checkpoint=lambda: None), progress=None,
+    )
+    assert result.status == "recovery_required"
+    assert result.filesystem_changed is False
+    assert result.attachments_replayed == 0
+    assert not child.exists()
+
+
+@pytest.mark.parametrize("unrelated_recent", (False, True))
+def test_historical_consumed_zip_is_typed_without_claiming_current_children(
+    tmp_path: Path, unrelated_recent: bool,
+) -> None:
+    root = tmp_path / "corpus"
+    root.mkdir()
+    parent = root / "message.eml"
+    parent.write_bytes(_eml_zip_attachment())
+    observed = parent.stat()
+    snapshot = FileSnapshot(
+        str(parent), observed.st_dev, observed.st_ino, observed.st_size,
+        observed.st_mtime_ns, getattr(observed, "st_birthtime_ns", observed.st_ctime_ns),
+    )
+    dedup = _Dedup(snapshot)
+    config = SimpleNamespace(
+        email_intake_enabled=True, email_max_parts=100, email_max_depth=8,
+        email_max_part_bytes=1_000_000, email_max_total_bytes=2_000_000,
+        email_max_source_bytes=2_000_000, email_allow_content_equivalent_reuse=False,
+        max_file_bytes=None, route="all", route_only=False,
+    )
+    identified = {(
+        snapshot.volume_id, snapshot.file_id, snapshot.size,
+        snapshot.mtime_ns, snapshot.birthtime_ns,
+    ): SimpleNamespace(mime="message/rfc822")}
+    first = run_email_intake_stage(
+        root=root, state_directory=tmp_path / "state", config=config, state=_State(),
+        run_id=1, boundary=_Boundary(root), dedup_index=dedup, scan_id=1,
+        identified_types=identified, apply=True,
+        cancellation=SimpleNamespace(checkpoint=lambda: None), progress=None,
+    )
+    assert first.attachments_materialized == 1
+    destination = next(path for path in (root / "Adjuntos_de_correos").iterdir() if path.is_dir())
+    child = next(path for path in destination.iterdir() if path.name != "manifest.json")
+    manifest = json.loads(next((tmp_path / "state" / "email-intake").glob("*.json")).read_text())
+    source_outcome = {
+        "source_path": str(child),
+        "source_identity": SourceIdentity.capture(child).to_dict(),
+        "source_sha256": manifest["attachments"][0]["sha256"],
+        "status": "applied",
+        "published": True,
+        "trashed": True,
+        "successor_paths": [],
+    }
+    with FrameworkState(tmp_path / "state" / "framework.sqlite3") as state:
+        run_one = state.begin_initial_run(root, None, inventory_policy_signature="fixture-policy")
+        state.publish_run_manifest(run_one, _real_stage_manifest(run_one, root))
+        state.publish_run_stage(
+            run_one,
+            "zip-intake",
+            "completed",
+            details={"schema": "neocortex.zip-intake/v1", "source_outcomes": [source_outcome]},
+            idempotency_key="zip-intake:completed",
+        )
+        state.fail_initial_run(run_one)
+        child.unlink()
+        destination.rmdir()
+        destination.parent.rmdir()
+        run_two = state.begin_initial_run(root, None, inventory_policy_signature="fixture-policy")
+        state.publish_run_manifest(run_two, _real_stage_manifest(run_two, root))
+        if unrelated_recent:
+            # Same archive bytes do not authorize choosing another child's
+            # newer consumption fact over this child's older identity binding.
+            wrong_identity = dict(source_outcome["source_identity"])
+            wrong_identity["inode"] += 1
+            wrong_identity["path"] = str(root / "different.zip")
+            state.publish_run_stage(
+                run_two, "email-zip-intake", "completed",
+                details={"schema": "neocortex.zip-intake/v1", "source_outcomes": [
+                    {**source_outcome, "source_identity": wrong_identity},
+                ]},
+                idempotency_key="email-zip-intake:completed",
+            )
+        class _RealHistoryState:
+            def __init__(self, inner: FrameworkState) -> None:
+                self.inner = inner
+
+            def corpus_mutation_guard(self, _run_id: int) -> _Guard:
+                return _Guard()
+
+            def __getattr__(self, name: str):
+                return getattr(self.inner, name)
+
+        second = run_email_intake_stage(
+            root=root, state_directory=tmp_path / "state", config=config, state=_RealHistoryState(state),
+            run_id=run_two, boundary=_Boundary(root), dedup_index=dedup, scan_id=1,
+            identified_types=identified, apply=True,
+            cancellation=SimpleNamespace(checkpoint=lambda: None), progress=None,
+        )
+        assert second.status == "completed"
+        assert second.filesystem_changed is False
+        assert second.attachments_replayed == 0
+        assert second.attachments_consumed == 1
+        assert second.consumption_provenance[0]["coverage"].startswith("historical_source_consumed")
+        assert not child.exists()
+        assert not (root / "Adjuntos_de_correos").exists()
+        forged = json.loads(next((tmp_path / "state" / "email-intake").glob("*.json")).read_text())
+        forged["attachments"][0]["child_device"] = None
+        forged["attachments"][0]["child_inode"] = None
+        forged["attachments"][0]["child_mtime_ns"] = None
+        manifest_path = next((tmp_path / "state" / "email-intake").glob("*.json"))
+        manifest_path.write_text(json.dumps(forged, sort_keys=True), encoding="utf-8")
+        run_three = state.begin_initial_run(root, None, inventory_policy_signature="fixture-policy")
+        state.publish_run_manifest(run_three, _real_stage_manifest(run_three, root))
+        third = run_email_intake_stage(
+            root=root, state_directory=tmp_path / "state", config=config,
+            state=_RealHistoryState(state), run_id=run_three, boundary=_Boundary(root),
+            dedup_index=dedup, scan_id=1, identified_types=identified, apply=True,
+            cancellation=SimpleNamespace(checkpoint=lambda: None), progress=None,
+        )
+        assert third.status == "recovery_required"
+        assert third.attachments_consumed == 0
+        assert not child.exists()
+
+
+def test_historical_zip_lookup_preserves_cancellation_boundary(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    root.mkdir()
+    with FrameworkState(tmp_path / "framework.sqlite3") as state:
+        run_id = state.begin_initial_run(root, None, inventory_policy_signature="fixture-policy")
+        state.publish_run_manifest(run_id, _real_stage_manifest(run_id, root))
+        for index in range(100):
+            state.publish_run_stage(
+                run_id,
+                f"fixture-{index}",
+                "completed",
+                details={"fixture": index},
+                idempotency_key=f"fixture-{index}:completed",
+            )
+        state.fail_initial_run(run_id)
+        calls = 0
+
+        def cancel() -> None:
+            nonlocal calls
+            calls += 1
+            if calls >= 2:
+                raise CancellationRequested("fixture cancellation")
+
+        with pytest.raises(CancellationRequested):
+            state.read_historical_zip_consumption(
+                root,
+                source_sha256="a" * 64,
+                checkpoint=cancel,
+            )
+        assert calls >= 2
+
+
+def test_historical_zip_lookup_accepts_terminal_partial_not_running_stage(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "corpus"
+    root.mkdir()
+    outcome = {
+        "source_path": str(root / "nested.zip"),
+        "source_identity": {
+            "path": str(root / "nested.zip"), "device": 1, "inode": 2,
+            "size": 3, "mtime_ns": 4, "ctime_ns": 5, "nlink": 1,
+        },
+        "source_sha256": "b" * 64,
+        "status": "applied", "published": True, "trashed": True,
+        "successor_paths": [],
+    }
+    with FrameworkState(tmp_path / "framework.sqlite3") as state:
+        failed_run = state.begin_initial_run(root, None, inventory_policy_signature="fixture-policy")
+        state.publish_run_manifest(failed_run, _real_stage_manifest(failed_run, root))
+        state.publish_run_stage(
+            failed_run, "zip-intake", "failed",
+            details={"schema": "neocortex.zip-intake/v1", "source_outcomes": [outcome]},
+            idempotency_key="zip-intake:failed",
+        )
+        state.fail_initial_run(failed_run)
+        found = state.read_historical_zip_consumption(root, source_sha256="b" * 64)
+        assert len(found) == 1
+        running = state.begin_initial_run(root, None, inventory_policy_signature="fixture-policy")
+        state.publish_run_manifest(running, _real_stage_manifest(running, root))
+        state.publish_run_stage(
+            running, "email-zip-intake", "running",
+            details={"schema": "neocortex.zip-intake/v1", "source_outcomes": [outcome]},
+            idempotency_key="email-zip-intake:running",
+        )
+        running_results = state.read_historical_zip_consumption(
+            root, source_sha256="b" * 64, current_run_id=running
+        )
+        assert running_results
+        assert all(item["run_id"] != running for item in running_results)

@@ -231,9 +231,12 @@ def _default_console() -> Console:
 def _group_index(operation: str, phase: str) -> int:
     if operation == "framework" and phase == "prepare":
         return 0
-    if operation in {"dedup", "zip-intake", "email-intake"} or (
+    if operation in {"dedup", "zip-intake", "email-intake", "email-zip-intake"} or (
         operation == "framework"
-        and phase in {"content-types", "duplicates", "zip-intake-reconciliation"}
+        and phase in {
+            "content-types", "duplicates", "zip-intake-reconciliation",
+            "email-intake-reconciliation", "email-zip-intake-reconciliation",
+        }
     ):
         return 1
     if operation in _ROUTE_LABELS:
@@ -248,6 +251,8 @@ def _task_label(operation: str, phase: str, metrics: dict[str, int | str] | None
         return "Revisar contenedores"
     if operation == "email-intake":
         return "Adjuntos de correo"
+    if operation == "email-zip-intake":
+        return "ZIP de adjuntos EML"
     if operation in _ROUTE_LABELS:
         route = _ROUTE_LABELS[operation]
         if phase.startswith("catalog-"):
@@ -270,6 +275,8 @@ def _task_label(operation: str, phase: str, metrics: dict[str, int | str] | None
             "complete": "Etapa previa",
             "zip-effects": "Efectos ZIP",
             "zip-intake-reconciliation": "Conciliar inventario",
+            "email-intake-reconciliation": "Conciliar adjuntos EML",
+            "email-zip-intake-reconciliation": "Conciliar ZIP de EML",
         }.get(phase, phase.replace("-", " ").capitalize())
     if operation == "dedup":
         return "Inventario" if phase == "inventory" else "Validar duplicados"
@@ -357,7 +364,7 @@ def _task_cells(task: Task) -> dict[str, Text]:
             str(task.fields.get("operation", "")), str(task.fields.get("phase", "")), metrics,
         ), style="bold default"),
         "advance": Text(f"{completed}/{total_text}"),
-        "unit": Text("conten." if task.fields.get("operation") == "zip-intake"
+        "unit": Text("conten." if task.fields.get("operation") in {"zip-intake", "email-zip-intake"}
                      else str(task.fields.get("unit", "elementos"))),
         "elapsed": Text("—", style="dim") if task.elapsed is None
         else Text(_format_duration(task.elapsed)),
@@ -547,7 +554,7 @@ class _GroupedProgress(Progress):
             format_summary = self._text_format_summary(task)
             if format_summary is not None:
                 contents.append(format_summary)
-            if task.fields.get("operation") == "zip-intake":
+            if task.fields.get("operation") in {"zip-intake", "email-zip-intake"}:
                 summary = self._zip_summary(task)
                 contents.extend((Text(""),
                                  Align.center(summary, width=self._table_width())
@@ -695,7 +702,7 @@ class RichProgress:
         rows = len(tasks) + len(groups) * 5 + 2
         if self._console.width < 100:
             rows += 2 * len(tasks)  # wrapped primary counters/time stay visible
-        rows += sum(8 for task in tasks if task.fields.get("operation") == "zip-intake")
+        rows += sum(8 for task in tasks if task.fields.get("operation") in {"zip-intake", "email-zip-intake"})
         for task in tasks:
             formats = {name.split(":", 2)[2] for name in _metric_values(task)
                        if name.startswith("format:") and len(name.split(":", 2)) == 3}
