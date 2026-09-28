@@ -35,6 +35,10 @@ fuera de `docs/`.
   la altura disponible continúa hacia abajo en scrollback, sin vista compacta
   que oculte tareas. El cierre distingue propuestas, efectos y búsqueda visual
   calibrada; publicar vectores no equivale a habilitar búsquedas de imagen.
+- La organización conserva destinos desambiguados propios sólo con identidad
+  física vigente, sin enlaces múltiples ni reservas extranjeras; el replay no
+  alterna sufijos. La búsqueda exige IDs exactos antes de fusionar contenido,
+  títulos y lexical, sin confundir un ID con el prefijo de una cifra decimal.
 - Los ZIP descubiertos desde EML tienen etapa e idempotency propias; su consumo
   histórico no se confunde con verificación actual de sus hijos. Organización
   adquiere el lock global antes de inicializar owners o cruzar efectos físicos,

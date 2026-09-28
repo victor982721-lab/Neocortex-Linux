@@ -460,6 +460,7 @@ def apply_structured_query_constraints(
     profile = structured_query_constraints(query)
     if profile.get("applicable") is not True or not ranking.hits:
         return ranking
+    hard_identity = bool(profile.get("identifiers"))
     resolved_by_key = {_search_hit_key(value.hit): value for value in ranking.resolved}
     observations: list[tuple[SearchHit, ResolvedSearchHit, Mapping[str, object]]] = []
     for hit in ranking.hits:
@@ -481,16 +482,23 @@ def apply_structured_query_constraints(
                     "raw_candidates": len(ranking.hits),
                     "observed_candidates": 0,
                     "coherent_candidates": 0,
-                    "retained_candidates": len(ranking.hits),
-                    "fallback_no_coherent_witness": True,
-                    "fallback_reason": "query_support_unavailable",
+                    "retained_candidates": 0 if hard_identity else len(ranking.hits),
+                    "fallback_no_coherent_witness": not hard_identity,
+                    "hard_identity_required": hard_identity,
+                    "hard_identity_abstention": hard_identity,
+                    "fallback_reason": (
+                        "query_support_unavailable" if not hard_identity
+                        else "exact_identifier_witness_unavailable"
+                    ),
                     "scope": "resolved_content_witnesses_only",
                 },
             },
+            hits=() if hard_identity else ranking.hits,
+            resolved=() if hard_identity else ranking.resolved,
         )
     coherent = [value for value in observations if value[2].get("coherent") is True]
-    fallback = not coherent
-    selected = coherent if coherent else observations
+    fallback = not coherent and not hard_identity
+    selected = coherent if coherent or hard_identity else observations
 
     def order(value: tuple[SearchHit, ResolvedSearchHit, Mapping[str, object]]) -> tuple[object, ...]:
         hit, _resolved, support = value
@@ -523,6 +531,8 @@ def apply_structured_query_constraints(
         "coherent_candidates": len(coherent),
         "retained_candidates": len(retained_hits),
         "fallback_no_coherent_witness": fallback,
+        "hard_identity_required": hard_identity,
+        "hard_identity_abstention": hard_identity and not coherent,
         "scope": "resolved_content_witnesses_only",
     }
     raw_targets = provenance.get("target_diagnostics")
@@ -729,13 +739,22 @@ def apply_text_retrieval_calibration(
         "score_interpretation": "cosine_similarity_retrieval_floor_not_probability",
         "raw_hits": len(ranking.hits),
     }
+    structured_constraints = ranking.provenance.get("structured_query_constraints")
+    structured_hard_abstention = (
+        isinstance(structured_constraints, Mapping)
+        and structured_constraints.get("hard_identity_abstention") is True
+    )
     if selected_model.model_signature != TEXT_MODEL_SIGNATURE:
         calibration.update(
             {
                 "status": "model_not_calibrated",
                 "retained_hits": len(ranking.hits),
                 "rejected_hits": 0,
-                "query_abstained": False,
+                "query_abstained": structured_hard_abstention,
+                "abstention_reason": (
+                    "exact_identifier_witness_unavailable"
+                    if structured_hard_abstention else None
+                ),
             }
         )
         return replace(
@@ -790,7 +809,7 @@ def apply_text_retrieval_calibration(
         calibrated_hits=calibrated_hits,
         uncalibrated_hits=uncalibrated_hits,
     )
-    query_abstained = (
+    query_abstained = structured_hard_abstention or (
         bool(ranking.hits) and calibrated_hits == len(ranking.hits) and not retained_hits
     )
     calibration.update(
@@ -805,7 +824,9 @@ def apply_text_retrieval_calibration(
             "rejected_by_source_kind": rejected_by_source,
             "query_abstained": query_abstained,
             "abstention_reason": (
-                "all_candidates_below_calibrated_source_floor" if query_abstained else None
+                "exact_identifier_witness_unavailable"
+                if structured_hard_abstention
+                else "all_candidates_below_calibrated_source_floor" if query_abstained else None
             ),
         }
     )
@@ -1451,6 +1472,12 @@ def text_search_rankings(
                 body_ranking,
                 provenance={**body_ranking.provenance, "query_variants_not_executed": skipped},
             )
+    # Expansion variants are recall aids, not permission to drop an exact
+    # compound identifier from the original request. Re-apply the original
+    # hard scope after variant merge and before calibration/floor admission.
+    body_ranking = apply_structured_query_constraints(
+        body_ranking, query=query, limit=limit,
+    )
     body_ranking = apply_text_retrieval_calibration(
         body_ranking,
         selected_model=selected_model,
@@ -1526,6 +1553,9 @@ def text_search_rankings(
                 or not policy.strip()
             ),
         },
+    )
+    title_ranking = apply_structured_query_constraints(
+        title_ranking, query=query, limit=limit,
     )
     title_ranking = apply_text_retrieval_calibration(
         title_ranking,
@@ -1878,12 +1908,24 @@ def _prepare_search_context(
         if isinstance(semantic_database, Path)
         else state_directory / SEMANTIC_DATABASE_NAME
     )
+    lexical_candidate_limit = min(
+        MAX_LEXICAL_CANDIDATE_HITS,
+        max(validated_limit * 3, validated_limit),
+    )
+    if structured_query_constraints(normalized_query).get("identifiers"):
+        # Exact identity filtering happens before fusion; give lexical FTS a
+        # bounded witness window so generic BM25 neighbours cannot hide the
+        # exact hit before that filter runs.
+        lexical_candidate_limit = min(
+            MAX_LEXICAL_CANDIDATE_HITS,
+            max(validated_limit * 4, validated_limit + 64),
+        )
     return _SemanticSearchContext(
         state_directory,
         normalized_query,
         validated_limit,
         validated_candidate_limit,
-        min(MAX_LEXICAL_CANDIDATE_HITS, max(validated_limit * 3, validated_limit)),
+        lexical_candidate_limit,
         validated_max_vectors,
         database,
         database.is_file(),
@@ -1991,17 +2033,40 @@ def _lexical_search_rankings(
         return ()
     paths = lexical_paths or default_lexical_paths(context.state_directory)
     if cancellation_check is None:
-        return lexical_search(
+        rankings = lexical_search(
             paths,
             context.query,
             limit=context.lexical_candidate_limit,
         )
-    return lexical_search(
-        paths,
-        context.query,
-        limit=context.lexical_candidate_limit,
-        cancellation_check=cancellation_check,
-    )
+    else:
+        rankings = lexical_search(
+            paths,
+            context.query,
+            limit=context.lexical_candidate_limit,
+            cancellation_check=cancellation_check,
+        )
+    profile = structured_query_constraints(context.query)
+    if not profile.get("identifiers"):
+        return rankings
+    retained_rankings: list[LexicalRanking] = []
+    for ranking in rankings:
+        _cancellation_point(cancellation_check)
+        retained = tuple(
+            resolved
+            for resolved in ranking.hits
+            if (
+                isinstance(
+                    structured := _resolved_query_support(context.query, resolved).get(
+                        "structured_support"
+                    ),
+                    Mapping,
+                )
+                and structured.get("coherent") is True
+                and structured.get("hard_mismatch") is not True
+            )
+        )
+        retained_rankings.append(replace(ranking, hits=retained))
+    return tuple(retained_rankings)
 
 
 def search_semantic_index(

@@ -623,6 +623,18 @@ def _resolve_initial_plan_destination(
 ) -> tuple[Path | None, str, str]:
     if _same_path(destination, Path(row["path"])):
         return destination, "already_organized", "source_already_at_destination"
+    # A previous collision resolution may already have placed this owner at
+    # its identity-qualified destination.  Do not turn that stable path back
+    # into a basename collision merely because the semantic filename is
+    # recomputed from the current catalog row.  The helper only accepts a
+    # destination generated from this row's identity and whose current stat
+    # still matches the catalog snapshot; equal-looking names are never
+    # sufficient.
+    current_destination = _current_owner_disambiguated_destination(row, destination)
+    if current_destination is not None and _plan_destination_available(
+        connection, row, current_destination
+    ):
+        return current_destination, "already_organized", "source_already_at_destination"
     if not os.path.lexists(destination):
         return destination, status, reason
     resolved, disambiguated = _resolve_plan_destination(
@@ -950,6 +962,18 @@ def _resolve_plan_destination(
 ) -> tuple[Path | None, bool]:
     """Preserve both same-named documents using a stable filesystem identity."""
 
+    current = _organization_row_path(row)
+    if (
+        _same_path(requested, current)
+        and _current_owner_snapshot_matches(row, current)
+        and _plan_destination_available(connection, row, current)
+    ):
+        return current, False
+    current_destination = _current_owner_disambiguated_destination(row, requested)
+    if current_destination is not None and _plan_destination_available(
+        connection, row, current_destination
+    ):
+        return current_destination, True
     for collision_index in range(1, 1001):
         candidate = _identity_disambiguated_destination(
             requested,
@@ -998,8 +1022,6 @@ def _plan_destination_available(
     row: sqlite3.Row,
     destination: Path,
 ) -> bool:
-    if os.path.lexists(destination):
-        return False
     catalog_conflict = connection.execute(
         f"""SELECT 1 FROM documents WHERE active=1 AND path=? COLLATE {_PATH_COLLATION}
         AND NOT(source_kind=? AND file_key=?) LIMIT 1""",
@@ -1015,7 +1037,75 @@ def _plan_destination_available(
         ) AND NOT (source_kind=? AND file_key=? AND status='planned') LIMIT 1""",
         (str(destination), row["source_kind"], row["file_key"]),
     ).fetchone()
-    return plan_conflict is None
+    if plan_conflict is not None:
+        return False
+    # The current owner is allowed to retain its exact identity-qualified
+    # destination, but only after foreign catalog/plan owners have been
+    # checked.  Otherwise an active foreign plan could be silently ignored.
+    if _same_path(destination, _organization_row_path(row)) and _current_owner_snapshot_matches(
+        row, destination
+    ):
+        return True
+    return not os.path.lexists(destination)
+
+
+def _current_owner_disambiguated_destination(
+    row: sqlite3.Row,
+    requested: Path,
+) -> Path | None:
+    """Return the owner's existing identity-qualified path, if still exact.
+
+    ``requested`` is the semantic destination calculated for the current
+    catalog row.  An applied move can leave the source row's path carrying the
+    stable identity suffix that was added during an earlier collision.  Check
+    all bounded suffixes rather than parsing names: this keeps the comparison
+    tied to the source identity and avoids accepting an unrelated basename.
+    """
+
+    current = _organization_row_path(row)
+    if not _current_owner_snapshot_matches(row, current):
+        return None
+    for collision_index in range(1, 1001):
+        candidate = _identity_disambiguated_destination(requested, row, collision_index)
+        if _same_path(candidate, current):
+            return current
+    return None
+
+
+def _organization_row_path(row: sqlite3.Row) -> Path:
+    """Read the current locator from either a document or plan row."""
+
+    key = "path" if "path" in row.keys() else "source_path"
+    return Path(str(row[key]))
+
+
+def _current_owner_snapshot_matches(row: sqlite3.Row, path: Path) -> bool:
+    """Verify a candidate is this row's regular file, not just its name."""
+
+    try:
+        observed = path.lstat()
+        if path.resolve(strict=True) != path:
+            return False
+        expected_identity = (int(row["volume_id"]), int(row["file_id"]))
+        expected_size = int(row["size"])
+        expected_mtime = int(row["mtime_ns"])
+        expected_birthtime = int(row["birthtime_ns"])
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+        return False
+    observed_birthtime = getattr(observed, "st_birthtime_ns", -1)
+    birthtime_matches = observed_birthtime == expected_birthtime or (
+        observed_birthtime == -1
+        and expected_birthtime >= 0
+        and expected_birthtime == observed.st_ctime_ns
+    )
+    return (
+        (observed.st_dev, observed.st_ino) == expected_identity
+        and observed.st_size == expected_size
+        and observed.st_mtime_ns == expected_mtime
+        and birthtime_matches
+    )
 
 
 def _emit_organization_plan_progress(

@@ -122,6 +122,16 @@ _RECEIPT = re.compile(
     r"se recibieron|se entrego|fue entregado)\b"
 )
 _DATE = re.compile(r"\b\d{1,2} de [a-z]+\b")
+_NUMERIC_IDENTIFIER = re.compile(
+    r"(?<![\w-])(?<!\d[.,])\d{5,}(?!(?:[A-Za-z0-9-]|[.,]\d))"
+)
+_NUMERIC_AMOUNT_CONTEXT = re.compile(
+    r"(?i)(?:total|importe|monto|amount|subtotal|iva|tax|precio|costo|coste|suma|valor)"
+    r"\s*(?:facturado|facturada|invoice|invoiced)?\s*[:#]?\s*$"
+)
+_NUMERIC_AMOUNT_UNIT = re.compile(
+    r"(?i)^\s*(?:mxn|usd|eur|gbp|m\.n\.|pesos?|d[oó]lares?|euros?)\b"
+)
 
 
 class _LegacyEvidenceChecks(TypedDict):
@@ -194,10 +204,24 @@ def _date_values(value: str) -> tuple[tuple[tuple[int, int, int], tuple[int, int
 def _constraint_profile(query: str) -> _StructuredConstraintProfile:
     bounded = query[:MAX_STRUCTURED_QUERY_CHARS]
     folded = _fold(bounded)
+    dates = tuple(value for value, _span in _date_values(bounded))
+    date_years = {str(value[0]) for value in dates}
     identifiers = tuple(
         dict.fromkeys(
-            _fold(match.group())
-            for match in (*_COMPOUND_IDENTIFIER.finditer(bounded), *_UUID_IDENTIFIER.finditer(bounded))
+            tuple(
+                _fold(match.group())
+                for match in (
+                    *_COMPOUND_IDENTIFIER.finditer(bounded),
+                    *_UUID_IDENTIFIER.finditer(bounded),
+                )
+            )
+            + tuple(
+                match.group()
+                for match in _NUMERIC_IDENTIFIER.finditer(bounded)
+                if match.group() not in date_years
+                and not _NUMERIC_AMOUNT_CONTEXT.search(bounded[max(0, match.start() - 48) : match.start()])
+                and not _NUMERIC_AMOUNT_UNIT.match(bounded[match.end() :])
+            )
         )
     )
     # A compound identifier is already the strongest identity witness.  Do
@@ -217,7 +241,6 @@ def _constraint_profile(query: str) -> _StructuredConstraintProfile:
             value = ("u", str(int(match.group(1))))
             if value not in codes:
                 codes.append(value)
-    dates = tuple(value for value, _span in _date_values(bounded))
     measurements = tuple(
         dict.fromkeys(
             (_normal_number(match.group(1)), _normal_unit(match.group(2)))
@@ -341,10 +364,17 @@ def structured_query_support(query: str, text: str) -> dict[str, object]:
 
     for identifier in profile["identifiers"]:
         escaped = re.escape(str(identifier))
-        spans = tuple(match.span() for match in re.finditer(
-            rf"(?<![\w-]){escaped}(?![\w-])", folded, re.IGNORECASE
-        ))
-        add_constraint("compound_identifier", identifier, spans)
+        if str(identifier).isdigit():
+            # Numeric identifiers may be followed by a filename separator
+            # (``20996_relevadores``), but never match a longer numeric or
+            # alphanumeric token such as ``10020996``.
+            pattern = rf"(?<![\w-])(?<!\d[.,]){escaped}(?!(?:[A-Za-z0-9-]|[.,]\d))"
+            kind = "numeric_identifier"
+        else:
+            pattern = rf"(?<![\w-]){escaped}(?![\w-])"
+            kind = "compound_identifier"
+        spans = tuple(match.span() for match in re.finditer(pattern, folded, re.IGNORECASE))
+        add_constraint(kind, identifier, spans)
     for prefix, number in profile["codes"]:
         add_constraint("equipment_code", f"{prefix}{number}", _code_matches(text, str(prefix), str(number)))
     text_dates = _date_values(text)
