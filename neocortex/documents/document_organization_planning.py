@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import stat
+import sys
 import time
 import unicodedata
 from collections.abc import Iterator, Mapping
@@ -65,6 +66,7 @@ _CLIENT_ACCOUNT_ORGANIZATIONS = frozenset({"ANDRITZ"})
 _PATH_COLLATION = sqlite_path_collation()
 ORGANIZATION_CORPUS_POLICY_SCHEMA = "neocortex.organization-corpus-policy/v1"
 _ORGANIZATION_CANDIDATE_PAGE_SIZE = 128
+_LINUX_ORGANIZATION_BACKEND_AVAILABLE = os.name == "posix" and sys.platform == "linux"
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,7 +328,7 @@ def plan_document_organization(
     with document_catalog_database(catalog_path) as connection, catalog_sql_cancellation(connection, cancellation):
         source_scope.verify(connection)
         run_id = _begin_organization_run(connection, "plan", root, source_scope=source_scope)
-        considered = planned = review = blocked = organized = 0
+        considered = planned = review = blocked = organized = executable = 0
         excluded_out_of_scope = unresolved_scope = excluded_components = 0
         try:
             # Publish one complete plan generation.  An interrupted rebuild must
@@ -439,6 +441,13 @@ def plan_document_organization(
                         organized=organized,
                     )
             source_scope.verify(connection)
+            executable = int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM organization_plans
+                    WHERE catalog_run_id=? AND organization_root=? AND executable=1""",
+                    (run_id, str(root)),
+                ).fetchone()[0]
+            )
             summary = OrganizationPlanSummary(
                 catalog_run_id=run_id,
                 considered=considered,
@@ -451,6 +460,7 @@ def plan_document_organization(
                 excluded_components=excluded_components,
                 source_scope_id=source_scope.scope_id,
                 source_root=str(source_scope.root),
+                executable=executable,
             )
             _complete_organization_run(connection, run_id, summary)
             _emit_organization_plan_progress(
@@ -1078,7 +1088,25 @@ def _insert_plan(
             else "blocked"
         )
     )
-    blockers = ["backend_unavailable", "authorization_required"]
+    source_scope_contains_destination = False
+    if destination is not None:
+        try:
+            source_scope_contains_destination = Path(destination).is_relative_to(source_scope.root)
+        except (TypeError, ValueError):
+            source_scope_contains_destination = False
+    executable = bool(
+        _LINUX_ORGANIZATION_BACKEND_AVAILABLE
+        and representation == "physical_file"
+        and status == "planned"
+        and eligibility == "eligible"
+        and destination is not None
+        and source_scope_contains_destination
+    )
+    blockers: list[str] = []
+    if not executable:
+        blockers.append("backend_unavailable")
+        if status == "planned" and eligibility == "eligible":
+            blockers.append("authorization_required")
     if virtual:
         blockers.append("virtual_resource_requires_materialization")
     representation_metadata = binding.get("representation_metadata", {})
@@ -1127,6 +1155,9 @@ def _insert_plan(
             "uncertainty": row["uncertainty"],
             "corpus_policy": corpus_policy.to_dict(),
             "reversible": corpus_policy.reversible,
+            "organization_backend": (
+                "posix-link-unlink-no-replace-v1" if executable else None
+            ),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -1200,7 +1231,7 @@ def _insert_plan(
             representation,
             operation,
             eligibility,
-            0,
+            int(executable),
             blockers_json,
         ),
     )

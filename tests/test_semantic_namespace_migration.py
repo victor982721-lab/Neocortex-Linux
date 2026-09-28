@@ -62,6 +62,8 @@ EXPECTED_MODULES = frozenset(
         "semantic_preparation",
         "semantic_publication_heads",
         "semantic_quality",
+        "semantic_receipt_storage",
+        "semantic_tabular_projection",
         "semantic_query_evidence",
         "semantic_query_variants",
         "semantic_repository_common",

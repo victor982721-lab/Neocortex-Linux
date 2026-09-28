@@ -77,8 +77,9 @@ def test_create_projects_scratch_manifest_into_registry(tmp_path: Path) -> None:
     assert registered["root"] == scratch_root
     assert registered["kind"] == manifest["kind"] == "temporary"
     assert registered["state"] == manifest["state"] == "active"
-    assert registered["path_size_bytes"] == manifest["path_size_bytes"]
-    assert registered["path_mtime_ns"] == manifest["path_mtime_ns"]
+    path_metadata = workspace.path.lstat()
+    assert registered["path_size_bytes"] == manifest["path_size_bytes"] == path_metadata.st_size
+    assert registered["path_mtime_ns"] == manifest["path_mtime_ns"] == path_metadata.st_mtime_ns
     assert registered["path_identity"] == tuple(manifest["path_identity"])
     assert registered["source_ref"] == {"source_id": "fixture-source"}
     assert registered["dependencies"] == ["fixture-dependency"]
@@ -121,10 +122,11 @@ def test_registry_registration_failure_is_fail_closed_without_cleanup(
     tmp_path: Path,
 ) -> None:
     scratch_root = tmp_path / "scratch"
+    registry = _FakeArtifactRegistry(fail_register=True)
     manager = ScratchManager(
         scratch_root,
         create_root=True,
-        artifact_registry=_FakeArtifactRegistry(fail_register=True),
+        artifact_registry=registry,
     )
 
     with pytest.raises(ScratchSecurityError, match="artifact registry register failed"):
@@ -134,7 +136,58 @@ def test_registry_registration_failure_is_fail_closed_without_cleanup(
     assert len(workspaces) == 1
     assert workspaces[0].is_dir()
     assert (workspaces[0] / "manifest.json").is_file()
+    manifest = json.loads(
+        (workspaces[0] / "manifest.json").read_text(encoding="utf-8")
+    )
+    path_metadata = workspaces[0].lstat()
+    assert len(registry.register_calls) == 1
+    assert registry.register_calls[0]["path_size_bytes"] == manifest["path_size_bytes"] == path_metadata.st_size
+    assert registry.register_calls[0]["path_mtime_ns"] == manifest["path_mtime_ns"] == path_metadata.st_mtime_ns
     assert manager.records()[0].state is ScratchState.ACTIVE
+
+
+def test_manifest_publication_stays_on_pinned_workspace_after_path_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeArtifactRegistry()
+    scratch_root = tmp_path / "scratch"
+    manager = ScratchManager(
+        scratch_root,
+        owner="fixture-owner",
+        create_root=True,
+        artifact_registry=registry,
+    )
+    foreign = tmp_path / "foreign-target"
+    foreign.mkdir(mode=0o700)
+    real_writer = ScratchManager._write_artifact_manifest_atomic_fd
+
+    def swap_path(
+        current_manager: ScratchManager,
+        workspace_fd: int,
+        workspace_path: Path,
+        payload: dict[str, Any],
+    ) -> None:
+        moved = workspace_path.with_name(workspace_path.name + "-real")
+        workspace_path.rename(moved)
+        workspace_path.symlink_to(foreign, target_is_directory=True)
+        real_writer(current_manager, workspace_fd, workspace_path, payload)
+
+    monkeypatch.setattr(
+        ScratchManager,
+        "_write_artifact_manifest_atomic_fd",
+        swap_path,
+    )
+    with pytest.raises(ScratchSecurityError, match="scratch artifact path is not a directory"):
+        manager.create()
+
+    assert not (foreign / "manifest.json").exists()
+    moved_workspaces = tuple(scratch_root.glob("workspace-*-real"))
+    assert len(moved_workspaces) == 1
+    assert (moved_workspaces[0] / "manifest.json").is_file()
+    symlinked_workspaces = tuple(scratch_root.glob("workspace-*"))
+    assert any(path.is_symlink() for path in symlinked_workspaces)
+    assert registry.register_calls == []
 
 
 def test_registry_update_failure_does_not_publish_scratch_transition(

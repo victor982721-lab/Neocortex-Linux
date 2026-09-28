@@ -493,6 +493,26 @@ un mensaje no es autorización. `--dedupe` usa la misma planificación exacta si
 cargar modelos; `--apply` organiza de forma reversible dentro de la raíz
 autorizada.
 
+### Organización y contenedores: qué conservar
+
+`--all --apply` permite organizar sucesores físicos elegibles y retirar
+vacíos verificados de forma reversible. Los documentos ambiguos conservan
+`review`; no se fuerza una categoría para lograr un contador de movimientos.
+Las colisiones nunca autorizan sobrescribir un archivo distinto. Después de
+un efecto incierto se debe resolver su receipt/recovery antes de repetirlo.
+
+ZIP genéricos, incluidos ocultos y anidados, se validan y materializan antes de
+las rutas. DOCX/XLSX y otros paquetes atómicos no deben descomprimirse como ZIP
+corrientes. La admisión medida tiene techos absolutos, espacio reservado,
+profundidad y deadline; un límite no prueba corrupción. El original sólo pasa
+a Trash después de publicación verificada. No hay reparación automática de
+ZIP corruptos ni eliminación permanente implícita: cualquier futura reparación
+ha de conservar el original hasta demostrar integridad de todos los miembros.
+
+EML conserva el padre y publica adjuntos completos con manifest fuera del
+Corpus. El replay usa identidad y hashes para localizar hijos movidos o el
+keeper exacto tras deduplicación, sin reinflar el corpus por cada corrida.
+
 ## Reanudación
 
 Usa el identificador durable de la corrida:

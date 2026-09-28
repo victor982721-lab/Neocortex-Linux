@@ -105,6 +105,18 @@ rules:
     patterns:
       - pattern: sqlite3.connect($DATABASE, ...)
       - pattern-not: sqlite3.connect(":memory:", ...)
+      # Reviewed owner-internal lease: require BOTH the exact bounded call
+      # shape and enclosing helper. Another call in that helper still matches.
+      - pattern-either:
+          - patterns:
+              - pattern: sqlite3.connect($DATABASE, ...)
+              - pattern-not-inside: |
+                  def _semantic_owner_lease(...):
+                      ...
+          - patterns:
+              - pattern: sqlite3.connect($DATABASE, ...)
+              - pattern-not: |
+                  sqlite3.connect(existing_sqlite_uri($PATH), uri=True, timeout=$TIMEOUT, factory=SQLiteProgressConnection)
 
   - id: neo-subprocess-without-limits
     languages: [python]

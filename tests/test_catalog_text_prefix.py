@@ -170,7 +170,7 @@ def test_text_policy_version_rebuilds_old_cache_once_then_replays(
     root, source = _source(tmp_path, 1)
     target = tmp_path / "catalog.sqlite3"
     version = taxonomy.CLASSIFIER_VERSION
-    assert version == "technical-document-classifier-v17"
+    assert version == "technical-document-classifier-v18"
     with monkeypatch.context() as old:
         old.setattr(taxonomy, "CLASSIFIER_VERSION", "technical-document-classifier-v16")
         initial = catalog.update_document_catalog_source(target, source, "docx", source_root=root)

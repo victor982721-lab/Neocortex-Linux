@@ -1,5 +1,17 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-UTILIDAD-LINUX-20260928.
+**Estado:** implementación y aceptación en curso, no instalada todavía.
+**Detalle:** [NEOCORTEX_CORPUS_UTILITY_2026-09-28.md](NEOCORTEX_CORPUS_UTILITY_2026-09-28.md).
+
+La autorización incluye corpus real/replay. Backup de originales y once owners
+verificado; no interpretar una prueba focal como cierre de release/utilidad.
+El expediente enlazado conserva gates y límites observados.
+
+---
+
+# Handoff anterior — NeoCortex
+
 **Ronda:** NEO-CORRECCION-INTEGRAL-20260927.
 **Estado:** correcciones publicadas, release instalada y verificada.
 **Detalle:** [NEOCORTEX_INTEGRAL_CORRECTIONS_2026-09-27.md](NEOCORTEX_INTEGRAL_CORRECTIONS_2026-09-27.md).

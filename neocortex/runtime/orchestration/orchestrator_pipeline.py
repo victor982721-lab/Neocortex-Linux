@@ -14,7 +14,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from neocortex.deduplication import DedupIndex, DedupPlan, DedupPlanner, InventoryExclusionPolicy
+from neocortex.deduplication import (
+    DedupIndex,
+    DedupPlan,
+    DedupPlanner,
+    FileSnapshot,
+    InventoryExclusionPolicy,
+)
 from neocortex.deduplication.admission import size_is_admitted, validate_max_file_bytes
 from neocortex.integrations.inventory.inventory_coordinator import (
     PreparedInventory,
@@ -50,6 +56,34 @@ _ZIP_PROGRESS_PHASE = "process"
 _ZIP_PROGRESS_DESCRIPTION = "Procesando ZIPs"
 _ZIP_PROGRESS_MAX_EVENTS = 128
 _ZIP_PROGRESS_INTERVAL_SECONDS = 0.25
+
+
+def _select_new_zip_snapshots(
+    snapshots: Iterable[FileSnapshot],
+    created_paths: Iterable[str],
+    identified_types: Mapping[object, object],
+) -> tuple[FileSnapshot, ...]:
+    """Select only newly materialized ZIP children for fixed-point intake."""
+
+    created = {str(path) for path in created_paths}
+    selected: list[FileSnapshot] = []
+    for candidate in snapshots:
+        if candidate.path not in created:
+            continue
+        detected = getattr(identified_types.get(_snapshot_detection_key(candidate)), "mime", None)
+        if detected in {"application/zip", "application/x-zip-compressed"}:
+            selected.append(candidate)
+    return tuple(selected)
+
+
+def _snapshot_detection_key(snapshot: FileSnapshot) -> tuple[int, int, int, int, int]:
+    return (
+        int(snapshot.volume_id),
+        int(snapshot.file_id),
+        int(snapshot.size),
+        int(snapshot.mtime_ns),
+        int(snapshot.birthtime_ns),
+    )
 
 
 def _bounded_counter(value: object) -> int:
@@ -933,6 +967,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         boundary: NormalInventoryBoundary,
         inventory: PreparedInventory,
         dedup_index: DedupIndex,
+        snapshots: Iterable[FileSnapshot] | None = None,
     ) -> tuple[PreparedInventory, dict[str, object]]:
         """Run physical ZIP Intake between Inventory and Identify.
 
@@ -980,7 +1015,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         # the global admission already established by Inventory.
         effective_limit = max_file_bytes
         admission = build_zip_intake_admission(
-            dedup_index.snapshots(inventory.scan.scan_id),
+            dedup_index.snapshots(inventory.scan.scan_id) if snapshots is None else snapshots,
             effective_limit,
         )
         admission_payload = admission.payload()
@@ -1173,6 +1208,107 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 idempotency_key="zip-intake:completed",
             )
         return successor, payload
+
+    def _run_email_intake_stage(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        root: Path,
+        boundary: NormalInventoryBoundary,
+        inventory: PreparedInventory,
+        dedup_index: DedupIndex,
+        action_runner: FrameworkActions,
+        excluded_paths: tuple[Path, ...],
+    ) -> tuple[PreparedInventory, FrameworkActions, dict[str, object]]:
+        """Materialize identified EML children before deduplication/routes."""
+
+        from neocortex.workflow.email_intake_orchestrator import run_email_intake_stage
+
+        identified_types = getattr(action_runner, "_identified_types", {})
+        state.set_run_phase(run_id, "email_intake")
+        try:
+            result = run_email_intake_stage(
+                root=root,
+                state_directory=self.config.state_directory,
+                config=self.config,
+                state=state,
+                run_id=run_id,
+                boundary=boundary,
+                dedup_index=dedup_index,
+                scan_id=inventory.scan.scan_id,
+                identified_types=identified_types,
+                apply=bool(self.config.apply_actions),
+                cancellation=self._cancellation,
+                progress=self.progress,
+            )
+        except BaseException as exc:
+            state.record_event(
+                run_id,
+                "error",
+                "email-intake",
+                "Materialización de adjuntos de correo interrumpida",
+                {"error_type": type(exc).__name__, "detail": str(exc)[:8192]},
+            )
+            raise
+        payload = result.as_dict()
+        state.record_event(
+            run_id,
+            "warning" if result.failed else "info",
+            "email-intake",
+            "Materialización de adjuntos de correo completada",
+            payload,
+        )
+        publish_stage = getattr(state, "publish_run_stage", None)
+        if callable(publish_stage):
+            publish_stage(
+                run_id,
+                "email-intake",
+                "partial" if result.failed else "completed",
+                details=payload,
+                idempotency_key="email-intake:completed",
+            )
+        if not result.reconciliation_required:
+            return inventory, action_runner, payload
+
+        state.record_event(
+            run_id,
+            "info",
+            "email-intake-reconciliation",
+            "Preparando inventario sucesor después de adjuntos de correo",
+            {"source_scan_id": inventory.scan.scan_id},
+        )
+        successor = self._prepare_normal_inventory(
+            state=state,
+            run_id=run_id,
+            boundary=boundary,
+            dedup_index=dedup_index,
+            journal_before=None,
+            phase="inventory_email_reconciliation",
+        )
+        successor = replace(
+            successor,
+            inventory_attempts=(
+                int(inventory.inventory_attempts) + int(successor.inventory_attempts)
+            ),
+            reconciliation_records=(
+                int(inventory.reconciliation_records)
+                + int(successor.reconciliation_records)
+            ),
+        )
+        next_runner = self._build_initial_action_runner(
+            state=state,
+            run_id=run_id,
+            dedup_index=dedup_index,
+            scan_id=successor.scan.scan_id,
+            excluded_paths=excluded_paths,
+            inventory_policy=boundary.exclusion_policy,
+        )
+        state.set_run_phase(run_id, "identify_email_reconciliation")
+        next_runner.identify_and_normalize()
+        payload["successor_scan_id"] = successor.scan.scan_id
+        payload["source_scan_id"] = inventory.scan.scan_id
+        return successor, next_runner, payload
 
     def _plan_initial_dedup(
         self,
@@ -1445,6 +1581,45 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                             inventory,
                             scan=dedup_index.scan_summary(successor_scan_id),
                         )
+            inventory, action_runner, email_intake_result = self._run_email_intake_stage(
+                state=state,
+                run_id=run_id,
+                root=boundary.access_policy.root,
+                boundary=boundary,
+                inventory=inventory,
+                dedup_index=dedup_index,
+                action_runner=action_runner,
+                excluded_paths=excluded_paths,
+            )
+            created_paths = email_intake_result.get("created_paths", ())
+            if isinstance(created_paths, list) and created_paths:
+                nested_zip_snapshots = _select_new_zip_snapshots(
+                    dedup_index.snapshots(inventory.scan.scan_id),
+                    created_paths,
+                    getattr(action_runner, "_identified_types", {}),
+                )
+                if nested_zip_snapshots:
+                    inventory, nested_zip = self._run_zip_intake_stage(
+                        state=state,
+                        run_id=run_id,
+                        root=boundary.access_policy.root,
+                        boundary=boundary,
+                        inventory=inventory,
+                        dedup_index=dedup_index,
+                        snapshots=nested_zip_snapshots,
+                    )
+                    email_intake_result["nested_zip_intake"] = nested_zip
+                    if bool(nested_zip.get("filesystem_changed")):
+                        action_runner = self._build_initial_action_runner(
+                            state=state,
+                            run_id=run_id,
+                            dedup_index=dedup_index,
+                            scan_id=inventory.scan.scan_id,
+                            excluded_paths=excluded_paths,
+                            inventory_policy=boundary.exclusion_policy,
+                        )
+                        state.set_run_phase(run_id, "identify_email_zip_reconciliation")
+                        action_runner.identify_and_normalize()
             plan = self._plan_initial_dedup(
                 state,
                 run_id,
@@ -1492,6 +1667,20 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         # and pass the same mapping through InitialWork below; no second
         # archive state is created.
         route_results["zip_intake"] = dict(zip_intake_result)
+        route_results["email_intake"] = dict(email_intake_result)
+        route_failures = dict(getattr(self, "_unavailable_routes", {}))
+        nested_email_zip = email_intake_result.get("nested_zip_intake")
+        email_failed = email_intake_result.get("status") not in {
+            "completed", "skipped_scope", "skipped_disabled"
+        }
+        if isinstance(nested_email_zip, Mapping) and nested_email_zip.get("status") in {
+            "partial", "failed", "blocked"
+        }:
+            email_failed = True
+        if email_failed:
+            route_failures["email-intake"] = str(
+                email_intake_result.get("status", "partial")
+            )
         return _InitialWork(
             inventory,
             plan,
@@ -1501,7 +1690,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             global_resources,
             organization_plan,
             organization_apply,
-            dict(getattr(self, "_unavailable_routes", {})),
+            route_failures,
             size_admission=dict(getattr(self, "_size_admission_metrics", {})),
             zip_intake=dict(zip_intake_result),
         )

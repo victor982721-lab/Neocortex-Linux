@@ -51,6 +51,13 @@ def test_application_config_preserves_the_product_dataclass() -> None:
         "run_max_items",
         "run_max_bytes",
         "max_file_bytes",
+        "email_intake_enabled",
+        "email_max_parts",
+        "email_max_depth",
+        "email_max_part_bytes",
+        "email_max_total_bytes",
+        "email_max_source_bytes",
+        "email_allow_content_equivalent_reuse",
         "run_time_budget_seconds",
         "retry_recoverable_errors",
     }

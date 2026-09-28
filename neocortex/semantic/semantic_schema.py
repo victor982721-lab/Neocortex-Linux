@@ -26,7 +26,7 @@ from neocortex.persistence.sqlite_connection import (
 from .semantic_generation_control_schema import SEMANTIC_GENERATION_CONTROL_MIGRATION
 
 
-SEMANTIC_SCHEMA_VERSION = 10
+SEMANTIC_SCHEMA_VERSION = 11
 _SEMANTIC_PERFORMANCE_INDEXES = (
     (
         "embedding_jobs_claim_order_idx",
@@ -1322,6 +1322,16 @@ def _migrate_to_v10(connection: sqlite3.Connection, applied_ns: int) -> None:
     )
 
 
+def _migrate_to_v11(connection: sqlite3.Connection, applied_ns: int) -> None:
+    # Only new receipts use the lossless storage envelope. Historical receipt
+    # bytes/outbox digests remain untouched and readable by the v11 adapter.
+    _execute_migration(
+        connection, (), version=11,
+        description="lossless compact receipt storage with logical v1 compatibility",
+        applied_ns=applied_ns,
+    )
+
+
 _MIGRATIONS_BY_TARGET: dict[int, Callable[[sqlite3.Connection, int], None]] = {
     1: _migrate_to_v1,
     2: _migrate_to_v2,
@@ -1333,6 +1343,7 @@ _MIGRATIONS_BY_TARGET: dict[int, Callable[[sqlite3.Connection, int], None]] = {
     8: _migrate_to_v8,
     9: _migrate_to_v9,
     10: _migrate_to_v10,
+    11: _migrate_to_v11,
 }
 
 _TABLE_NAMES_BY_VERSION = {
@@ -1367,6 +1378,7 @@ _TABLE_NAMES_BY_VERSION = {
     8: (),
     9: (),
     10: (),
+    11: (),
 }
 
 _NAMED_INDEXES_BY_VERSION = {
@@ -1416,6 +1428,7 @@ _NAMED_INDEXES_BY_VERSION = {
     },
     9: {},
     10: {},
+    11: {},
 }
 
 
@@ -1714,7 +1727,7 @@ def _read_schema_version(connection: sqlite3.Connection) -> int | None:
         )
     metadata_version = _read_metadata_version(
         connection,
-        required=version in {8, 9, SEMANTIC_SCHEMA_VERSION},
+        required=version in {8, 9, 10, SEMANTIC_SCHEMA_VERSION},
     )
     if metadata_version is not None and metadata_version != version:
         raise SemanticStateError(
@@ -1748,7 +1761,7 @@ def _validate_version_contract(
     version: int,
 ) -> None:
     _validate_schema(connection, version)
-    if version in {7, 8, 9, SEMANTIC_SCHEMA_VERSION}:
+    if version in {7, 8, 9, 10, SEMANTIC_SCHEMA_VERSION}:
         exact_contract = (
             _exact_v7_contract() if version == 7
             else _exact_v8_contract() if version == 8
@@ -1771,7 +1784,7 @@ def _validate_version_contract(
 
 
 def _validate_semantic_read_schema(connection: sqlite3.Connection) -> int:
-    """Validate exactly the v7/v8/v9/v10 domain shared by compatible readers.
+    """Validate exactly the v7/v8/v9/v10/v11 domain shared by compatible readers.
 
     This does not initialize, migrate, repair or authorize a writer.  The
     observed version is returned unchanged for locators, plans and head digests;
@@ -1780,8 +1793,8 @@ def _validate_semantic_read_schema(connection: sqlite3.Connection) -> int:
     """
 
     version = _read_schema_version(connection)
-    if version not in {7, 8, 9, 10}:
-        raise SemanticStateError(f"semantic read schema must be 7, 8, 9 or 10; observed {version!r}")
+    if version not in {7, 8, 9, 10, 11}:
+        raise SemanticStateError(f"semantic read schema must be 7, 8, 9, 10 or 11; observed {version!r}")
     if _read_metadata_version(connection, required=True) != version:
         raise SemanticStateError("semantic read metadata and PRAGMA user_version disagree")
     _validate_version_contract(connection, version)

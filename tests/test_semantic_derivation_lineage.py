@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from neocortex.semantic.semantic_receipt_storage import decode_receipt_storage
 from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, HASH_ALGORITHM_64, sha256
 
 from neocortex.semantic import semantic_evidence_repository, semantic_generation_repository, semantic_schema
@@ -365,13 +366,13 @@ def test_executed_text_lineage_is_owner_local_and_rebuildable(tmp_path: Path) ->
     assert chunk_materialization in model_impact.reusable_node_ids
     with semantic_schema.semantic_database(database, readonly=True) as connection:
         payloads = tuple(
-            json.loads(str(row[0]))
+            json.loads(decode_receipt_storage(str(row[0])))
             for row in connection.execute(
                 "SELECT receipt_json FROM semantic_work_receipts ORDER BY receipt_id"
             )
         )
         derivation_storage = "\n".join(
-            str(row[0])
+            decode_receipt_storage(str(row[0]))
             for row in connection.execute(
                 """SELECT receipt_json FROM semantic_work_receipts
                 UNION ALL SELECT payload_json FROM semantic_derivation_outbox"""
@@ -446,7 +447,7 @@ def test_cache_hit_and_generation_clone_materialization_are_explicit(
             (cloned.embeddings[0].receipt_id,),
         ).fetchone()
     assert clone_receipt is not None
-    clone_contract = WorkReceipt.from_json(str(clone_receipt["receipt_json"]))
+    clone_contract = WorkReceipt.from_json(decode_receipt_storage(str(clone_receipt["receipt_json"])))
     assert clone_contract.stage.stage_id == "semantic.embedding.clone"
     assert all(binding.materialization is not None for binding in clone_contract.inputs)
     assert all(
@@ -648,12 +649,12 @@ def test_published_chunk_refresh_rejects_late_members_without_rewriting_receipt(
             == 1
         )
         publication = json.loads(
-            str(
+            decode_receipt_storage(str(
                 connection.execute(
                     """SELECT receipt_json FROM semantic_work_receipts
                     WHERE stage_id='semantic.text.chunk.publish'"""
                 ).fetchone()[0]
-            )
+            ))
         )
     assert publication["outputs"][0]["materialization"]["materialization_id"].startswith(
         "materialization:semantic:chunk-set:"
@@ -756,8 +757,8 @@ def test_v5_payload_is_attested_on_demand_without_fabricating_embedding_work(
         )
     assert attestation_row is not None
     assert cache_row is not None
-    attestation = WorkReceipt.from_json(str(attestation_row["receipt_json"]))
-    cache_receipt = WorkReceipt.from_json(str(cache_row["receipt_json"]))
+    attestation = WorkReceipt.from_json(decode_receipt_storage(str(attestation_row["receipt_json"])))
+    cache_receipt = WorkReceipt.from_json(decode_receipt_storage(str(cache_row["receipt_json"])))
     assert attestation.stage.provider == "neocortex"
     assert attestation.stage.model is None
     assert attestation.inputs[0].materialization is not None
@@ -1045,7 +1046,7 @@ def test_failed_and_repeated_cancelled_attempts_keep_distinct_terminal_receipts(
     )
     assert tuple(int(row["attempt"]) for row in rows) == (1, 2, 3)
     assert len({str(row["receipt_key"]) for row in rows}) == 3
-    receipts = tuple(json.loads(str(row["receipt_json"])) for row in rows)
+    receipts = tuple(json.loads(decode_receipt_storage(str(row["receipt_json"]))) for row in rows)
     serialized_receipts = json.dumps(receipts, ensure_ascii=False)
     assert "FAILURE_SECRET_MUST_NOT_ESCAPE" not in serialized_receipts
     assert "ERROR_TYPE_SECRET_MUST_NOT_ESCAPE" not in serialized_receipts
@@ -1148,7 +1149,7 @@ def test_expired_worker_attempt_is_abandoned_before_retry_or_terminal_error(
     assert abandoned is not None
     assert int(abandoned["attempt"]) == 1
     assert str(abandoned["execution_mode"]) == "unknown"
-    assert json.loads(str(abandoned["receipt_json"]))["outcome"] == "abandoned"
+    assert json.loads(decode_receipt_storage(str(abandoned["receipt_json"])))["outcome"] == "abandoned"
     assert job_status == expected_status
 
 
@@ -1508,13 +1509,13 @@ def test_embedding_success_keeps_the_item_revision_captured_at_queue_time(
             ).fetchone()[0]
         )
         receipt = json.loads(
-            str(
+            decode_receipt_storage(str(
                 connection.execute(
                     """SELECT receipt_json FROM semantic_work_receipts
                     WHERE job_id=? AND status='succeeded'""",
                     (lease.job_id,),
                 ).fetchone()[0]
-            )
+            ))
         )
     assert member_revision_id == queued_revision_id
     assert receipt["inputs"][0]["revision"]["revision_id"] == (
@@ -1630,10 +1631,10 @@ def test_image_cache_hits_reference_the_exact_payload_producer_after_rebind(
         "cache_hit",
     ]
     assert {
-        str(json.loads(str(row["receipt_json"]))["causation_id"]) for row in reused_receipts
+        str(json.loads(decode_receipt_storage(str(row["receipt_json"])))["causation_id"]) for row in reused_receipts
     } == {str(baseline_receipt["receipt_key"])}
     assert str(clone_receipt["receipt_key"]) != str(
-        json.loads(str(reused_receipts[0]["receipt_json"]))["causation_id"]
+        json.loads(decode_receipt_storage(str(reused_receipts[0]["receipt_json"])))["causation_id"]
     )
 
     events = read_semantic_derivation_outbox(database, limit=100)
@@ -1738,11 +1739,11 @@ def test_duplicate_provider_completions_keep_one_payload_producer(
         "cache_hit",
     ]
     producer_key = str(receipts[0]["receipt_key"])
-    assert {str(json.loads(str(row["receipt_json"]))["causation_id"]) for row in receipts[1:]} == {
+    assert {str(json.loads(decode_receipt_storage(str(row["receipt_json"])))["causation_id"]) for row in receipts[1:]} == {
         producer_key
     }
     assert len(discarded) == 1
-    discard_contract = WorkReceipt.from_json(str(discarded[0]["receipt_json"]))
+    discard_contract = WorkReceipt.from_json(decode_receipt_storage(str(discarded[0]["receipt_json"])))
     assert discarded[0]["execution_mode"] == "executed"
     assert discard_contract.reproducibility.value == "non_replayable"
     assert dict(discard_contract.effective_configuration)["disposition"] == (
@@ -1836,7 +1837,7 @@ def test_lineage_reader_fails_closed_on_exact_semantic_fact_corruption(
                   AND execution_mode='cache_hit'""",
                 (successor,),
             ).fetchone()
-            payload = json.loads(str(row["receipt_json"]))
+            payload = json.loads(decode_receipt_storage(str(row["receipt_json"])))
             payload["inputs"][0]["revision"]["processing_signature"] = "forged"
             payload["inputs"][0]["materialization"]["revision"]["processing_signature"] = "forged"
             forged = WorkReceipt.from_dict(payload).to_json()
@@ -1858,7 +1859,7 @@ def test_lineage_reader_fails_closed_on_exact_semantic_fact_corruption(
                   AND execution_mode='executed'""",
                 (baseline,),
             ).fetchone()
-            payload = json.loads(str(row["receipt_json"]))
+            payload = json.loads(decode_receipt_storage(str(row["receipt_json"])))
             if fault == "forged_producer_input":
                 payload["inputs"][0]["revision"]["processing_signature"] = "forged"
                 payload["inputs"][0]["materialization"]["revision"]["processing_signature"] = (
@@ -1889,7 +1890,7 @@ def test_lineage_reader_fails_closed_on_exact_semantic_fact_corruption(
                 WHERE generation_id=? AND stage_id='semantic.embedding.clone'""",
                 (successor,),
             ).fetchone()
-            payload = json.loads(str(row["receipt_json"]))
+            payload = json.loads(decode_receipt_storage(str(row["receipt_json"])))
             payload["inputs"][0]["revision"]["processing_signature"] = "forged"
             payload["inputs"][0]["materialization"]["revision"]["processing_signature"] = "forged"
             forged = WorkReceipt.from_dict(payload).to_json()

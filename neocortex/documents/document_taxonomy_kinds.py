@@ -6,6 +6,7 @@
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
+import json
 import re
 from typing import Iterable, Mapping
 
@@ -197,6 +198,13 @@ def _calibrated_kind_confidence(primary: ScoredLabel) -> float:
 
     if primary.label in _STRUCTURALLY_EXPLICIT_KINDS:
         return 0.76
+    if primary.label == "reporte_actividades" and primary.score < 0.85 and not any(
+        "estructura=reporte_actividades_diario" in item for item in primary.evidence
+    ):
+        # A bare filename/title or one quoted phrase is review evidence, not a
+        # completed report intent.  Structured daily rows receive the stronger
+        # specialist score below.
+        return min(primary.score, 0.67)
     direct_scope = any(
         item.startswith(("path:", "title:", "opening:")) for item in primary.evidence
     )
@@ -221,6 +229,7 @@ def _single_kind_specialists(
     """Evaluate independent one-result specialists in their stable order."""
 
     candidates = (
+        _xlsx_curriculum_vitae_evidence(scopes),
         _calibration_certificate_evidence(scopes, page_count=page_count),
         _controlled_procedure_evidence(scopes),
         _cfe_technical_manual_chapter_evidence(scopes),
@@ -232,6 +241,7 @@ def _single_kind_specialists(
         _laboratory_sample_label_evidence(scopes),
         _test_result_export_evidence(scopes),
         _personnel_time_report_evidence(scopes),
+        _daily_activity_report_evidence(scopes),
         _daily_resource_schedule_evidence(scopes),
         _laboratory_report_evidence(scopes),
     )
@@ -705,6 +715,42 @@ def _personnel_time_report_evidence(scopes: Mapping[str, str]) -> ScoredLabel | 
     opening = scopes.get("opening", "")[:2_500]
     heading = compiled_regex(r"\bREPORTE\s+DE\s+TIEMPO\s+ADICIONAL\b").search(opening)
     if heading is None:
+        positional = _xlsx_cell_records(scopes)
+        for sheet, values in positional.items():
+            normalized = tuple(fold_signal(value) for _address, value in values)
+            if not any("REPORTE DE HORAS" in value for value in normalized):
+                continue
+            field_hits = sum(
+                any(
+                    marker in value
+                    for value in normalized
+                    for marker in markers
+                )
+                for markers in (
+                    ("PERSONAL", "TRABAJADOR", "EMPLEADO"),
+                    ("PUESTO",),
+                    ("HRS", "HORAS"),
+                    ("COSTO DEL SERVICIO", "COSTO HRS", "COSTO"),
+                    ("PERIODO SEMANAL", "SEMANA"),
+                    ("OBSERVACIONES",),
+                    ("VIATICOS",),
+                )
+            )
+            day_count = sum(
+                value in {"LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"}
+                for value in normalized
+            )
+            if field_hits >= 4 and day_count >= 3:
+                return ScoredLabel(
+                    "registro_tiempo_personal",
+                    0.96,
+                    (
+                        f"opening:xlsx_positional_sheet={_clean_identifier(sheet)}",
+                        "opening:xlsx_positional_heading=reporte_de_horas",
+                        f"opening:xlsx_positional_time_fields={field_hits}",
+                        f"opening:xlsx_positional_day_columns={day_count}",
+                    ),
+                )
         return None
     fields = sum(
         compiled_regex(pattern).search(opening) is not None
@@ -728,6 +774,86 @@ def _personnel_time_report_evidence(scopes: Mapping[str, str]) -> ScoredLabel | 
             f"opening:campos_tiempo={fields}",
         ),
     )
+
+
+def _xlsx_cell_records(
+    scopes: Mapping[str, str],
+) -> dict[str, tuple[tuple[str, str], ...]]:
+    """Read bounded positional XLSX-cell serialization without trusting values.
+
+    Office producers may serialize cell rows as ``XLSX_CELL`` JSON records
+    rather than a plain text table.  Classification needs only sheet/address
+    structure and short display values; it never executes formulas or treats
+    workbook paths as authority.
+    """
+
+    front = f"{scopes.get('opening', '')}\n{scopes.get('text', '')[:12_000]}"
+    by_sheet: dict[str, list[tuple[str, str]]] = {}
+    # ``fold_signal`` intentionally collapses newlines, so match each bounded
+    # JSON record up to the next producer marker rather than relying on lines.
+    records = re.finditer(
+        r"XLSX(?:_| )CELL\s+(\{.*?\})(?=\s+XLSX(?:_| )CELL\s+|$)",
+        front,
+    )
+    for match in records:
+        blob = match.group(1)
+
+        def string_field(name: str, current_blob: str = blob) -> str | None:
+            field = re.search(
+                rf'"{name}"\s*:\s*"((?:\\.|[^"\\])*)"',
+                current_blob,
+                flags=re.IGNORECASE,
+            )
+            if field is None:
+                return None
+            try:
+                decoded = json.loads(f'"{field.group(1)}"')
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return field.group(1)
+            return decoded if isinstance(decoded, str) else None
+
+        sheet = string_field("sheet")
+        address = string_field("a1")
+        value = string_field("value")
+        if sheet is None or address is None or value is None:
+            continue
+        by_sheet.setdefault(sheet, []).append((address, value))
+    return {sheet: tuple(values) for sheet, values in by_sheet.items()}
+
+
+def _xlsx_curriculum_vitae_evidence(
+    scopes: Mapping[str, str],
+) -> ScoredLabel | None:
+    """Recognize a CV from its structural workbook sections, not course mentions."""
+
+    sections = (
+        "DATOS PERSONALES",
+        "DATOS FAMILIARES",
+        "REFERENCIAS PERSONALES",
+        "ESCOLARIDAD",
+        "EXPERIENCIA EN GENERAL",
+        "ACTIVIDADES LABORALES",
+    )
+    fields = ("NOMBRE", "DOMICILIO", "TELEFONO", "NACIONALIDAD", "CURP", "ESTADO CIVIL")
+    for sheet, values in _xlsx_cell_records(scopes).items():
+        normalized = tuple(fold_signal(value) for _address, value in values)
+        compact = " ".join(normalized)
+        compact_heading = re.sub(r"[^A-Z]", "", compact)
+        cv_heading = "CURRICULUMVITAE" in compact_heading
+        section_hits = sum(section in compact for section in sections)
+        field_hits = sum(field in compact for field in fields)
+        if cv_heading and section_hits >= 3 and field_hits >= 2:
+            return ScoredLabel(
+                "expediente_personal",
+                0.96,
+                (
+                    f"opening:xlsx_positional_sheet={_clean_identifier(sheet)}",
+                    "opening:xlsx_positional_heading=curriculum_vitae",
+                    f"opening:xlsx_positional_cv_sections={section_hits}",
+                    f"opening:xlsx_positional_personal_fields={field_hits}",
+                ),
+            )
+    return None
 
 
 def _daily_resource_schedule_evidence(scopes: Mapping[str, str]) -> ScoredLabel | None:
@@ -757,6 +883,81 @@ def _daily_resource_schedule_evidence(scopes: Mapping[str, str]) -> ScoredLabel 
         (
             f"opening:encabezado={_clean_identifier(heading.group(0))}",
             f"opening:campos_recursos={fields}",
+        ),
+    )
+
+
+def _daily_activity_report_evidence(scopes: Mapping[str, str]) -> ScoredLabel | None:
+    """Recognize a daily work report from its heading plus row structure.
+
+    Equipment names and training vocabulary are common fields in a daily
+    report.  They must not promote the workbook to a catalog or a course; the
+    report heading and several record fields establish the document's intent.
+    Heading-only or title-only extracts intentionally remain ordinary,
+    confidence-limited evidence.
+    """
+
+    opening = scopes.get("opening", "")
+    text = scopes.get("text", "")
+    front = f"{opening}\n{text[:12_000]}"
+    for sheet, values in _xlsx_cell_records(scopes).items():
+        normalized = tuple(fold_signal(value) for _address, value in values)
+        if not any(
+            compiled_regex(r"\bREPORTE\s+DE\s+ACTIVIDADES\b").search(value)
+            for value in normalized
+        ):
+            continue
+        day_count = sum(
+            value in {
+                "LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES",
+                "SABADO", "DOMINGO",
+            }
+            for value in normalized
+        )
+        table_fields = sum(
+            any(marker in value for value in normalized)
+            for marker in ("FRENTE", "RESPONSABLE", "HORAS HOMBRE", "SEMANA", "CODIGO", "ACTIVIDAD", "TOTAL")
+        )
+        if day_count >= 3 and table_fields >= 4:
+            return ScoredLabel(
+                "reporte_actividades",
+                0.96,
+                (
+                    f"opening:xlsx_positional_sheet={_clean_identifier(sheet)}",
+                    "opening:estructura=reporte_actividades_diario",
+                    f"opening:xlsx_positional_day_columns={day_count}",
+                    f"opening:xlsx_positional_report_fields={table_fields}",
+                ),
+            )
+    heading = compiled_regex(
+        r"\b(?:REPORTE|INFORME)\s+(?:DIARIO\s+)?DE\s+ACTIVIDADES\b|"
+        r"\bDAILY\s+(?:WORK|ACTIVITY)\s+REPORT\b"
+    ).search(front)
+    if heading is None:
+        return None
+    fields = tuple(
+        pattern
+        for pattern in (
+            r"\b(?:FECHA|DATE)\s*[:=]",
+            r"\b(?:PERSONAL|TRABAJADOR(?:ES)?|CREW)\s*[:=]?",
+            r"\b(?:ACTIVIDADES?|ACTIVITIES?)\s*[:=]?",
+            r"\b(?:HORAS?|HOURS?|TIEMPO)\s+(?:LABORAD[OA]|TRABAJADO)\b|\b(?:HORAS?|HOURS?)\s*[:=]",
+            r"\b(?:RECURSOS?|EQUIPO|EQUIPMENT|HERRAMIENTAS?|TOOLS?)\s*[:=]?",
+            r"\b(?:FRENTE|UBICACI[ÓO]N|LUGAR|LOCATION)\s*[:=]?",
+            r"\bOBSERVACIONES?\s*[:=]?",
+        )
+        if compiled_regex(pattern).search(front)
+    )
+    if len(fields) < 3:
+        return None
+    scope = "opening" if heading.start() < len(opening) else "text"
+    return ScoredLabel(
+        "reporte_actividades",
+        0.96,
+        (
+            f"{scope}:estructura=reporte_actividades_diario",
+            f"{scope}:encabezado={_clean_identifier(heading.group(0))}",
+            f"{scope}:campos_estructurados={len(fields)}",
         ),
     )
 

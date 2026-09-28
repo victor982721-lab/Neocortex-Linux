@@ -1926,7 +1926,7 @@ def _has_generation_job_control(connection: sqlite3.Connection) -> bool:
     version = _read_schema_version(connection)
     if version is None:
         raise SemanticStateError("semantic generation control requires an initialized owner")
-    return version in {8, 9, 10}
+    return version in {8, 9, 10, 11}
 
 
 def _mark_stale_jobs(

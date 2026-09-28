@@ -1,4 +1,4 @@
-"""Public visual contracts for framed stages, ZIP counts and compact terminals."""
+"""Public visual contracts for framed stages, ZIP counts and preserved scrollback."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def test_terminal_unknown_total_is_not_completed_by_the_renderer(status: str) ->
     reporter.stop()
 
 
-def test_low_height_keeps_route_errors_before_history_and_returns_full_view_on_stop(
+def test_low_height_preserves_all_rows_instead_of_compacting_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("TERM", "xterm-256color")
@@ -132,11 +132,11 @@ def test_low_height_keeps_route_errors_before_history_and_returns_full_view_on_s
                            metrics=_metrics(status="failed", errors=9)))
     reporter(ProgressEvent("framework", "result", "failed", 0, None, finished=True,
                            metrics=_metrics(status="failed", errors=1)))
-    compact = _view(reporter)
-    assert "123/246" in compact and "Fallido" in compact and "9" in compact
-    assert "Trabajo actual y avisos" in compact
-    assert "Vista compacta" in compact
-    assert len(compact.splitlines()) <= 8
+    view = _view(reporter)
+    assert "123/246" in view and "Fallido" in view and "9" in view
+    assert "Vista compacta" not in view
+    assert "DOCX" in view and "Office" in view and "Imagen" in view
+    assert len(view.splitlines()) > 8
     reporter.stop()
     full = _view(reporter)
     assert "Procesamiento por rutas" in full and "DOCX" in full and "Office" in full

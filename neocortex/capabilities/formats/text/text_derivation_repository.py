@@ -2124,6 +2124,7 @@ def read_reusable_text_derivation_from_connection(
     *,
     stage_id: str,
     processing_signature: str,
+    lookup_available: bool | None = None,
 ) -> TextReusableDerivation | None:
     """Reuse a caller-validated connection without commit, close or migration."""
 
@@ -2139,7 +2140,8 @@ def read_reusable_text_derivation_from_connection(
     if document is None or document["revision_id"] is None:
         return None
     revision_id = str(document["revision_id"])
-    lookup_available = text_route_lookups_available(connection)
+    if lookup_available is None:
+        lookup_available = text_route_lookups_available(connection)
     representations: dict[str, TextValidatedRepresentation] = {}
     validated_receipts: dict[str, WorkReceipt] = {}
     validate_text_publications_from_connection(

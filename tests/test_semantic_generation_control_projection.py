@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from neocortex.semantic.semantic_receipt_storage import decode_receipt_storage
+
 from neocortex.semantic import semantic_schema
 from neocortex.semantic.semantic_generation_repository import _has_generation_job_control
 from neocortex.semantic.semantic_generation_worker import complete_embedding_jobs_batch
@@ -492,8 +494,8 @@ def test_v7_building_bootstrap_reconciles_counters_and_preserves_v7_receipt(
     assert generation is not None and tuple(generation) == ("building", 0, 0, 1, 0, 0)
     assert job is not None and str(job[0]) == "done" and int(job[1]) == 0
     assert job[2] is not None
-    assert json.loads(str(old_receipt)) == json.loads(str(new_receipt))
-    assert json.loads(str(new_receipt))["runtime"]["semantic_schema"] == "7"
+    assert json.loads(decode_receipt_storage(str(old_receipt))) == json.loads(decode_receipt_storage(str(new_receipt)))
+    assert json.loads(decode_receipt_storage(str(new_receipt)))["runtime"]["semantic_schema"] == "7"
     _assert_summary_matches_jobs(database, generation_id)
 
 
@@ -554,7 +556,7 @@ def test_current_receipt_metadata_is_truthful_and_refs_remain_structured(
         model.model_signature,
         lease.job_id,
     )
-    receipt = json.loads(str(row[5]))
+    receipt = json.loads(decode_receipt_storage(str(row[5])))
     assert receipt["runtime"]["semantic_schema"] == str(
         semantic_schema.SEMANTIC_SCHEMA_VERSION
     )

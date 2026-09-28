@@ -175,6 +175,8 @@ def _collect_aggregates(
 ) -> dict[_EvidenceKey, _EvidenceAggregate]:
     aggregates: dict[_EvidenceKey, _EvidenceAggregate] = {}
     snippet_aliases: dict[_EvidenceAliasKey, _EvidenceKey] = {}
+    pending: list[tuple[str, KnowledgeCandidate, _EvidenceKey]] = []
+    structured_coherent = False
     for ranking_name in sorted(rankings):
         _checkpoint(cancellation_check)
         if not ranking_name.strip():
@@ -188,13 +190,30 @@ def _collect_aggregates(
             if key in seen:
                 continue
             seen.add(key)
-            _record_candidate(
-                aggregates,
-                key,
-                candidate,
-                ranking_name=ranking_name,
-                rrf_k=rrf_k,
-            )
+            support_value = candidate.signal.query_support.get("structured_support")
+            support = support_value if isinstance(support_value, Mapping) else {}
+            if support.get("coherent") is True:
+                structured_coherent = True
+            pending.append((ranking_name, candidate, key))
+    for ranking_name, candidate, key in pending:
+        support_value = candidate.signal.query_support.get("structured_support")
+        support = support_value if isinstance(support_value, Mapping) else {}
+        # Once one owner supplies a coherent identity/date/unit witness, a
+        # candidate explicitly marked as a different/non-coherent structure is
+        # a hard negative for this query.  If no coherent witness exists, keep
+        # all related material and let the caller expose the limitation.
+        if structured_coherent and (
+            support.get("status") == "mismatch"
+            or support.get("hard_mismatch") is True
+        ):
+            continue
+        _record_candidate(
+            aggregates,
+            key,
+            candidate,
+            ranking_name=ranking_name,
+            rrf_k=rrf_k,
+        )
     return aggregates
 
 
@@ -291,10 +310,32 @@ def overlaps_or_too_close(
 def _ordered_keys(
     aggregates: Mapping[_EvidenceKey, _EvidenceAggregate],
 ) -> list[_EvidenceKey]:
+    def support_order(aggregate: _EvidenceAggregate) -> tuple[int, float, int, int]:
+        """Prefer scoped witnesses without changing their RRF score."""
+
+        support = aggregate.candidate.signal.query_support
+        structured_value = support.get("structured_support")
+        structured = structured_value if isinstance(structured_value, Mapping) else {}
+        if structured.get("coherent") is True:
+            structured_tier = 0
+        elif structured.get("hard_mismatch") is True:
+            structured_tier = 2
+        else:
+            structured_tier = 1
+        coverage = support.get("term_coverage")
+        span = support.get("minimum_span_terms")
+        return (
+            structured_tier,
+            -float(coverage) if isinstance(coverage, (int, float)) else 0.0,
+            -int(support.get("phrase_match") is True),
+            int(span) if isinstance(span, int) else 1_000_000,
+        )
+
     return sorted(
         aggregates,
         key=lambda key: (
             -math.fsum(sorted(aggregates[key].contributions)),
+            *support_order(aggregates[key]),
             key,
         ),
     )
@@ -415,6 +456,29 @@ def _apply_diversity(
     limit: int,
     max_per_resource: int,
 ) -> tuple[tuple[KnowledgeHit, ...], int]:
+    def support_order(hit: KnowledgeHit) -> tuple[int, float, int, int]:
+        signal_support = [signal.query_support for signal in hit.signals]
+        structured_values = [
+            value.get("structured_support")
+            for value in signal_support
+            if isinstance(value.get("structured_support"), Mapping)
+        ]
+        if any(isinstance(value, Mapping) and value.get("coherent") is True for value in structured_values):
+            structured_tier = 0
+        elif any(isinstance(value, Mapping) and value.get("hard_mismatch") is True for value in structured_values):
+            structured_tier = 2
+        else:
+            structured_tier = 1
+        coverages = [value.get("term_coverage") for value in signal_support]
+        coverage = max(
+            (float(value) for value in coverages if isinstance(value, (int, float))),
+            default=0.0,
+        )
+        phrase = int(any(value.get("phrase_match") is True for value in signal_support))
+        spans = [value.get("minimum_span_terms") for value in signal_support]
+        span = min((int(value) for value in spans if isinstance(value, int)), default=1_000_000)
+        return structured_tier, -coverage, -phrase, span
+
     def scoped_counterevidence(hit: KnowledgeHit) -> bool:
         witnesses = tuple(signal for signal in hit.signals if signal.evidence is not None)
         # Preserve contradictory evidence, but do not let an explicitly
@@ -428,6 +492,7 @@ def _apply_diversity(
         key=lambda hit: (
             scoped_counterevidence(hit),
             -hit.fused_score,
+            *support_order(hit),
             hit.resource.resource_id,
             hit.revision.revision_id,
             hit.evidence.evidence_id,

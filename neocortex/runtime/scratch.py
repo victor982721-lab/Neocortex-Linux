@@ -732,6 +732,167 @@ class ScratchManager:
             "path_mtime_ns": path_mtime_ns,
         }
 
+    def _write_artifact_manifest_atomic_fd(
+        self,
+        workspace_fd: int,
+        workspace_path: Path,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Publish ``manifest.json`` relative to an authenticated directory FD.
+
+        The path is retained only for diagnostics/test seams.  Every physical
+        operation is relative to ``workspace_fd`` so a replacement of the
+        lexical workspace path cannot redirect the temporary file or rename
+        into a foreign directory.
+        """
+
+        del workspace_path
+        encoded = _canonical_json(payload).encode("utf-8")
+        if len(encoded) > _MAX_MANIFEST_BYTES:
+            raise ValueError("scratch manifest exceeds the durable size limit")
+        temporary_name = f".{MANIFEST_NAME}.{uuid.uuid4().hex}.tmp"
+        temporary_fd = -1
+        replaced = False
+        try:
+            temporary_fd = os.open(
+                temporary_name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=workspace_fd,
+            )
+            with os.fdopen(temporary_fd, "wb", closefd=True) as stream:
+                temporary_fd = -1
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(
+                temporary_name,
+                MANIFEST_NAME,
+                src_dir_fd=workspace_fd,
+                dst_dir_fd=workspace_fd,
+            )
+            replaced = True
+            os.fsync(workspace_fd)
+        except OSError as exc:
+            raise ScratchSecurityError(
+                "scratch artifact manifest publication failed"
+            ) from exc
+        finally:
+            if temporary_fd >= 0:
+                try:
+                    os.close(temporary_fd)
+                except OSError:
+                    pass
+            if not replaced:
+                try:
+                    os.unlink(temporary_name, dir_fd=workspace_fd)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    # Preserve the original publication error.  The owner
+                    # will retain the workspace for recovery if cleanup is
+                    # ambiguous.
+                    pass
+
+    def _synchronize_artifact_manifest_observation(
+        self,
+        path: Path,
+        payload: dict[str, Any],
+    ) -> None:
+        """Publish the final directory observation before registry admission.
+
+        A workspace directory changes when its manifest is first published:
+        the directory entry for ``manifest.json`` changes ``st_size`` even
+        though the workspace identity is unchanged.  The initial projection
+        is therefore only a pre-publication observation.  Rewriting the
+        workspace manifest with the post-publication size, while restoring
+        the already-claimed directory mtime, gives the scratch manifest and
+        the registry the same physical observation without treating directory
+        size as an immutable identity claim.
+
+        The write remains atomic.  If the observation cannot be revalidated,
+        registration fails closed and the durable workspace is left for
+        recovery rather than being reported as registered.
+        """
+
+        expected_identity = payload.get("path_identity")
+        if (
+            not isinstance(expected_identity, (list, tuple))
+            or len(expected_identity) != 3
+            or any(type(value) is not int for value in expected_identity)
+        ):
+            raise ScratchSecurityError("scratch artifact path identity is invalid")
+        try:
+            workspace_fd = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+        except OSError as exc:
+            raise ScratchSecurityError(
+                "scratch artifact path is unavailable"
+            ) from exc
+        try:
+            metadata = os.fstat(workspace_fd)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_mode & 0o077
+                or _identity(metadata) != tuple(expected_identity)
+            ):
+                raise ScratchSecurityError("scratch artifact path identity changed")
+            observed_size = max(0, int(metadata.st_size))
+            observed_mtime = max(0, int(metadata.st_mtime_ns))
+            claimed_size = payload.get("path_size_bytes")
+            claimed_mtime = payload.get("path_mtime_ns")
+            if (
+                type(claimed_size) is int
+                and claimed_size == observed_size
+                and type(claimed_mtime) is int
+                and claimed_mtime == observed_mtime
+            ):
+                return
+            # The mtime in the first manifest is the observation captured
+            # before that manifest was published.  Keep that claim as the
+            # stable post-publication observation by restoring it through the
+            # pinned descriptor after the atomic replacement.
+            stable_mtime = (
+                claimed_mtime
+                if type(claimed_mtime) is int and claimed_mtime >= 0
+                else observed_mtime
+            )
+            atime_ns = int(metadata.st_atime_ns)
+            payload["path_size"] = observed_size
+            payload["path_size_bytes"] = observed_size
+            payload["path_mtime"] = stable_mtime
+            payload["path_mtime_ns"] = stable_mtime
+            payload["manifest_digest"] = _manifest_digest(payload)
+            self._write_artifact_manifest_atomic_fd(workspace_fd, path, payload)
+            try:
+                os.utime(workspace_fd, ns=(atime_ns, stable_mtime))
+            except OSError as exc:
+                raise ScratchSecurityError(
+                    "scratch artifact workspace timestamps could not be preserved"
+                ) from exc
+            final = os.fstat(workspace_fd)
+            if (
+                not stat.S_ISDIR(final.st_mode)
+                or _identity(final) != tuple(expected_identity)
+                or int(final.st_size) != observed_size
+                or int(final.st_mtime_ns) != stable_mtime
+            ):
+                raise ScratchSecurityError(
+                    "scratch artifact directory observation changed during registration"
+                )
+        finally:
+            os.close(workspace_fd)
+
     @staticmethod
     def _preserve_workspace_observation(path: Path) -> tuple[tuple[int, int, int], int, int]:
         """Capture the directory observation used by the artifact registry."""
@@ -785,7 +946,7 @@ class ScratchManager:
             f"artifact registry {operation} failed: {type(error).__name__}: {error}"
         ) from error
 
-    def _register_artifact(self, path: Path, payload: Mapping[str, Any]) -> None:
+    def _register_artifact(self, path: Path, payload: dict[str, Any]) -> None:
         registry = self._artifact_registry_instance()
         if registry is None:
             return
@@ -796,6 +957,7 @@ class ScratchManager:
             )
             if method is None:
                 raise TypeError("configured artifact registry has no register hook")
+            self._synchronize_artifact_manifest_observation(path, payload)
             result = _invoke_artifact_callable(
                 method,
                 self._artifact_payload(path, payload),

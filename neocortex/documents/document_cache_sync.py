@@ -10,12 +10,14 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, Sequence
 
 from neocortex.platform.policy import sqlite_path_collation
 from neocortex.runtime.control.locking import FrameworkRunLock
+from neocortex.runtime.control.cancellation import CancellationRequested
 
 from neocortex.semantic.semantic_schema import SEMANTIC_SCHEMA_VERSION
+from neocortex.deduplication import DedupIndex, FileSnapshot, snapshot_path
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 from neocortex.persistence.state_publication import (
     StatePublicationCommitError,
@@ -62,6 +64,18 @@ class DocumentCacheSyncResult:
         return "; ".join(
             f"{item.database}: {item.detail or 'unknown synchronization error'}" for item in errors
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentMoveTransition:
+    """One already-applied physical move to reconcile across current owners."""
+
+    source_kind: str
+    file_key: str
+    old_path: str
+    new_path: str
+    volume_id: str
+    file_id: str
 
 
 # endregion [01]
@@ -368,7 +382,9 @@ def synchronize_moved_document(
     completed replays only verify the final paths and never commit new effects.
     """
 
-    if source_kind not in {"pdf", "docx", "xlsx", "pptx", "odt", "text", "audio"}:
+    if source_kind not in {
+        "pdf", "docx", "xlsx", "pptx", "odt", "text", "audio", "image", "video"
+    }:
         raise ValueError(f"unsupported document source kind: {source_kind}")
     if _path_key(old_path) == _path_key(new_path):
         raise ValueError("cache synchronization requires two distinct paths")
@@ -415,25 +431,43 @@ def synchronize_moved_document(
     replay = prepared.status == "complete"
     source_database = state_directory / (
         f"{source_kind}.sqlite3"
-        if source_kind in {"pdf", "docx", "text", "audio"}
+        if source_kind in {"pdf", "docx", "text", "audio", "image", "video"}
         else "office.sqlite3"
     )
-    results = [
-        _synchronize_database(
-            source_kind,
-            source_database,
-            required=True,
-            verify_only=replay,
-            operation=lambda connection: _sync_source_cache(
-                connection,
-                source_kind=source_kind,
-                file_key=file_key,
-                old_path=old_path,
-                new_path=new_path,
-                now_ns=now_ns,
-            ),
-        )
-    ]
+    if source_kind in {"image", "video"}:
+        results = [
+            _synchronize_database(
+                source_kind,
+                source_database,
+                required=True,
+                verify_only=replay,
+                operation=lambda connection: _sync_visual_source_cache(
+                    connection,
+                    source_kind=source_kind,
+                    file_key=file_key,
+                    old_path=old_path,
+                    new_path=new_path,
+                    now_ns=now_ns,
+                ),
+            )
+        ]
+    else:
+        results = [
+            _synchronize_database(
+                source_kind,
+                source_database,
+                required=True,
+                verify_only=replay,
+                operation=lambda connection: _sync_source_cache(
+                    connection,
+                    source_kind=source_kind,
+                    file_key=file_key,
+                    old_path=old_path,
+                    new_path=new_path,
+                    now_ns=now_ns,
+                ),
+            )
+        ]
     if source_kind == "pdf":
         results.append(
             _synchronize_database(
@@ -480,18 +514,13 @@ def synchronize_moved_document(
                     file_id=file_id,
                 ),
             ),
-            _synchronize_database(
-                "dedup",
+            _synchronize_dedup_owner(
                 state_directory / "dedup.sqlite3",
-                required=False,
+                old_path=old_path,
+                new_path=new_path,
+                volume_id=volume_id,
+                file_id=file_id,
                 verify_only=replay,
-                operation=lambda connection: _sync_dedup_cache(
-                    connection,
-                    old_path=old_path,
-                    new_path=new_path,
-                    volume_id=volume_id,
-                    file_id=file_id,
-                ),
             ),
         )
     )
@@ -542,6 +571,225 @@ def synchronize_moved_document(
         publication_status=publication_status,
         publication_id=publication_id,
     )
+
+
+def synchronize_moved_documents(
+    state_directory: Path,
+    transitions: Sequence[DocumentMoveTransition],
+    *,
+    framework_lock_held: bool = False,
+    work_check: Callable[[], None] | None = None,
+) -> DocumentCacheSyncResult:
+    """Rebind a bounded organization batch with one Inventory COW per head.
+
+    Source-format, Semantic, Framework, and visual-owner transitions remain
+    owner-local. Modern Dedup Inventory receives all moves grouped by their
+    current generation, so a large organization batch does not copy a million
+    ``files`` rows once per moved document.
+    """
+
+    moves = tuple(transitions)
+    if not moves:
+        return DocumentCacheSyncResult(True, 0, ())
+    if any(not isinstance(item, DocumentMoveTransition) for item in moves):
+        raise TypeError("document move transitions must be typed records")
+    if len({(item.source_kind, item.file_key) for item in moves}) != len(moves):
+        raise ValueError("document move transitions contain duplicate owner identities")
+    owners = tuple(
+        sorted(
+            {
+                item.source_kind
+                for item in moves
+            }
+            | {"semantic", "framework", "dedup"}
+            | ({"docx_pdf_counterparts"} if any(item.source_kind == "pdf" for item in moves) else set())
+        )
+    )
+    publication_key = publication_idempotency_key(
+        "document-cache-sync-batch",
+        *(value for item in moves for value in (
+            item.source_kind,
+            item.file_key,
+            item.old_path,
+            item.new_path,
+            item.volume_id,
+            item.file_id,
+        )),
+    )
+    publication_epoch = 0
+    try:
+        with _ordered_curation_cache_lock(
+            state_directory,
+            framework_lock_held=framework_lock_held,
+        ):
+            initial_epoch = read_state_epoch(state_directory)
+            publication_epoch = initial_epoch.epoch
+            prepared = record_state_publication(
+                state_directory,
+                operation="document-cache-sync-batch",
+                owners=owners,
+                status="partial",
+                idempotency_key=publication_key,
+                expected_epoch=initial_epoch.epoch,
+                detail="bounded owner rebinding batch prepared",
+            )
+            replay = prepared.status == "complete"
+            results: list[CacheDatabaseSync] = []
+            for transition in moves:
+                results.extend(
+                    _synchronize_transition_databases(
+                        state_directory,
+                        transition,
+                        verify_only=replay,
+                    )
+                )
+            results.append(
+                _synchronize_dedup_owner_batch(
+                    state_directory / "dedup.sqlite3",
+                    moves,
+                    verify_only=replay,
+                    work_check=work_check,
+                )
+            )
+            complete = not any(item.status == "error" for item in results)
+            publication_epoch = prepared.epoch
+            publication_status = prepared.status if complete or not replay else "failed"
+            publication_id = prepared.event_id
+            if complete and not replay:
+                try:
+                    publication = record_state_publication(
+                        state_directory,
+                        operation="document-cache-sync-batch",
+                        owners=owners,
+                        status="complete",
+                        idempotency_key=publication_key,
+                        expected_epoch=initial_epoch.epoch,
+                    )
+                    publication_epoch = publication.epoch
+                    publication_status = publication.status
+                    publication_id = publication.event_id
+                except StatePublicationCommitError as exc:
+                    publication_epoch = exc.publication.epoch
+                    publication_status = exc.publication.status
+                    publication_id = exc.publication.event_id
+                    results.append(CacheDatabaseSync("publication", "warning", detail=str(exc)))
+                    if not exc.durable:
+                        complete = False
+                except (OSError, StatePublicationError) as exc:
+                    complete = False
+                    publication_status = "failed"
+                    results.append(
+                        CacheDatabaseSync(
+                            "publication", "error", detail=f"{type(exc).__name__}: {exc}"
+                        )
+                    )
+            return DocumentCacheSyncResult(
+                complete=complete,
+                updated_rows=sum(item.updated_rows for item in results),
+                databases=tuple(results),
+                publication_epoch=publication_epoch,
+                publication_status=publication_status,
+                publication_id=publication_id,
+            )
+    except (CancellationRequested, KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:
+        return DocumentCacheSyncResult(
+            complete=False,
+            updated_rows=0,
+            databases=(
+                CacheDatabaseSync(
+                    "publication",
+                    "error",
+                    detail=f"{type(exc).__name__}: {exc}",
+                ),
+            ),
+            publication_epoch=publication_epoch,
+            publication_status="failed",
+        )
+
+
+def _synchronize_transition_databases(
+    state_directory: Path,
+    transition: DocumentMoveTransition,
+    *,
+    verify_only: bool,
+) -> list[CacheDatabaseSync]:
+    now_ns = time.time_ns()
+    source_database = state_directory / (
+        f"{transition.source_kind}.sqlite3"
+        if transition.source_kind in {"pdf", "docx", "text", "audio", "image", "video"}
+        else "office.sqlite3"
+    )
+    def source_operation(connection: sqlite3.Connection) -> int:
+        synchronize = (
+            _sync_visual_source_cache if transition.source_kind in {"image", "video"}
+            else _sync_source_cache
+        )
+        return synchronize(
+            connection,
+            source_kind=transition.source_kind,
+            file_key=transition.file_key,
+            old_path=transition.old_path,
+            new_path=transition.new_path,
+            now_ns=now_ns,
+        )
+    results = [
+        _synchronize_database(
+            transition.source_kind,
+            source_database,
+            required=True,
+            verify_only=verify_only,
+            operation=source_operation,
+        )
+    ]
+    if transition.source_kind == "pdf":
+        results.append(
+            _synchronize_database(
+                "docx_pdf_counterparts",
+                state_directory / "docx.sqlite3",
+                required=False,
+                verify_only=verify_only,
+                operation=lambda connection: _sync_pdf_counterparts(
+                    connection,
+                    old_path=transition.old_path,
+                    new_path=transition.new_path,
+                    now_ns=now_ns,
+                ),
+            )
+        )
+    results.append(
+        _synchronize_database(
+            "semantic",
+            state_directory / "semantic.sqlite3",
+            required=False,
+            verify_only=verify_only,
+            operation=lambda connection: _sync_semantic_cache(
+                connection,
+                source_kind=transition.source_kind,
+                file_key=transition.file_key,
+                old_path=transition.old_path,
+                new_path=transition.new_path,
+                now_ns=now_ns,
+            ),
+        )
+    )
+    results.append(
+        _synchronize_database(
+            "framework",
+            state_directory / "framework.sqlite3",
+            required=False,
+            verify_only=verify_only,
+            operation=lambda connection: _sync_framework_cache(
+                connection,
+                old_path=transition.old_path,
+                new_path=transition.new_path,
+                volume_id=transition.volume_id,
+                file_id=transition.file_id,
+            ),
+        )
+    )
+    return results
 
 
 def _synchronize_database(
@@ -648,6 +896,66 @@ def _sync_source_cache(
         updated += _transition_fts_paths(
             connection,
             fts_table,
+            file_key=file_key,
+            old_path=old_path,
+            new_path=new_path,
+        )
+    return updated
+
+
+def _sync_visual_source_cache(
+    connection: sqlite3.Connection,
+    *,
+    source_kind: str,
+    file_key: str,
+    old_path: str,
+    new_path: str,
+    now_ns: int,
+) -> int:
+    """Rebind image/video owner projections without reprocessing content."""
+
+    if source_kind == "image":
+        _require_columns(connection, "images", {"file_key", "path"})
+        return _transition_keyed_path(
+            connection,
+            "images",
+            "file_key",
+            file_key,
+            old_path,
+            new_path,
+            required=True,
+            updated_ns=now_ns,
+        )
+    if source_kind != "video":  # pragma: no cover - caller validates kinds
+        raise ValueError(f"unsupported visual source kind: {source_kind}")
+    updated = 0
+    _require_columns(connection, "documents", {"file_key", "path"})
+    updated += _transition_keyed_path(
+        connection,
+        "documents",
+        "file_key",
+        file_key,
+        old_path,
+        new_path,
+        required=True,
+        updated_ns=now_ns,
+    )
+    if _table_exists(connection, "video_inventory"):
+        _require_columns(connection, "video_inventory", {"file_key", "path"})
+        updated += _transition_keyed_path(
+            connection,
+            "video_inventory",
+            "file_key",
+            file_key,
+            old_path,
+            new_path,
+            required=False,
+        )
+    if _table_exists(connection, "frame_fts"):
+        _require_columns(connection, "frame_fts", {"file_key", "path"})
+        updated += _transition_fts_paths(
+            connection,
+            "frame_fts",
             file_key=file_key,
             old_path=old_path,
             new_path=new_path,
@@ -1006,6 +1314,132 @@ def _sync_dedup_cache(
         )
         updated += cursor.rowcount
     return updated
+
+
+def _synchronize_dedup_owner(
+    database: Path,
+    *,
+    old_path: str,
+    new_path: str,
+    volume_id: str,
+    file_id: str,
+    verify_only: bool,
+) -> CacheDatabaseSync:
+    """Use Inventory's writer/reconciliation protocol for modern generations.
+
+    The legacy SQL path remains available as a private compatibility helper for
+    older callers/tests, but current synchronization never updates ``files``
+    directly.  Inventory creates one successor generation and leaves every
+    predecessor payload, digest, and head untouched.
+    """
+
+    if not database.is_file():
+        return CacheDatabaseSync("dedup", "absent")
+    try:
+        destination = snapshot_path(new_path)
+        expected_identity = (int(volume_id), int(file_id))
+        if destination.identity != expected_identity:
+            raise RuntimeError("dedup destination identity differs from moved source")
+        with DedupIndex(database) as index:
+            current_scan = index.current_scan_for_path(new_path)
+            row = index._connection.execute(
+                f"""SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns
+                FROM files WHERE scan_id=? AND path=? COLLATE {_PATH_COLLATION}""",
+                (current_scan, new_path),
+            ).fetchone()
+            if row is not None:
+                observed_identity = (
+                    int.from_bytes(bytes(row[1]), "little"),
+                    int.from_bytes(bytes(row[2]), "little"),
+                )
+                if observed_identity != expected_identity:
+                    raise RuntimeError("dedup destination row belongs to another identity")
+                if verify_only:
+                    return CacheDatabaseSync("dedup", "synced")
+                # A prior coordinated successor may already contain the new
+                # path.  Replays must not create another generation.
+                return CacheDatabaseSync("dedup", "synced")
+            if verify_only:
+                raise RuntimeError("dedup current generation lacks the moved destination")
+            index.apply_reconciliation(
+                current_scan,
+                upserts=(destination,),
+                remove_paths=(old_path,),
+            )
+        return CacheDatabaseSync("dedup", "synced", updated_rows=1)
+    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+        return CacheDatabaseSync("dedup", "error", detail=f"{type(exc).__name__}: {exc}")
+
+
+def _synchronize_dedup_owner_batch(
+    database: Path,
+    transitions: Sequence[DocumentMoveTransition],
+    *,
+    verify_only: bool,
+    work_check: Callable[[], None] | None = None,
+) -> CacheDatabaseSync:
+    """Reconcile all transitions with one COW successor per current head."""
+
+    if not database.is_file():
+        return CacheDatabaseSync("dedup", "absent")
+    try:
+        with DedupIndex(database) as index:
+            grouped: dict[int, list[tuple[DocumentMoveTransition, FileSnapshot]]] = {}
+            for ordinal, transition in enumerate(transitions):
+                if work_check is not None and ordinal % 128 == 0:
+                    work_check()
+                destination = snapshot_path(transition.new_path)
+                if destination.identity != (int(transition.volume_id), int(transition.file_id)):
+                    raise RuntimeError(
+                        f"dedup destination identity differs for {transition.file_key}"
+                    )
+                current_scan = index.current_scan_for_path(
+                    transition.new_path,
+                    work_check=work_check,
+                )
+                existing = index._connection.execute(
+                    f"""SELECT volume_id,file_id FROM files
+                    WHERE scan_id=? AND path=? COLLATE {_PATH_COLLATION}""",
+                    (current_scan, transition.new_path),
+                ).fetchone()
+                if existing is not None:
+                    existing_identity = (
+                        int.from_bytes(bytes(existing[0]), "little"),
+                        int.from_bytes(bytes(existing[1]), "little"),
+                    )
+                    if existing_identity != destination.identity:
+                        raise RuntimeError(
+                            f"dedup destination row belongs to another identity: {transition.new_path}"
+                        )
+                    # An interrupted publication may have committed this
+                    # transition already.  Do not create a duplicate successor.
+                    continue
+                grouped.setdefault(current_scan, []).append((transition, destination))
+            if verify_only:
+                for current_scan, members in grouped.items():
+                    for transition, _destination in members:
+                        row = index._connection.execute(
+                            f"""SELECT path FROM files WHERE scan_id=? AND path=?
+                            COLLATE {_PATH_COLLATION}""",
+                            (current_scan, transition.new_path),
+                        ).fetchone()
+                        if row is None:
+                            raise RuntimeError(
+                                f"dedup current generation lacks {transition.new_path}"
+                            )
+                return CacheDatabaseSync("dedup", "synced")
+            updated = 0
+            for current_scan, members in grouped.items():
+                index.apply_reconciliation(
+                    current_scan,
+                    upserts=tuple(destination for _transition, destination in members),
+                    remove_paths=tuple(transition.old_path for transition, _destination in members),
+                    work_check=work_check,
+                )
+                updated += len(members)
+        return CacheDatabaseSync("dedup", "synced", updated_rows=updated)
+    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+        return CacheDatabaseSync("dedup", "error", detail=f"{type(exc).__name__}: {exc}")
 
 
 # endregion [05]

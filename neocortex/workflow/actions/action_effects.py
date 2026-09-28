@@ -58,6 +58,7 @@ class EffectsActionsMixin:
     """Implementation for one FrameworkState/FrameworkActions responsibility."""
 
     if TYPE_CHECKING:
+        _trash_backend: object | None
         _max_file_bytes: int | None
 
         def _size_is_admitted(self, snapshot: FileSnapshot) -> bool: ...
@@ -365,14 +366,16 @@ class EffectsActionsMixin:
         protected += revalidation_protected
         if not ready:
             return 0, preflight_failures, protected
-        if self._trash_backend is None or action_type == "trash_empty_directory":
-            # Directory trash remains deliberately outside the KIO adapter.
-            # The injected backend is an explicit opt-in; ordinary framework
-            # runs preserve their historical fail-closed behavior.
+        if self._trash_backend is None or (
+            action_type == "trash_empty_directory"
+            and getattr(self._trash_backend, "supports_empty_directories", False) is not True
+        ):
+            # Empty-directory trash is admitted only by the typed KIO backend;
+            # compatibility/fake backends remain explicitly fail-closed.
             detail = (
                 TRASH_IDENTITY_ABSTENTION
                 if self._trash_backend is None
-                else "KIO directory trash is unsupported; only regular files are supported"
+                else "configured Trash backend does not support empty directories"
             )
             self._state.finish_file_actions(
                 (candidate[0] for candidate in ready),
@@ -443,7 +446,7 @@ class EffectsActionsMixin:
             try:
                 source_digest = (
                     metadata_binding(planned)
-                    if action_type == "trash_redlist"
+                    if action_type in {"trash_redlist", "trash_empty_directory"}
                     else f"{FULL_ALGORITHM}:" + self._full_fingerprint(planned).hex()
                 )
                 if reference is not None:
@@ -457,11 +460,13 @@ class EffectsActionsMixin:
                 self._state.mark_file_actions_applying(((action_id, expected_json),))
                 apply_snapshot = getattr(self._trash_backend, "apply_snapshot", None)
                 if callable(apply_snapshot):
-                    outcome = apply_snapshot(
-                        planned,
-                        root=mutation_root,
-                        source_digest=source_digest,
-                    )
+                    snapshot_kwargs = {
+                        "root": mutation_root,
+                        "source_digest": source_digest,
+                    }
+                    if action_type == "trash_empty_directory":
+                        snapshot_kwargs["object_kind"] = "empty_directory"
+                    outcome = apply_snapshot(planned, **snapshot_kwargs)
                 else:
                     # Compatibility seam for older injected backends that
                     # implement the grant-style ``apply(candidate)`` only.
@@ -469,6 +474,11 @@ class EffectsActionsMixin:
                         action="trash",
                         source=planned,
                         source_digest=source_digest,
+                        object_kind=(
+                            "empty_directory"
+                            if action_type == "trash_empty_directory"
+                            else "regular_file"
+                        ),
                         keeper=None,
                         keeper_digest=None,
                         target_path=None,
@@ -656,7 +666,7 @@ class EffectsActionsMixin:
             try:
                 source_digest = (
                     metadata_binding(planned)
-                    if action_type == "trash_redlist"
+                    if action_type in {"trash_redlist", "trash_empty_directory"}
                     else f"{FULL_ALGORITHM}:" + self._full_fingerprint(planned).hex()
                 )
                 if reference is not None and not _files_equal_exact(planned, reference):
@@ -683,7 +693,14 @@ class EffectsActionsMixin:
 
         try:
             batch_result = apply_batch(
-                tuple((snapshot, source_digest) for _id, _path, snapshot, source_digest, _expected in prepared),
+                tuple(
+                    (
+                        (snapshot, source_digest, "empty_directory")
+                        if action_type == "trash_empty_directory"
+                        else (snapshot, source_digest)
+                    )
+                    for _id, _path, snapshot, source_digest, _expected in prepared
+                ),
                 root=mutation_root,
             )
             outcomes_value = (
@@ -939,7 +956,12 @@ class EffectsActionsMixin:
             or _path_key(source_path) != _path_key(expected.path)
         ):
             raise ValueError("trash backend receipt is not source-bound Trash evidence")
-        verify_trash_receipt_evidence(receipt.get("trash"), expected, source_digest)
+        verify_trash_receipt_evidence(
+            receipt.get("trash"),
+            expected,
+            source_digest,
+            object_kind=receipt.get("object_kind", "regular_file"),
+        )
 
     @staticmethod
     def _normalize_trash_snapshots(

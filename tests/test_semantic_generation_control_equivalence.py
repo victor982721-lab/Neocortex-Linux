@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from neocortex.semantic.semantic_receipt_storage import decode_receipt_storage
+
 from neocortex.semantic.semantic_chunking import TextChunkingConfig, iter_text_chunks
 from neocortex.semantic.semantic_generation_worker import (
     complete_embedding_jobs_batch,
@@ -357,7 +359,7 @@ def test_leased_source_drift_returns_stale_and_records_the_attempt_receipt(
         "attempted",
         1,
     )
-    assert json.loads(str(receipt["receipt_json"]))["outcome"] == "failed"
+    assert json.loads(decode_receipt_storage(str(receipt["receipt_json"])))["outcome"] == "failed"
     assert payload_count == 0
     _assert_summary_matches_jobs(database, generation_id)
 
@@ -864,7 +866,7 @@ def test_cache_hit_reuses_payload_and_exposes_exact_causation_in_lineage(
         "cache_hit",
         payload_id,
     )
-    cached_receipt = json.loads(str(receipt_row["receipt_json"]))
+    cached_receipt = json.loads(decode_receipt_storage(str(receipt_row["receipt_json"])))
     assert cached_receipt["causation_id"] == producer_key
     assert any(item["name"] == "reused_vector_payload" for item in cached_receipt["inputs"])
 

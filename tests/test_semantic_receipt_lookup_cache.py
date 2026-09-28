@@ -8,6 +8,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from neocortex.semantic.semantic_receipt_storage import decode_receipt_storage
 
 from neocortex.semantic import semantic_lineage_repository as lineage
 from neocortex.semantic import semantic_schema
@@ -283,7 +284,7 @@ def test_writer_rebind_reuses_identical_payload_without_new_embedding_job(
         ).fetchall()
         assert int(connection.execute("SELECT COUNT(*) FROM vector_payloads").fetchone()[0]) == payload_count
     assert [str(row[0]) for row in embedding_receipts] == ["executed", "replay"]
-    assert json.loads(str(embedding_receipts[1]["receipt_json"]))["causation_id"] == producer_key
+    assert json.loads(decode_receipt_storage(str(embedding_receipts[1]["receipt_json"])))["causation_id"] == producer_key
     assert len(payload_ids) == 2 and payload_ids[0][0] == payload_ids[1][0]
     assert [str(row[0]) for row in jobs] == ["done"]
 

@@ -391,13 +391,11 @@ def has_organization_errors(result) -> bool:
 
     plan = getattr(result, "organization_plan", None)
     applied = getattr(result, "organization_apply", None)
-    return bool(
-        (plan is not None and plan.blocked)
-        or (
-            applied is not None
-            and organization_apply_has_unresolved(applied)
-        )
-    )
+    if applied is not None:
+        # The application owner distinguishes validated advisory abstentions
+        # from unresolved effects. A plan count cannot undo that classification.
+        return organization_apply_has_unresolved(applied)
+    return bool(plan is not None and plan.blocked)
 
 
 def _print_duplicate_groups(
@@ -628,14 +626,6 @@ def _route_issue_count(summary: object) -> int:
         "manual_review_errors",
     )
     return partial + sum(_optional_counter(summary, field) or 0 for field in fields)
-
-
-def _route_review_count(summary: object) -> int:
-    direct = max(
-        _optional_counter(summary, "review_candidates") or 0,
-        _optional_counter(summary, "review_candidates_stored") or 0,
-    )
-    return direct + (_optional_counter(summary, "catalog_review_required") or 0)
 
 
 def _route_review_value(summary: object) -> int | None:
@@ -1105,6 +1095,19 @@ def print_professional_summary(
         )
 
     unavailable_models = getattr(args, "_semantic_scope_unavailable", {})
+    image_readiness = getattr(args, "_semantic_image_readiness", None)
+    if isinstance(image_readiness, Mapping):
+        ready = image_readiness.get("status") == "ready"
+        label = "HABILITADA" if ready else "NO HABILITADA"
+        reason = sanitize_untrusted_text(image_readiness.get("reason", "no_verificado"), limit=256)
+        next_step = (
+            "Calibración local compatible; las coincidencias siguen siendo candidatos, no certeza."
+            if ready else "Consulte --semantic-status; calibre con --semantic-image-calibrate DATASET.json."
+        )
+        console.print(Panel(
+            Text(f"Búsqueda visual: {label} · {reason}\n{next_step}"),
+            title="Disponibilidad de consulta visual", border_style="green" if ready else "yellow",
+        ))
     if unavailable_models:
         console.print(Panel(Text("\n".join(
             f"{sanitize_untrusted_text(scope, limit=32)}: {sanitize_untrusted_text(reason, limit=800)}"
@@ -1170,7 +1173,9 @@ def print_professional_summary(
         details.append(
             Text.assemble(
                 ("Acciones: ", "bold"),
-                ("aplicadas" if getattr(actions, "apply_actions", False) else "simulación segura"),
+                ("modo apply" if getattr(actions, "apply_actions", False) else "simulación segura"),
+                " · candidatos=",
+                _human_count(action_counts["candidates"]),
                 " · ",
                 _human_count(action_counts["planned"]),
                 " planeadas · ",
@@ -1189,6 +1194,33 @@ def print_professional_summary(
                 " aún desconocidos",
             )
         )
+    organization_plan = getattr(result, "organization_plan", None)
+    organization_apply = getattr(result, "organization_apply", None)
+    if organization_plan is not None:
+        details.append(Text.assemble(
+            ("Organización: ", "bold"),
+            "consideradas=", _human_count(organization_plan.considered),
+            " · propuestas=", _human_count(organization_plan.planned),
+            " · revisión=", _human_count(organization_plan.review_required),
+            " · bloqueadas al planificar=", _human_count(organization_plan.blocked),
+        ))
+    if organization_apply is not None:
+        details.append(Text.assemble(
+            ("Efectos de organización: ", "bold"),
+            "seleccionadas=", _human_count(organization_apply.selected),
+            " · movimientos aplicados=", _human_count(organization_apply.applied),
+            " · bloqueadas=", _human_count(organization_apply.blocked),
+            " (advisory=", _human_count(getattr(organization_apply, "advisory_blocked", 0)), ")",
+            " · caché pendiente=", _human_count(organization_apply.cache_pending),
+            " · restantes=", _human_count(organization_apply.remaining),
+        ))
+    if actions is not None:
+        details.append(Text.assemble(
+            ("Directorios vacíos: ", "bold"),
+            "candidatos=", _human_count(getattr(actions, "empty_directory_candidates", 0)),
+            " · retirados=", _human_count(getattr(actions, "empty_directories_trashed", 0)),
+            " · omitidos=", _human_count(getattr(actions, "empty_directory_skips", 0)),
+        ))
     if getattr(result, "inventory_mode", None) == "full":
         details.append(
             Text(

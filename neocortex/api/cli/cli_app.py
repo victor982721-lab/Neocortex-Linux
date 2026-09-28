@@ -59,7 +59,10 @@ _DEDUPE_SERVICE_HANDLERS = ("run_dedupe", "dedupe", "execute_dedupe")
 _SERVICE_UNAVAILABLE_EXIT_CODE = 2
 
 
-def _json_summary_payload(result: object, *, semantic_results: Sequence[tuple[str, object]], semantic_exit_code: int) -> object:
+def _json_summary_payload(
+    result: object, *, semantic_results: Sequence[tuple[str, object]], semantic_exit_code: int,
+    image_readiness: Mapping[str, object] | None = None,
+) -> object:
     """Convert one completed run to a bounded JSON-safe summary."""
 
     if is_dataclass(result) and not isinstance(result, type):
@@ -70,6 +73,8 @@ def _json_summary_payload(result: object, *, semantic_results: Sequence[tuple[st
         payload = {"result": str(result)}
     if isinstance(payload, dict):
         payload.setdefault("semantic_exit_code", semantic_exit_code)
+        if image_readiness is not None:
+            payload["image_retrieval_readiness"] = dict(image_readiness)
         if semantic_results:
             payload["semantic_results"] = [
                 {
@@ -85,6 +90,25 @@ def _json_summary_payload(result: object, *, semantic_results: Sequence[tuple[st
     from neocortex.api.read_contract import sanitize_untrusted_payload
 
     return sanitize_untrusted_payload(payload)
+
+
+def _post_run_image_readiness(args: argparse.Namespace, result: object) -> dict[str, object] | None:
+    """Inspect only after run_framework has closed all producer owners/locks."""
+    image = getattr(result, "image", None)
+    if not getattr(args, "all", False) or not getattr(image, "candidates", 0):
+        return None
+    from neocortex.semantic.image_retrieval_calibration import image_retrieval_readiness
+
+    try:
+        readiness = image_retrieval_readiness(Path(args.state_directory) / "semantic.sqlite3")
+        return {"schema": "neocortex.image-retrieval-readiness/v1", **asdict(readiness)}
+    except (OSError, RuntimeError, ValueError) as exc:
+        # A new concurrent owner or an unreadable snapshot is not a successful
+        # readiness check, nor permission to retry through an ordinary reader.
+        return {
+            "schema": "neocortex.image-retrieval-readiness/v1", "status": "unavailable",
+            "reason": type(exc).__name__, "action": "inspect_semantic_status_when_quiescent",
+        }
 
 
 def _service_json_requested(args: argparse.Namespace) -> bool:
@@ -1123,6 +1147,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    image_readiness = _post_run_image_readiness(args, result)
+    args._semantic_image_readiness = image_readiness
     if bool(getattr(args, "json_output", False)):
         print(
             json.dumps(
@@ -1130,6 +1156,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     result,
                     semantic_results=tuple(semantic_results),
                     semantic_exit_code=semantic_exit_code,
+                    image_readiness=image_readiness,
                 ),
                 ensure_ascii=False,
                 sort_keys=True,
@@ -1146,6 +1173,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
     else:
         print_reports(result, args)
+        if image_readiness is not None:
+            print("SEMANTIC_IMAGE_READINESS " + " ".join(
+                f"{name}={image_readiness[name]}" for name in ("status", "reason", "action")
+            ))
     actions = getattr(result, "actions", None)
     if getattr(result, "route_failures", None):
         return 2

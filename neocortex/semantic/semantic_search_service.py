@@ -38,6 +38,12 @@ from .semantic_models import (
     fingerprint_text,
 )
 from .semantic_ontology import expand_domain_query
+from .semantic_query_evidence import (
+    STRUCTURED_QUERY_POLICY,
+    query_requests_explicit_title,
+    structured_query_constraints,
+    structured_query_support,
+)
 from .semantic_preparation import (
     BackendFactory,
     SemanticModelUnavailableError,
@@ -267,12 +273,17 @@ def semantic_ranking(
     cancellation_check: Callable[[], None] | None = None,
     exact_index: ExactIndexHandle | None = None,
 ) -> SemanticRanking:
+    retrieval_limit = (
+        _structured_candidate_limit(query, limit)
+        if text_scope == "content" and target_modality is EmbeddingModality.TEXT
+        else limit
+    )
     search_page: Callable[..., ExactSearchPage] = (
         search_exact_evidence_page if evidence_mode else search_exact_page
     )
     diagnostics: dict[str, object] = {}
     page_kwargs: _SearchPageKwargs = {
-        "limit": limit,
+        "limit": retrieval_limit,
         "max_vectors": max_vectors,
         "text_scope": text_scope,
         "cancellation_check": cancellation_check,
@@ -305,14 +316,19 @@ def semantic_ranking(
     cutoff_reason = (
         "max_vectors_reached"
         if not page.complete
-        else ("top_k" if len(page.hits) == limit and page.scanned > len(page.hits) else None)
+        else (
+            "top_k"
+            if len(page.hits) == retrieval_limit and page.scanned > len(page.hits)
+            else None
+        )
     )
-    cutoff_score = page.hits[-1].score if len(page.hits) == limit else None
+    cutoff_score = page.hits[-1].score if len(page.hits) == retrieval_limit else None
     ranking_provenance = {
         **dict(provenance or {}),
         "candidate_selection": {
             "policy_signature": "semantic-candidate-funnel-v1",
             "candidate_limit": limit,
+            "retrieval_candidate_limit": retrieval_limit,
             "ranking_unit": "evidence" if evidence_mode else "item",
             "text_scope": text_scope,
             "vectors_scanned": page.scanned,
@@ -369,7 +385,7 @@ def semantic_ranking(
                 )
             entries.append(entry)
         ranking_provenance["target_diagnostics"] = entries
-    return SemanticRanking(
+    ranking = SemanticRanking(
         name=name,
         hits=page.hits,
         resolved=resolved,
@@ -381,10 +397,159 @@ def semantic_ranking(
         fusion_weight=fusion_weight,
         provenance=ranking_provenance,
     )
+    if text_scope == "content" and target_modality is EmbeddingModality.TEXT and query is not None:
+        ranking = apply_structured_query_constraints(
+            ranking,
+            query=query,
+            limit=limit,
+        )
+    return ranking
 
 
 def _search_hit_key(hit: SearchHit) -> tuple[int, str, str, int]:
     return hit.ref_id, hit.entity_id, hit.item_id, hit.generation_id
+
+
+def _structured_candidate_limit(query: str | None, limit: int) -> int:
+    """Expand only bounded structured queries before applying their scope."""
+
+    if query is None:
+        return limit
+    profile = structured_query_constraints(query)
+    if profile.get("applicable") is not True:
+        return limit
+    # A structured target outside the ordinary result window is still
+    # discoverable, but the expansion is finite and remains subject to the
+    # caller's vector/read budget.  The public result window stays ``limit``.
+    return min(MAX_SEMANTIC_CANDIDATE_HITS, max(limit * 4, limit + 64))
+
+
+def _resolved_query_support(
+    query: str,
+    resolved: ResolvedSearchHit,
+) -> Mapping[str, object]:
+    value = resolved.section_provenance.get(
+        "query_support",
+        resolved.hit.provenance.get("query_support"),
+    )
+    if isinstance(value, Mapping):
+        if "structured_support" in value:
+            return value
+        # Synthetic/injected readers may expose only a snippet.  Recompute
+        # the bounded structured part without replacing their existing support
+        # contract or score.
+        return {**value, "structured_support": structured_query_support(query, resolved.snippet or "")}
+    return {"structured_support": structured_query_support(query, resolved.snippet or "")}
+
+
+def apply_structured_query_constraints(
+    ranking: SemanticRanking,
+    *,
+    query: str,
+    limit: int,
+) -> SemanticRanking:
+    """Prefer coherent identity/date/unit witnesses over generic neighbours.
+
+    This is deliberately a post-resolution scope check.  It does not mutate a
+    cosine score, claim entailment, or make an unstructured query stricter.
+    If no candidate carries the structured witness, the original candidates
+    remain visible with an explicit fallback marker rather than silently
+    returning an empty result.
+    """
+
+    profile = structured_query_constraints(query)
+    if profile.get("applicable") is not True or not ranking.hits:
+        return ranking
+    resolved_by_key = {_search_hit_key(value.hit): value for value in ranking.resolved}
+    observations: list[tuple[SearchHit, ResolvedSearchHit, Mapping[str, object]]] = []
+    for hit in ranking.hits:
+        resolved = resolved_by_key.get(_search_hit_key(hit))
+        if resolved is None:
+            continue
+        support = _resolved_query_support(query, resolved)
+        structured = support.get("structured_support")
+        if isinstance(structured, Mapping):
+            observations.append((hit, resolved, structured))
+    if not observations:
+        return replace(
+            ranking,
+            provenance={
+                **ranking.provenance,
+                "structured_query_constraints": {
+                    "policy_signature": STRUCTURED_QUERY_POLICY,
+                    "profile": profile,
+                    "raw_candidates": len(ranking.hits),
+                    "observed_candidates": 0,
+                    "coherent_candidates": 0,
+                    "retained_candidates": len(ranking.hits),
+                    "fallback_no_coherent_witness": True,
+                    "fallback_reason": "query_support_unavailable",
+                    "scope": "resolved_content_witnesses_only",
+                },
+            },
+        )
+    coherent = [value for value in observations if value[2].get("coherent") is True]
+    fallback = not coherent
+    selected = coherent if coherent else observations
+
+    def order(value: tuple[SearchHit, ResolvedSearchHit, Mapping[str, object]]) -> tuple[object, ...]:
+        hit, _resolved, support = value
+        span = support.get("constraint_span_terms")
+        return (
+            int(support.get("coherent") is not True),
+            int(support.get("hard_mismatch") is True),
+            int(span) if isinstance(span, int) else 1_000_000,
+            -hit.score,
+            hit.item_id,
+            hit.entity_id,
+            -hit.ref_id,
+        )
+
+    ordered = sorted(selected, key=order)
+    selected_keys = {_search_hit_key(hit) for hit, _resolved, _support in ordered[:limit]}
+    retained_hits = tuple(hit for hit in ranking.hits if _search_hit_key(hit) in selected_keys)
+    # Reorder the resolved witnesses to exactly match the returned hit order.
+    retained_resolved = tuple(
+        resolved_by_key[_search_hit_key(hit)]
+        for hit in retained_hits
+        if _search_hit_key(hit) in resolved_by_key
+    )
+    provenance = dict(ranking.provenance)
+    provenance["structured_query_constraints"] = {
+        "policy_signature": STRUCTURED_QUERY_POLICY,
+        "profile": profile,
+        "raw_candidates": len(ranking.hits),
+        "observed_candidates": len(observations),
+        "coherent_candidates": len(coherent),
+        "retained_candidates": len(retained_hits),
+        "fallback_no_coherent_witness": fallback,
+        "scope": "resolved_content_witnesses_only",
+    }
+    raw_targets = provenance.get("target_diagnostics")
+    if isinstance(raw_targets, list):
+        final_keys = {_search_hit_key(hit) for hit in retained_hits}
+        updated_targets: list[dict[str, object]] = []
+        for raw_target in raw_targets:
+            if not isinstance(raw_target, dict):
+                continue
+            target = dict(raw_target)
+            ref_id = target.get("ref_id")
+            target_hit = next((hit for hit in ranking.hits if hit.ref_id == ref_id), None)
+            if target_hit is not None and _search_hit_key(target_hit) not in final_keys:
+                target["stage"] = "rejected_by_structured_constraints"
+                target["structured_constraint_status"] = "mismatch"
+            elif target_hit is not None:
+                target["structured_constraint_status"] = "coherent"
+            updated_targets.append(target)
+        provenance["target_diagnostics"] = updated_targets
+    return replace(
+        ranking,
+        hits=retained_hits,
+        resolved=retained_resolved,
+        cutoff_reason=("top_k" if len(ordered) > limit else ranking.cutoff_reason),
+        cutoff_score=retained_hits[-1].score if len(retained_hits) == limit else ranking.cutoff_score,
+        provenance=provenance,
+    )
 
 
 def _retrieval_contract_provenance(
@@ -424,7 +589,22 @@ def _text_retrieval_hit_decision(
         source_kind=resolved.source_kind,
     )
     if floor is not None:
-        return hit.score >= floor, None
+        if hit.score >= floor:
+            return True, None
+        # A measured source floor protects ordinary semantic neighbours from
+        # unrelated boilerplate.  A chunk that independently carries every
+        # explicit identifier/date/unit constraint is a different, auditable
+        # case: keep it as a low-cosine literal witness rather than lowering
+        # the floor globally.
+        support_value = resolved.section_provenance.get(
+            "query_support",
+            hit.provenance.get("query_support"),
+        ) if resolved is not None else None
+        support = support_value if isinstance(support_value, Mapping) else {}
+        structured = support.get("structured_support")
+        if isinstance(structured, Mapping) and structured.get("coherent") is True:
+            return True, "structured_evidence_override"
+        return False, None
     if hit.indexed_model_signature != TEXT_MODEL_SIGNATURE:
         reason = "indexed_model_not_calibrated"
     elif pipeline != SEMANTIC_PIPELINE_VERSION:
@@ -576,10 +756,15 @@ def apply_text_retrieval_calibration(
     rejected_by_source: dict[str, int] = {}
     uncalibrated_by_reason: dict[str, int] = {}
     calibrated_hits = 0
+    structured_floor_overrides = 0
     for hit in ranking.hits:
         key = _search_hit_key(hit)
         resolved = resolved_by_key.get(key)
         retained, uncalibrated_reason = _text_retrieval_hit_decision(hit, resolved)
+        if uncalibrated_reason == "structured_evidence_override":
+            retained_keys.add(key)
+            structured_floor_overrides += 1
+            continue
         if uncalibrated_reason is not None:
             retained_keys.add(key)
             uncalibrated_by_reason[uncalibrated_reason] = (
@@ -614,6 +799,7 @@ def apply_text_retrieval_calibration(
             "calibrated_hits": calibrated_hits,
             "uncalibrated_hits": uncalibrated_hits,
             "uncalibrated_by_reason": uncalibrated_by_reason,
+            "structured_floor_overrides": structured_floor_overrides,
             "retained_hits": len(retained_hits),
             "rejected_hits": rejected_hits,
             "rejected_by_source_kind": rejected_by_source,
@@ -1477,7 +1663,17 @@ def _resolve_fused_hits(
     *,
     limit: int,
 ) -> tuple[FusedResolvedHit, ...]:
-    raw_rankings = {semantic_ranking.name: semantic_ranking.hits for semantic_ranking in rankings}
+    # An automatically detected filename/title request is an explicit,
+    # advisory discovery channel.  Keep its ranking visible to callers, but
+    # do not turn mutable metadata into substantive cited evidence in the
+    # public fused window.  Explicit ``include_title=True`` retains the legacy
+    # weighted fusion contract.
+    fused_rankings = tuple(
+        ranking
+        for ranking in rankings
+        if ranking.provenance.get("auto_requested_title_channel") is not True
+    )
+    raw_rankings = {semantic_ranking.name: semantic_ranking.hits for semantic_ranking in fused_rankings}
     raw_rankings.update(
         {
             lexical_ranking.ranking_name: lexical_ranking.search_hits
@@ -1485,14 +1681,14 @@ def _resolve_fused_hits(
         }
     )
     weights = {
-        semantic_ranking.name: semantic_ranking.fusion_weight for semantic_ranking in rankings
+        semantic_ranking.name: semantic_ranking.fusion_weight for semantic_ranking in fused_rankings
     }
     # Apply the explanatory support tier before the public result window, not
     # after discarding lower-ranked candidates.  Every source is already bounded.
     candidate_count = sum(len(hits) for hits in raw_rankings.values())
     fused = reciprocal_rank_fusion(raw_rankings, limit=max(limit, candidate_count), weights=weights)
     resolved_by_key: dict[tuple[str, int, str, str, int], ResolvedSearchHit] = {}
-    for semantic_ranking_value in rankings:
+    for semantic_ranking_value in fused_rankings:
         for semantic_resolved in semantic_ranking_value.resolved:
             key = (semantic_ranking_value.name, *_search_hit_key(semantic_resolved.hit))
             prior = resolved_by_key.setdefault(key, semantic_resolved)
@@ -1716,6 +1912,11 @@ def _semantic_search_rankings(
 ) -> tuple[SemanticRanking, ...]:
     rankings: list[SemanticRanking] = []
     if include_text:
+        auto_title = (
+            not include_title
+            and not evidence_mode
+            and query_requests_explicit_title(context.query)
+        )
         rankings.extend(
             text_search_rankings(
                 context.database,
@@ -1729,12 +1930,27 @@ def _semantic_search_rankings(
                 max_vectors=context.max_vectors,
                 backend_factory=backend_factory,
                 evidence_mode=evidence_mode,
-                include_title=include_title,
+                include_title=include_title or auto_title,
                 **_optional_diagnostic_item_ids_kwargs(diagnostic_item_ids),
                 cancellation_check=cancellation_check,
                 **_optional_exact_index_kwargs(context.exact_index),
             )
         )
+        if auto_title:
+            rankings = [
+                replace(
+                    ranking,
+                    provenance={
+                        **ranking.provenance,
+                        "auto_requested_title_channel": True,
+                        "advisory_only": True,
+                        "title_query_policy": "retrieval-explicit-title-channel-v1",
+                    },
+                )
+                if ranking.name == SEMANTIC_TITLE_RANKING
+                else ranking
+                for ranking in rankings
+            ]
     if include_images:
         query_intent = image_query_intent or classify_image_query_intent(
             context.query,

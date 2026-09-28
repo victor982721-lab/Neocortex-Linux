@@ -27,10 +27,11 @@ import stat
 import tempfile
 import time
 import uuid
+import xml.etree.ElementTree as ET
 import zipfile
 import zlib
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol, cast, runtime_checkable
 
@@ -47,6 +48,11 @@ from neocortex.progress import ProgressEvent, ProgressMetric, emit_progress
 # complete extraction: only package marker members are read.  Generic ZIPs are
 # completely streamed only after the caller selects apply mode.
 MAX_MARKER_BYTES = 2 * 1024 * 1024
+# XML package markers can legitimately be larger than the small-marker bound
+# (for example a DOCX ``word/document.xml`` around 20 MiB).  The parser still
+# reads in chunks and stops at this explicit upper bound; classification never
+# treats a marker as permission to extract it.
+MAX_XML_MARKER_BYTES = 32 * 1024 * 1024
 MAX_MIMETYPE_BYTES = 256
 CHUNK_BYTES = 64 * 1024
 RENAME_NOREPLACE = 1
@@ -77,7 +83,7 @@ class ZipIntakeError(RuntimeError):
 
     def __init__(self, status: IntakeStatus, reason: str, detail: str | None = None):
         super().__init__(detail or reason)
-        self.status = status
+        self.status: IntakeStatus = status
         self.reason = reason
         self.detail = detail or reason
 
@@ -102,6 +108,27 @@ class ZipIntakeLimits:
     # Zero means no extra reserve beyond the bytes being extracted.  The
     # observed free-space check is still always performed before writing.
     min_free_bytes: int = 0
+    # A high ratio on a tiny metadata member is not equivalent to a ZIP bomb.
+    # Apply the ratio gate once a member reaches this absolute size, while the
+    # cumulative/streaming budgets remain in force for every member.
+    compression_ratio_absolute_bytes: int = field(default=1 * 1024 * 1024, kw_only=True)
+    # Measured admission may extend the conservative historical 64/512 MiB
+    # defaults only when central-directory accounting proves a low-expansion
+    # archive and the source itself provides enough bounded headroom.  These
+    # are policy ceilings, not a blanket increase of every route limit.
+    measured_member_expansion_ratio: float = field(default=2.0, kw_only=True)
+    measured_total_expansion_ratio: float = field(default=2.0, kw_only=True)
+    # ``False`` makes all configured member/tree values hard ceilings.  The
+    # default auto policy is explicit and can be disabled by the caller/root
+    # when a setting is intended as a hard cap.
+    auto_measured_budget: bool = field(default=True, kw_only=True)
+    # Finite resource envelope for the automatic policy.  These are separate
+    # from operator ceilings above: ``auto=False`` never widens a configured
+    # hard cap, while ``auto=True`` may admit a measured archive only inside
+    # this bounded envelope.
+    auto_max_member_bytes: int = field(default=512 * 1024 * 1024, kw_only=True)
+    auto_max_total_uncompressed_bytes: int = field(default=1536 * 1024 * 1024, kw_only=True)
+    auto_max_expansion_ratio: float = field(default=8.0, kw_only=True)
 
     def validate(self) -> None:
         values = {
@@ -113,6 +140,9 @@ class ZipIntakeLimits:
             "max_nested_depth": self.max_nested_depth,
             "max_central_directory_bytes": self.max_central_directory_bytes,
             "min_free_bytes": self.min_free_bytes,
+            "compression_ratio_absolute_bytes": self.compression_ratio_absolute_bytes,
+            "auto_max_member_bytes": self.auto_max_member_bytes,
+            "auto_max_total_uncompressed_bytes": self.auto_max_total_uncompressed_bytes,
         }
         for name, value in values.items():
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -124,6 +154,9 @@ class ZipIntakeLimits:
             "max_total_temp_bytes",
             "max_input_bytes",
             "max_central_directory_bytes",
+            "compression_ratio_absolute_bytes",
+            "auto_max_member_bytes",
+            "auto_max_total_uncompressed_bytes",
         ):
             if values[name] < 1:
                 raise ValueError(f"{name} must be positive")
@@ -134,6 +167,21 @@ class ZipIntakeLimits:
             self.max_compression_ratio, bool
         ) or not math.isfinite(float(self.max_compression_ratio)) or self.max_compression_ratio <= 0:
             raise ValueError("max_compression_ratio must be a finite positive number")
+        for name in (
+            "measured_member_expansion_ratio",
+            "measured_total_expansion_ratio",
+            "auto_max_expansion_ratio",
+        ):
+            value = getattr(self, name)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or value < 1
+            ):
+                raise ValueError(f"{name} must be a finite number >= 1")
+        if not isinstance(self.auto_measured_budget, bool):
+            raise ValueError("auto_measured_budget must be a boolean")
         if not isinstance(self.timeout_seconds, (int, float)) or isinstance(
             self.timeout_seconds, bool
         ) or not math.isfinite(float(self.timeout_seconds)) or self.timeout_seconds <= 0:
@@ -662,6 +710,10 @@ class ZipDecision:
     identity: SourceIdentity
     classification: ZipIntakeClassification
     _preflight: _Preflight | None = field(default=None, repr=False, compare=False)
+    # The central-directory pass may derive a narrowly widened streaming
+    # budget for a low-expansion archive.  Retain it with the decision so the
+    # apply path uses exactly the budget that was classified and verified.
+    admitted_limits: ZipIntakeLimits | None = field(default=None, repr=False, compare=False)
 
     def matches(self, path: Path, identity: SourceIdentity | None = None) -> bool:
         """Return whether this decision is safe to reuse for ``path``."""
@@ -1078,6 +1130,96 @@ def _structure_entries(structure: ZipStructure) -> tuple[ZipMemberStructure, ...
     return tuple(structure.entries)
 
 
+def _measured_limits_for_structure(
+    path: Path,
+    structure: ZipStructure,
+    limits: ZipIntakeLimits,
+) -> ZipIntakeLimits:
+    """Derive a bounded budget from measured ZIP metadata, not suffix/guesswork.
+
+    The historical 64 MiB/member and 512 MiB/tree values are retained as the
+    floor.  A valid export such as a 558 MiB WhatsApp archive can use a larger
+    *effective* budget only when its central directory demonstrates low
+    expansion (and the source is no more than twice the configured floor).  A
+    high-ratio member above the absolute threshold remains blocked before this
+    widening is considered.  The result is carried by ``ZipDecision`` and used
+    for streaming extraction, so preflight and apply cannot disagree.
+    """
+
+    entries = _structure_entries(structure)
+    file_entries = tuple(entry for entry in entries if not entry.is_directory)
+    if not file_entries:
+        return limits
+    if not limits.auto_measured_budget:
+        return limits
+    # Explicitly narrowed caller budgets are safety decisions, not legacy
+    # defaults to be widened by measurement.  In particular, adversarial
+    # fixtures and an operator's low-memory policy must remain authoritative.
+    if (
+        limits.max_member_bytes < 64 * 1024 * 1024
+        or limits.max_total_uncompressed_bytes < 512 * 1024 * 1024
+        or limits.max_total_temp_bytes < 512 * 1024 * 1024
+    ):
+        return limits
+    try:
+        source_size = int(path.stat().st_size)
+    except OSError:
+        return limits
+    if source_size < 1:
+        return limits
+    total = sum(max(0, int(entry.uncompressed_size)) for entry in file_entries)
+    largest = max(max(0, int(entry.uncompressed_size)) for entry in file_entries)
+    # Ratio is compared against an absolute size.  Small XML/metadata members
+    # with a ratio slightly over the ceiling do not consume the measured
+    # widening; they are handled by the normal ratio check below.
+    for entry in file_entries:
+        declared = max(0, int(entry.uncompressed_size))
+        compressed = max(1, int(entry.compressed_size))
+        ratio_gate = (
+            declared >= limits.compression_ratio_absolute_bytes
+            or float(limits.max_compression_ratio) <= 2.0
+        )
+        if ratio_gate and declared / compressed > float(limits.max_compression_ratio):
+            return limits
+    measured_member_cap = min(
+        limits.max_input_bytes,
+        limits.auto_max_member_bytes,
+        max(limits.max_member_bytes, limits.auto_max_member_bytes),
+    )
+    measured_total_cap = min(
+        limits.max_input_bytes,
+        limits.auto_max_total_uncompressed_bytes,
+        max(
+            limits.max_total_uncompressed_bytes,
+            int(source_size * float(limits.auto_max_expansion_ratio)),
+        ),
+    )
+    # Do not make an archive eligible merely because the configured floor is
+    # generous.  Widening is specifically for measured output inside both a
+    # finite absolute envelope and a finite aggregate expansion ratio.
+    if largest > limits.max_member_bytes and largest > measured_member_cap:
+        return limits
+    if total > limits.max_total_uncompressed_bytes and total > measured_total_cap:
+        return limits
+    if total > source_size * float(limits.auto_max_expansion_ratio):
+        return limits
+    try:
+        free_bytes = int(shutil.disk_usage(path.parent).free)
+    except OSError:
+        return limits
+    if free_bytes < total + limits.min_free_bytes:
+        return limits
+    return replace(
+        limits,
+        max_member_bytes=measured_member_cap if largest > limits.max_member_bytes else limits.max_member_bytes,
+        max_total_uncompressed_bytes=measured_total_cap if total > limits.max_total_uncompressed_bytes else limits.max_total_uncompressed_bytes,
+        max_total_temp_bytes=max(
+            limits.max_total_temp_bytes,
+            measured_total_cap if total > limits.max_total_temp_bytes else limits.max_total_temp_bytes,
+        ),
+    )
+
+
 def _preflight_from_archive(
     archive: zipfile.ZipFile,
     structure: ZipStructure,
@@ -1128,7 +1270,11 @@ def _preflight_from_archive(
         if declared and compressed <= 0:
             raise ZipIntakeError("budget", "invalid_compression_size", name[:512])
         ratio = float(declared) / float(max(1, compressed))
-        if ratio > float(limits.max_compression_ratio):
+        ratio_gate = (
+            declared >= limits.compression_ratio_absolute_bytes
+            or float(limits.max_compression_ratio) <= 2.0
+        )
+        if ratio_gate and ratio > float(limits.max_compression_ratio):
             raise ZipIntakeError("budget", "compression_ratio_budget", name[:512])
         if not is_directory:
             total += declared
@@ -1165,11 +1311,12 @@ def _preflight_zip(
             max_members=limits.max_members,
             max_central_directory_bytes=limits.max_central_directory_bytes,
         )
+        admitted_limits = _measured_limits_for_structure(path, structure, limits)
         with zipfile.ZipFile(path, "r") as archive:
             return _preflight_from_archive(
                 archive,
                 structure,
-                limits=limits,
+                limits=admitted_limits,
                 deadline=deadline,
                 progress=progress,
             )
@@ -1278,13 +1425,92 @@ def _read_marker(
         raise ZipIntakeError("corrupt", "marker_integrity_failed", str(exc)) from exc
 
 
-def _parse_xml_marker(payload: bytes, name: str) -> None:
-    try:
-        from neocortex.capabilities.formats.xml_safety import safe_xml_fromstring
 
-        safe_xml_fromstring(payload)
-    except (ValueError, UnicodeError, RuntimeError) as exc:
-        raise ZipIntakeError("ambiguous", "package_marker_invalid", name) from exc
+class _CountingXmlReader:
+    """Bounded reader passed to ``safe_xml_iterparse`` for one ZIP member."""
+
+    def __init__(
+        self,
+        source: object,
+        *,
+        limit: int,
+        deadline: _Deadline,
+        progress: _ZipProgress | None,
+    ) -> None:
+        self._source = source
+        self._limit = limit
+        self._deadline = deadline
+        self._progress = progress
+        self.bytes_read = 0
+
+    def read(self, size: int = -1) -> bytes:
+        self._deadline.check()
+        read = getattr(self._source, "read", None)
+        if not callable(read):
+            raise ZipIntakeError("dependency", "xml_marker_reader_invalid")
+        chunk = read(size)
+        if not isinstance(chunk, bytes):
+            raise ZipIntakeError("corrupt", "xml_marker_read_invalid")
+        self.bytes_read += len(chunk)
+        if self.bytes_read > self._limit:
+            raise ZipIntakeError("budget", "marker_size_budget")
+        if self._progress is not None and chunk:
+            self._progress.tick("classification", len(chunk))
+        return chunk
+
+    def close(self) -> None:
+        close = getattr(self._source, "close", None)
+        if callable(close):
+            close()
+
+
+def _read_xml_marker(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    name: str,
+    limit: int,
+    deadline: _Deadline,
+    progress: _ZipProgress | None = None,
+) -> None:
+    """Validate a package XML marker without retaining its body in memory."""
+
+    if int(info.flag_bits) & 0x1:
+        raise ZipIntakeError("password", "encrypted_marker", name)
+    if int(info.file_size) > limit:
+        raise ZipIntakeError("budget", "marker_size_budget", name)
+    from neocortex.capabilities.formats.xml_safety import safe_xml_iterparse
+
+    reader: _CountingXmlReader | None = None
+    saw_element = False
+    try:
+        with archive.open(info, "r") as source:
+            reader = _CountingXmlReader(
+                source,
+                limit=limit,
+                deadline=deadline,
+                progress=progress,
+            )
+            for event, value in safe_xml_iterparse(
+                reader,
+                events=("start", "end", "start-ns"),
+            ):
+                deadline.check()
+                if event == "start":
+                    saw_element = True
+                elif event == "end":
+                    # Release completed subtrees.  No XML body is retained as
+                    # a marker embedding; zipfile still reads to EOF and
+                    # therefore verifies CRC before the context exits.
+                    clear = getattr(value, "clear", None)
+                    if callable(clear):
+                        clear()
+    except ZipIntakeError:
+        raise
+    except (OSError, RuntimeError, ET.ParseError, zipfile.BadZipFile, zlib.error) as exc:
+        raise ZipIntakeError("corrupt", "marker_integrity_failed", f"{name}: {exc}") from exc
+    if not saw_element:
+        raise ZipIntakeError("ambiguous", "package_marker_invalid", name)
 
 
 def _known_odf_mimes() -> set[str]:
@@ -1321,6 +1547,7 @@ def _decide_zip(
             max_members=limits.max_members,
             max_central_directory_bytes=limits.max_central_directory_bytes,
         )
+        admitted_limits = _measured_limits_for_structure(path, structure, limits)
         with zipfile.ZipFile(path, "r") as archive:
             # The central directory and member policy are validated in the
             # same open handle used for marker reads.  Generic apply can then
@@ -1328,7 +1555,7 @@ def _decide_zip(
             preflight = _preflight_from_archive(
                 archive,
                 structure,
-                limits=limits,
+                limits=admitted_limits,
                 deadline=deadline,
                 progress=progress,
             )
@@ -1342,15 +1569,13 @@ def _decide_zip(
             content_types = by_name.get("[Content_Types].xml")
             required_office: tuple[str, str] | None = None
             if content_types is not None:
-                _parse_xml_marker(
-                    _read_marker(
-                        archive,
-                        content_types,
-                        limit=MAX_MARKER_BYTES,
-                        deadline=deadline,
-                        progress=progress,
-                    ),
-                    "[Content_Types].xml",
+                _read_xml_marker(
+                    archive,
+                    content_types,
+                    name="[Content_Types].xml",
+                    limit=MAX_XML_MARKER_BYTES,
+                    deadline=deadline,
+                    progress=progress,
                 )
                 if "word/document.xml" in by_name:
                     required_office = ("docx", "word/document.xml")
@@ -1360,15 +1585,13 @@ def _decide_zip(
                     required_office = ("pptx", "ppt/presentation.xml")
                 if required_office is not None:
                     marker = by_name[required_office[1]]
-                    _parse_xml_marker(
-                        _read_marker(
-                            archive,
-                            marker,
-                            limit=MAX_MARKER_BYTES,
-                            deadline=deadline,
-                            progress=progress,
-                        ),
-                        required_office[1],
+                    _read_xml_marker(
+                        archive,
+                        marker,
+                        name=required_office[1],
+                        limit=MAX_XML_MARKER_BYTES,
+                        deadline=deadline,
+                        progress=progress,
                     )
                     evidence.extend(("[Content_Types].xml", required_office[1]))
                     classification = ZipIntakeClassification(
@@ -1380,7 +1603,7 @@ def _decide_zip(
                         total,
                         structure=structure,
                     )
-                    return ZipDecision(identity, classification, preflight)
+                    return ZipDecision(identity, classification, preflight, admitted_limits)
                 # A malformed/incomplete OOXML-looking package is ambiguous,
                 # not permission to expand arbitrary package internals.
                 if any(name.startswith(("word/", "xl/", "ppt/")) for name in normalized):
@@ -1394,7 +1617,7 @@ def _decide_zip(
                         detail="incomplete OOXML package",
                         structure=structure,
                     )
-                    return ZipDecision(identity, classification, preflight)
+                    return ZipDecision(identity, classification, preflight, admitted_limits)
             mimetype = by_name.get("mimetype")
             if mimetype is not None:
                 payload = _read_marker(
@@ -1409,10 +1632,11 @@ def _decide_zip(
                 except UnicodeDecodeError as exc:
                     raise ZipIntakeError("ambiguous", "mimetype_not_ascii") from exc
                 if declared_mime == "application/epub+zip" and "META-INF/container.xml" in by_name:
-                    _read_marker(
+                    _read_xml_marker(
                         archive,
                         by_name["META-INF/container.xml"],
-                        limit=MAX_MARKER_BYTES,
+                        name="META-INF/container.xml",
+                        limit=MAX_XML_MARKER_BYTES,
                         deadline=deadline,
                         progress=progress,
                     )
@@ -1425,19 +1649,21 @@ def _decide_zip(
                         total,
                         structure=structure,
                     )
-                    return ZipDecision(identity, classification, preflight)
+                    return ZipDecision(identity, classification, preflight, admitted_limits)
                 if declared_mime in _known_odf_mimes() and "content.xml" in by_name and "META-INF/manifest.xml" in by_name:
-                    _read_marker(
+                    _read_xml_marker(
                         archive,
                         by_name["content.xml"],
-                        limit=MAX_MARKER_BYTES,
+                        name="content.xml",
+                        limit=MAX_XML_MARKER_BYTES,
                         deadline=deadline,
                         progress=progress,
                     )
-                    _read_marker(
+                    _read_xml_marker(
                         archive,
                         by_name["META-INF/manifest.xml"],
-                        limit=MAX_MARKER_BYTES,
+                        name="META-INF/manifest.xml",
+                        limit=MAX_XML_MARKER_BYTES,
                         deadline=deadline,
                         progress=progress,
                     )
@@ -1451,7 +1677,7 @@ def _decide_zip(
                         mime=declared_mime,
                         structure=structure,
                     )
-                    return ZipDecision(identity, classification, preflight)
+                    return ZipDecision(identity, classification, preflight, admitted_limits)
                 if declared_mime in _known_odf_mimes() or declared_mime == "application/epub+zip":
                     classification = ZipIntakeClassification(
                         "invalid",
@@ -1463,13 +1689,13 @@ def _decide_zip(
                         detail="incomplete package markers",
                         structure=structure,
                     )
-                    return ZipDecision(identity, classification, preflight)
+                    return ZipDecision(identity, classification, preflight, admitted_limits)
             android_manifest = by_name.get("AndroidManifest.xml")
             if android_manifest is not None:
                 _read_marker(
                     archive,
                     android_manifest,
-                    limit=MAX_MARKER_BYTES,
+                    limit=MAX_XML_MARKER_BYTES,
                     deadline=deadline,
                     progress=progress,
                 )
@@ -1482,7 +1708,7 @@ def _decide_zip(
                     total,
                     structure=structure,
                 )
-                return ZipDecision(identity, classification, preflight)
+                return ZipDecision(identity, classification, preflight, admitted_limits)
             jar_manifest = by_name.get("META-INF/MANIFEST.MF")
             if jar_manifest is not None:
                 manifest_payload = _read_marker(
@@ -1502,7 +1728,7 @@ def _decide_zip(
                         total,
                         structure=structure,
                     )
-                    return ZipDecision(identity, classification, preflight)
+                    return ZipDecision(identity, classification, preflight, admitted_limits)
             # A project is intentionally *generic*: its directory layout is
             # data to expand, not a virtual unit to preserve.
             project_markers = {
@@ -1542,10 +1768,12 @@ def _decide_zip(
                     total,
                     structure=structure,
                 )
-            return ZipDecision(identity, classification, preflight)
+            return ZipDecision(identity, classification, preflight, admitted_limits)
     except ZipIntakeError as exc:
         classification = ZipIntakeClassification("invalid", exc.status, "invalid", detail=exc.detail)
         return ZipDecision(identity, classification)
+
+
     except PermissionError as exc:
         classification = ZipIntakeClassification("invalid", "blocked", "invalid", detail=str(exc))
         return ZipDecision(identity, classification)
@@ -1557,6 +1785,22 @@ def _decide_zip(
             detail=f"{type(exc).__name__}: {exc}",
         )
         return ZipDecision(identity, classification)
+
+
+def _annotate_measured_decision(
+    decision: ZipDecision,
+    configured_limits: ZipIntakeLimits,
+) -> ZipDecision:
+    """Expose a measured widening in bounded classification evidence."""
+
+    admitted = decision.admitted_limits
+    if admitted is None or admitted == configured_limits:
+        return decision
+    classification = replace(
+        decision.classification,
+        evidence=(*decision.classification.evidence, "budget:auto_measured_resource_bounded"),
+    )
+    return replace(decision, classification=classification)
 
 
 def decide_zip(
@@ -1596,13 +1840,13 @@ def decide_zip(
         )
         reporter.finish("classification", metrics=(ProgressMetric("blocked", 1),))
         return ZipDecision(identity, classification)
-    decision = _decide_zip(
+    decision = _annotate_measured_decision(_decide_zip(
         path,
         identity=identity,
         limits=effective_limits,
         deadline=_deadline_for(effective_limits, deadline, cancellation),
         progress=reporter,
-    )
+    ), effective_limits)
     metric_name = "atomic" if decision.classification.is_atomic else "generic" if decision.classification.is_generic else "blocked"
     reporter.finish("classification", metrics=(ProgressMetric(metric_name, 1),))
     return decision
@@ -1665,6 +1909,37 @@ def _default_destination(source: Path) -> Path:
     if source.suffix.casefold() == ".zip":
         return source.with_name(source.name[:-4])
     return source.with_name(source.name + ".extracted")
+
+
+def _resolve_generic_destination_collision(
+    destination: Path,
+    *,
+    source_digest: str,
+) -> Path:
+    """Resolve a colliding *file* destination without merging/overwriting.
+
+    A directory collision remains fail-closed: merging an existing tree would
+    make publication and rollback ambiguous.  The common ``x.zip`` case where
+    ``x`` already exists as a regular file gets one deterministic sibling
+    directory tied to the source digest.  If that sibling is occupied, the
+    operation abstains rather than adding a counter that could drift between
+    replays.
+    """
+
+    if not os.path.lexists(destination):
+        return destination
+    try:
+        metadata = destination.lstat()
+    except OSError as exc:
+        raise ZipIntakeError("blocked", "destination_collision_probe_failed", str(exc)) from exc
+    if stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ZipIntakeError("collision", "destination_collision")
+    candidate = destination.with_name(
+        f"{destination.name}--sha256-{source_digest[:16]}"
+    )
+    if os.path.lexists(candidate):
+        raise ZipIntakeError("collision", "deterministic_destination_collision", os.fspath(candidate))
+    return candidate
 
 
 def _validate_destination(path: Path) -> Path:
@@ -2176,14 +2451,22 @@ def run_zip_intake(
     if decision is not None and decision.matches(path, identity):
         selected_decision = decision
     else:
-        selected_decision = _decide_zip(
-            path,
-            identity=identity,
-            limits=effective_limits,
-            deadline=deadline_obj,
-            progress=reporter,
+        selected_decision = _annotate_measured_decision(
+            _decide_zip(
+                path,
+                identity=identity,
+                limits=effective_limits,
+                deadline=deadline_obj,
+                progress=reporter,
+            ),
+            effective_limits,
         )
     classification = selected_decision.classification
+    # Reuse the measured budget that was validated with the classification
+    # central directory.  Falling back to the configured floor preserves the
+    # old behavior for invalid/legacy decisions without widening an unrelated
+    # source.
+    extraction_limits = selected_decision.admitted_limits or effective_limits
     reporter.finish(
         "classification",
         metrics=(
@@ -2218,9 +2501,47 @@ def run_zip_intake(
         return ZipIntakeOutcome(exc.status, source_text, identity, classification, apply=apply, reason=exc.reason, detail=exc.detail)
     destination_path = _validate_destination(Path(destination) if destination is not None else _default_destination(path))
     if not apply:
+        try:
+            destination_path = _resolve_generic_destination_collision(
+                destination_path,
+                source_digest=source_digest,
+            )
+        except ZipIntakeError as exc:
+            return ZipIntakeOutcome(
+                exc.status,
+                source_text,
+                identity,
+                classification,
+                apply=False,
+                destination=os.fspath(destination_path),
+                members=classification.member_count,
+                uncompressed_bytes=classification.estimated_uncompressed_bytes,
+                reason=exc.reason,
+                detail=exc.detail,
+                source_sha256=source_digest,
+            )
         return ZipIntakeOutcome("planned", source_text, identity, classification, apply=False, destination=os.fspath(destination_path), members=classification.member_count, uncompressed_bytes=classification.estimated_uncompressed_bytes, reason="generic_zip", source_sha256=source_digest)
     if trash is None:
         return ZipIntakeOutcome("dependency", source_text, identity, classification, apply=True, destination=os.fspath(destination_path), members=classification.member_count, uncompressed_bytes=classification.estimated_uncompressed_bytes, reason="kio_trash_hook_required", detail="apply requires a verified KIO Trash adapter", source_sha256=source_digest)
+    try:
+        destination_path = _resolve_generic_destination_collision(
+            destination_path,
+            source_digest=source_digest,
+        )
+    except ZipIntakeError as exc:
+        return ZipIntakeOutcome(
+            exc.status,
+            source_text,
+            identity,
+            classification,
+            apply=True,
+            destination=os.fspath(destination_path),
+            members=classification.member_count,
+            uncompressed_bytes=classification.estimated_uncompressed_bytes,
+            reason=exc.reason,
+            detail=exc.detail,
+            source_sha256=source_digest,
+        )
     stage_factory = _stage_factory(staging if staging is not None else scratch_root)
     if stage_factory is None:
         return ZipIntakeOutcome("dependency", source_text, identity, classification, apply=True, destination=os.fspath(destination_path), reason="staging_provider_required", detail="apply requires registered private staging", source_sha256=source_digest)
@@ -2238,11 +2559,11 @@ def run_zip_intake(
         os.close(payload_fd)
         destination_name = destination_path.name
         staged_destination = payload_root / destination_name
-        _check_disk(lease.path, classification.estimated_uncompressed_bytes, limits=effective_limits)
+        _check_disk(lease.path, classification.estimated_uncompressed_bytes, limits=extraction_limits)
         _extract_zip_tree(
             path,
             staged_destination,
-            limits=effective_limits,
+            limits=extraction_limits,
             deadline=deadline_obj,
             budget=budget,
             depth=0,
@@ -2250,7 +2571,7 @@ def run_zip_intake(
             progress=reporter,
         )
         reporter.finish("extract")
-        _verify_tree(staged_destination, limits=effective_limits, deadline=deadline_obj, progress=reporter)
+        _verify_tree(staged_destination, limits=extraction_limits, deadline=deadline_obj, progress=reporter)
         reporter.finish("verify")
         if not identity.matches(path):
             raise ZipIntakeError("source_changed", "source_changed_before_publish")
@@ -2549,6 +2870,8 @@ ArchiveIntakeLimits = ZipIntakeLimits
 
 
 __all__ = (
+    "MAX_MARKER_BYTES",
+    "MAX_XML_MARKER_BYTES",
     "ArchiveIntakeLimits",
     "FilesystemPublishHook",
     "FilesystemStageFactory",

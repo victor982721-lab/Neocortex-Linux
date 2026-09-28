@@ -59,6 +59,16 @@ Las constantes de cada schema son la fuente de versión. No dupliques números e
 otra tabla ni añadas un owner sin registrarlo y conectar backup, health,
 retención y Knowledge.
 
+## Receipts Semantic compactos
+
+El schema11 admite un envelope privado lossless `neocortex.semantic-receipt-storage/v2`
+para nuevos receipts. Conserva longitud lógica, SHA-256 y proyección de lookup;
+el decoder valida límites, stream completo y consistencia antes de reconstruir
+los bytes canónicos v1. WorkReceipt, hashes de outbox y causalidad pública no
+cambian. Los presupuestos cobran bytes lógicos, no el tamaño comprimido.
+La migración no reescribe receipts históricos ni ejecuta VACUUM; menor tamaño de
+nuevas filas no promete que un SQLite existente se reduzca físicamente.
+
 ## Propiedad
 
 Cada owner controla:

@@ -40,6 +40,9 @@ from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.workflow.actions.action_policy import validate_mutation_path
 from .kio_trash_models import (
     KIO_CLAIM_SCHEMA,
+    KIO_OBJECT_EMPTY_DIRECTORY,
+    KIO_OBJECT_FILE,
+    KIO_OBJECT_KINDS,
     KioTrashBatchItem,
     KioTrashBatchResult,
     KioTrashClaim,
@@ -402,16 +405,29 @@ def _verify_curation_trash_evidence(
     evidence: object,
     expected: FileSnapshot,
     source_digest: str,
+    *,
+    object_kind: str | None = None,
 ) -> FileSnapshot:
     """Reobserve the exact moved object and its source-bound restoration data."""
 
+    if not isinstance(evidence, Mapping):
+        raise ValueError("trash evidence is not an object")
+    resolved_kind = evidence.get("object_kind", KIO_OBJECT_FILE) if object_kind is None else object_kind
+    _validate_object_kind(resolved_kind)
     root, trash_path, info_path = _curation_trash_paths(evidence, expected, source_digest)
     if root.resolve(strict=True) != root:
         raise ValueError("trash root traverses a symbolic link")
     metadata = validate_mutation_path(root, trash_path, role="trash file")
     info_metadata = validate_mutation_path(root, info_path, role="trash info")
-    if metadata is None or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-        raise ValueError("trash destination is not a regular unique file")
+    if metadata is None:
+        raise ValueError("trash destination does not match the admitted object kind")
+    destination_type_ok = (
+        stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
+        if resolved_kind == KIO_OBJECT_FILE
+        else stat.S_ISDIR(metadata.st_mode)
+    )
+    if not destination_type_ok:
+        raise ValueError("trash destination does not match the admitted object kind")
     if (
         info_metadata is None
         or not stat.S_ISREG(info_metadata.st_mode)
@@ -424,6 +440,10 @@ def _verify_curation_trash_evidence(
         raise ValueError("trash destination no longer identifies the original source")
     if not _binding_matches_snapshot(observed, source_digest):
         raise ValueError("trash destination digest changed")
+    if resolved_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+        with os.scandir(trash_path) as entries:
+            if next(entries, None) is not None:
+                raise ValueError("trashed directory is no longer empty")
     _validate_trash_info(
         info_path,
         expected.path,
@@ -454,6 +474,8 @@ def verify_trash_receipt_evidence(
     evidence: object,
     expected: FileSnapshot,
     source_digest: str,
+    *,
+    object_kind: str | None = None,
 ) -> FileSnapshot:
     """Read-only verification of the exact object and its restoration data.
 
@@ -463,7 +485,12 @@ def verify_trash_receipt_evidence(
     metadata, create a claim, invoke KIO, or update a caller's action ledger.
     """
 
-    return _verify_curation_trash_evidence(evidence, expected, source_digest)
+    return _verify_curation_trash_evidence(
+        evidence,
+        expected,
+        source_digest,
+        object_kind=object_kind,
+    )
 
 
 def _sanitize_diagnostic(value: object) -> str | None:
@@ -612,8 +639,12 @@ def _renameat2_noreplace(
     destination: Path,
     *,
     expected: FileSnapshot,
+    object_kind: str = KIO_OBJECT_FILE,
 ) -> None:
-    """Move one regular file with descriptor-relative no-replace semantics."""
+    """Move one admitted object with descriptor-relative no-replace semantics."""
+
+    if object_kind not in KIO_OBJECT_KINDS:
+        raise KioTrashUnavailable("kio_object_kind_invalid", "unsupported KIO object kind")
 
     if _absolute_path(expected.path, label="snapshot") != source:
         raise KioTrashUnavailable(
@@ -636,10 +667,15 @@ def _renameat2_noreplace(
             dir_fd=source_parent_fd,
         )
         source_metadata = os.fstat(source_fd)
+        source_type_ok = (
+            stat.S_ISREG(source_metadata.st_mode)
+            and source_metadata.st_nlink == 1
+            if object_kind == KIO_OBJECT_FILE
+            else stat.S_ISDIR(source_metadata.st_mode)
+        )
         if (
             stat.S_ISLNK(source_metadata.st_mode)
-            or not stat.S_ISREG(source_metadata.st_mode)
-            or source_metadata.st_nlink != 1
+            or not source_type_ok
             or not stat_matches_snapshot(expected, source_metadata)
         ):
             raise KioTrashUnavailable(
@@ -665,10 +701,15 @@ def _renameat2_noreplace(
         # observation prevents a concurrent unlink/create from being moved by
         # ``renameat2`` under the old pathname.
         current_metadata = os.lstat(source)
+        current_type_ok = (
+            stat.S_ISREG(current_metadata.st_mode)
+            and current_metadata.st_nlink == 1
+            if object_kind == KIO_OBJECT_FILE
+            else stat.S_ISDIR(current_metadata.st_mode)
+        )
         if (
             stat.S_ISLNK(current_metadata.st_mode)
-            or not stat.S_ISREG(current_metadata.st_mode)
-            or current_metadata.st_nlink != 1
+            or not current_type_ok
             or not stat_matches_snapshot(expected, current_metadata)
             or (current_metadata.st_dev, current_metadata.st_ino)
             != (source_metadata.st_dev, source_metadata.st_ino)
@@ -724,10 +765,15 @@ def _renameat2_noreplace(
             )
         try:
             destination_metadata = os.lstat(destination)
+            destination_type_ok = (
+                stat.S_ISREG(destination_metadata.st_mode)
+                and destination_metadata.st_nlink == 1
+                if object_kind == KIO_OBJECT_FILE
+                else stat.S_ISDIR(destination_metadata.st_mode)
+            )
             if (
                 stat.S_ISLNK(destination_metadata.st_mode)
-                or not stat.S_ISREG(destination_metadata.st_mode)
-                or destination_metadata.st_nlink != 1
+                or not destination_type_ok
                 or not stat_matches_snapshot(expected, destination_metadata)
                 or os.path.lexists(source)
             ):
@@ -759,8 +805,15 @@ def _renameat2_noreplace(
                     pass
 
 
-def _claim_source(source: Path, expected: FileSnapshot) -> KioTrashClaim:
+def _claim_source(
+    source: Path,
+    expected: FileSnapshot,
+    *,
+    object_kind: str = KIO_OBJECT_FILE,
+) -> KioTrashClaim:
     """Create a private sibling claim and retain it on all uncertain paths."""
+
+    _validate_object_kind(object_kind)
 
     claim_directory: Path | None = None
     claim: KioTrashClaim | None = None
@@ -770,8 +823,23 @@ def _claim_source(source: Path, expected: FileSnapshot) -> KioTrashClaim:
         )
         os.chmod(claim_directory, 0o700)
         claim_path = claim_directory / source.name
-        claim = KioTrashClaim(source, claim_path, claim_directory, expected)
-        _renameat2_noreplace(source, claim_path, expected=expected)
+        claim = KioTrashClaim(source, claim_path, claim_directory, expected, object_kind)
+        if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+            with os.scandir(source) as entries:
+                if next(entries, None) is not None:
+                    raise KioTrashUnavailable(
+                        "kio_directory_not_empty",
+                        "empty-directory source contains an entry",
+                    )
+        if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+            _renameat2_noreplace(
+                source,
+                claim_path,
+                expected=expected,
+                object_kind=object_kind,
+            )
+        else:
+            _renameat2_noreplace(source, claim_path, expected=expected)
         return claim
     except BaseException as error:
         if claim is not None:
@@ -785,11 +853,9 @@ def _claim_source(source: Path, expected: FileSnapshot) -> KioTrashClaim:
             if claimed:
                 if isinstance(error, KioTrashUnavailable):
                     reason, detail = error.reason, error.detail
-                elif isinstance(error, BaseException):
+                else:
                     reason = "kio_claim_failed"
                     detail = f"{type(error).__name__}: {error}"
-                else:
-                    reason, detail = "kio_claim_failed", "private KIO claim failed"
                 raise KioTrashClaimUnavailable(reason, detail, claim) from error
         if claim_directory is not None:
             try:
@@ -819,7 +885,20 @@ def _restore_claim(claim: KioTrashClaim) -> None:
                 "both original and claimed paths are present",
             )
     elif os.path.lexists(claim.claim_path):
-        _renameat2_noreplace(claim.claim_path, claim.source_path, expected=replace(claim.snapshot, path=str(claim.claim_path)))
+        restore_expected = replace(claim.snapshot, path=str(claim.claim_path))
+        if claim.object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+            _renameat2_noreplace(
+                claim.claim_path,
+                claim.source_path,
+                expected=restore_expected,
+                object_kind=claim.object_kind,
+            )
+        else:
+            _renameat2_noreplace(
+                claim.claim_path,
+                claim.source_path,
+                expected=restore_expected,
+            )
     else:
         raise KioTrashUnavailable(
             "kio_claim_restore_missing",
@@ -1019,6 +1098,75 @@ def _validate_source(source: Path, expected: FileSnapshot) -> None:
         )
 
 
+def _validate_empty_directory_source(
+    source: Path,
+    expected: FileSnapshot,
+    *,
+    root: Path,
+) -> None:
+    """Validate one empty directory without following links or crossing mounts."""
+
+    expected_path = _absolute_path(expected.path, label="snapshot")
+    if expected_path != source:
+        raise KioTrashUnavailable(
+            "kio_snapshot_path_mismatch",
+            "expected snapshot does not identify the requested directory path",
+        )
+    try:
+        validate_mutation_path(root, source, role="empty-directory source")
+        metadata = os.lstat(source)
+        parent_metadata = os.stat(source.parent, follow_symlinks=False)
+    except (OSError, RuntimeError) as exc:
+        raise KioTrashUnavailable(
+            "kio_directory_unavailable",
+            "empty-directory source cannot be inspected safely",
+        ) from exc
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(parent_metadata.st_mode)
+        or not stat.S_ISDIR(parent_metadata.st_mode)
+        or metadata.st_dev != parent_metadata.st_dev
+        or os.path.ismount(source)
+        or not stat_matches_snapshot(expected, metadata)
+    ):
+        raise KioTrashUnavailable(
+            "kio_directory_identity_changed",
+            "empty-directory source is not the planned real directory",
+        )
+    try:
+        with os.scandir(source) as entries:
+            if next(entries, None) is not None:
+                raise KioTrashUnavailable(
+                    "kio_directory_not_empty",
+                    "empty-directory source contains an entry",
+                )
+    except KioTrashUnavailable:
+        raise
+    except OSError as exc:
+        raise KioTrashUnavailable(
+            "kio_directory_unavailable",
+            "empty-directory emptiness cannot be verified",
+        ) from exc
+
+
+def validate_empty_directory_source(
+    source: Path,
+    expected: FileSnapshot,
+    *,
+    root: Path,
+) -> None:
+    """Public read-only admission check for one empty directory effect."""
+
+    _validate_empty_directory_source(source, expected, root=root)
+
+
+def _validate_object_kind(value: object) -> str:
+    if not isinstance(value, str) or value not in KIO_OBJECT_KINDS:
+        raise TypeError(f"unsupported KIO object kind: {value!r}")
+    return value
+
+
 def _candidate_trash_roots(
     source: Path,
     *,
@@ -1101,6 +1249,7 @@ def _default_kio_verifier(
     environment: Mapping[str, str],
     home_directory: Path | None,
     source_digest: str,
+    object_kind: str = KIO_OBJECT_FILE,
 ) -> KioTrashVerification:
     """Locate one KIO-created item from its source-bound ``.trashinfo``."""
 
@@ -1157,12 +1306,20 @@ def _default_kio_verifier(
                         trash_metadata = os.lstat(trash_path)
                     except OSError:
                         continue
+                    target_type_ok = (
+                        stat.S_ISREG(trash_metadata.st_mode) and trash_metadata.st_nlink == 1
+                        if object_kind == KIO_OBJECT_FILE
+                        else stat.S_ISDIR(trash_metadata.st_mode)
+                    )
                     if (
                         stat.S_ISLNK(trash_metadata.st_mode)
-                        or not stat.S_ISREG(trash_metadata.st_mode)
-                        or trash_metadata.st_nlink != 1
+                        or not target_type_ok
                         or trash_metadata.st_dev != expected.volume_id
                         or not stat_matches_snapshot(expected, trash_metadata)
+                        or (
+                            object_kind == KIO_OBJECT_EMPTY_DIRECTORY
+                            and any(trash_path.iterdir())
+                        )
                     ):
                         continue
                     relocated = replace(expected, path=os.fspath(trash_path))
@@ -1387,11 +1544,14 @@ def read_claim_recovery_detail(
         metadata.append(value)
     if metadata[0] < 0:
         raise ValueError("KIO claim recovery size is invalid")
+    object_kind = claim.get("object_kind", KIO_OBJECT_FILE)
+    _validate_object_kind(object_kind)
     return KioTrashClaim(
         source, claim_path, claim_directory,
         FileSnapshot(
             str(source), identities[0], identities[1], metadata[0], metadata[1], metadata[2]
         ),
+        object_kind,
     )
 
 
@@ -1419,6 +1579,12 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
         raise ValueError("KIO restore receipt lacks source identity")
     if not isinstance(evidence, Mapping):
         raise ValueError("KIO restore receipt lacks Trash evidence")
+    try:
+        object_kind = _validate_object_kind(
+            receipt.get("object_kind", evidence.get("object_kind", KIO_OBJECT_FILE))
+        )
+    except TypeError as exc:
+        raise ValueError(str(exc)) from exc
     source = _absolute_path(source_value, label="restore source")
     root = _absolute_path(root, label="restore root")
     validate_mutation_path(root, source, role="restore source", allow_missing_leaf=True)
@@ -1455,13 +1621,15 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
     info_exists = os.path.lexists(info_path)
     if source_exists:
         metadata = os.lstat(source)
-        if (
-            stat.S_ISLNK(metadata.st_mode)
-            or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_nlink != 1
-        ):
+        source_type_ok = (
+            stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
+            if object_kind == KIO_OBJECT_FILE
+            else stat.S_ISDIR(metadata.st_mode)
+        )
+        if stat.S_ISLNK(metadata.st_mode) or not source_type_ok:
             raise KioTrashUnavailable(
-                "kio_restore_destination_unsafe", "restore source is not a unique regular file"
+                "kio_restore_destination_unsafe",
+                "restore source has an unsafe object kind or identity",
             )
         current = snapshot_path(source)
         if not _binding_matches_snapshot(current, digest_value):
@@ -1479,6 +1647,7 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
             "trash_path": str(trash_path),
             "info_path": str(info_path),
             "digest": digest_value,
+            "object_kind": object_kind,
             "idempotent": True,
         }
     if not trash_exists or not info_exists:
@@ -1490,8 +1659,12 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
     info_metadata = os.lstat(info_path)
     if (
         stat.S_ISLNK(trash_metadata.st_mode)
-        or not stat.S_ISREG(trash_metadata.st_mode)
-        or trash_metadata.st_nlink != 1
+        or not (
+            stat.S_ISREG(trash_metadata.st_mode)
+            and trash_metadata.st_nlink == 1
+            if object_kind == KIO_OBJECT_FILE
+            else stat.S_ISDIR(trash_metadata.st_mode)
+        )
         or stat.S_ISLNK(info_metadata.st_mode)
         or not stat.S_ISREG(info_metadata.st_mode)
         or info_metadata.st_nlink != 1
@@ -1499,9 +1672,13 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
         raise KioTrashUnavailable(
             "kio_restore_evidence_unsafe", "Trash evidence is not a unique regular pair"
         )
-    info_value = _trash_info_path_value(
-        _read_regular_bounded(info_path, limit=MAX_TRASH_INFO_BYTES)
-    )
+    # Claim the validated metadata with the same descriptor-relative,
+    # no-replace primitive used by source restore.  Keeping a private claim
+    # avoids the TOCTOU window where a concurrent replacement of
+    # ``.trashinfo`` could otherwise be deleted after the data restore.
+    info_snapshot = snapshot_path(info_path)
+    info_raw = _read_regular_bounded(info_path, limit=MAX_TRASH_INFO_BYTES)
+    info_value = _trash_info_path_value(info_raw)
     if _resolve_trash_info_path(
         info_value or "",
         base_directory=trash_root.parent,
@@ -1509,17 +1686,105 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
         raise KioTrashUnavailable(
             "kio_restore_origin_mismatch", "Trash metadata does not name the original source"
         )
+    info_claim_directory: Path | None = None
+    info_claim_path: Path | None = None
+    try:
+        info_claim_directory = Path(
+            tempfile.mkdtemp(prefix=".neocortex-kio-restore-info-", dir=os.fspath(info_path.parent))
+        )
+        os.chmod(info_claim_directory, 0o700)
+        info_claim_path = info_claim_directory / info_path.name
+        _renameat2_noreplace(
+            info_path,
+            info_claim_path,
+            expected=info_snapshot,
+            object_kind=KIO_OBJECT_FILE,
+        )
+        claimed_info = snapshot_path(info_claim_path)
+        claimed_raw = _read_regular_bounded(info_claim_path, limit=MAX_TRASH_INFO_BYTES)
+        if claimed_info != replace(info_snapshot, path=os.fspath(info_claim_path)) or claimed_raw != info_raw:
+            raise KioTrashUnavailable(
+                "kio_restore_metadata_changed",
+                f"private metadata claim changed: {info_claim_path}",
+            )
+        _validate_trash_info(
+            info_claim_path,
+            os.fspath(source),
+            base_directory=trash_root.parent,
+        )
+    except KioTrashUnavailable:
+        if info_claim_directory is not None and info_claim_path is not None:
+            try:
+                if not info_claim_path.exists():
+                    os.rmdir(info_claim_directory)
+            except OSError:
+                pass
+        raise
+    except BaseException as exc:
+        raise KioTrashUnavailable(
+            "kio_restore_metadata_claim_failed",
+            f"private metadata claim failed; recovery evidence may remain: {type(exc).__name__}: {exc}",
+        ) from exc
     trash_snapshot = snapshot_path(trash_path)
     if not _binding_matches_snapshot(trash_snapshot, digest_value):
         raise KioTrashUnavailable(
             "kio_restore_content_changed", "Trash bytes differ from the receipt digest"
         )
+    if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+        try:
+            with os.scandir(trash_path) as entries:
+                if next(entries, None) is not None:
+                    raise KioTrashUnavailable(
+                        "kio_restore_directory_not_empty",
+                        "Trash directory gained content after the effect",
+                    )
+        except KioTrashUnavailable:
+            raise
+        except OSError as exc:
+            raise KioTrashUnavailable(
+                "kio_restore_evidence_unsafe",
+                "Trash directory emptiness cannot be verified",
+            ) from exc
     if trash_snapshot.volume_id != os.stat(source.parent, follow_symlinks=False).st_dev:
         raise KioTrashUnavailable("kio_restore_exdev", "restore requires one filesystem")
-    _renameat2_noreplace(trash_path, source, expected=trash_snapshot)
-    _fsync_directory(trash_path.parent)
-    _fsync_directory(source.parent)
-    restored = snapshot_path(source)
+    try:
+        _renameat2_noreplace(
+            trash_path,
+            source,
+            expected=trash_snapshot,
+            object_kind=object_kind,
+        )
+    except BaseException as exc:
+        raise KioTrashUnavailable(
+            "kio_restore_recovery_required",
+            f"Trash object restore failed; private metadata claim retained at {info_claim_path}: {type(exc).__name__}: {exc}",
+        ) from exc
+    try:
+        _fsync_directory(trash_path.parent)
+        _fsync_directory(source.parent)
+        restored = snapshot_path(source)
+        restored_metadata = os.lstat(source)
+    except BaseException as exc:
+        raise KioTrashUnavailable(
+            "kio_restore_recovery_required",
+            f"restored object is present; private metadata claim retained at {info_claim_path}: {type(exc).__name__}: {exc}",
+        ) from exc
+    restored_type_ok = (
+        stat.S_ISREG(restored_metadata.st_mode) and restored_metadata.st_nlink == 1
+        if object_kind == KIO_OBJECT_FILE
+        else stat.S_ISDIR(restored_metadata.st_mode)
+    )
+    if stat.S_ISLNK(restored_metadata.st_mode) or not restored_type_ok:
+        return {
+            "schema": KIO_RESTORE_SCHEMA,
+            "status": "recovery_required",
+            "source_path": str(source),
+            "trash_path": str(trash_path),
+            "info_path": str(info_path),
+            "digest": digest_value,
+            "object_kind": object_kind,
+            "idempotent": False,
+        }
     if not _binding_matches_snapshot(restored, digest_value):
         return {
             "schema": KIO_RESTORE_SCHEMA,
@@ -1528,10 +1793,33 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
             "trash_path": str(trash_path),
             "info_path": str(info_path),
             "digest": digest_value,
+            "object_kind": object_kind,
             "idempotent": False,
         }
-    os.unlink(info_path)
-    _fsync_directory(info_path.parent)
+    if info_claim_path is None or info_claim_directory is None:
+        raise KioTrashUnavailable(
+            "kio_restore_metadata_claim_missing",
+            "verified restore has no private metadata claim to clean",
+        )
+    try:
+        final_info = snapshot_path(info_claim_path)
+        final_raw = _read_regular_bounded(info_claim_path, limit=MAX_TRASH_INFO_BYTES)
+        if final_info != replace(info_snapshot, path=os.fspath(info_claim_path)) or final_raw != info_raw:
+            raise KioTrashUnavailable(
+                "kio_restore_metadata_changed",
+                f"private metadata claim changed after restore: {info_claim_path}",
+            )
+        os.unlink(info_claim_path)
+        _fsync_directory(info_claim_directory)
+        os.rmdir(info_claim_directory)
+        _fsync_directory(info_claim_directory.parent)
+    except KioTrashUnavailable:
+        raise
+    except BaseException as exc:
+        raise KioTrashUnavailable(
+            "kio_restore_metadata_cleanup_required",
+            f"restored object is present; retain metadata claim for recovery: {info_claim_path}: {type(exc).__name__}: {exc}",
+        ) from exc
     return {
         "schema": KIO_RESTORE_SCHEMA,
         "status": "restored",
@@ -1539,6 +1827,7 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
         "trash_path": str(trash_path),
         "info_path": str(info_path),
         "digest": digest_value,
+        "object_kind": object_kind,
         "info_removed": True,
         "idempotent": False,
     }
@@ -1836,6 +2125,7 @@ def move_to_trash(
             mtime_ns=expected.mtime_ns,
             birthtime_ns=expected.birthtime_ns,
             verified_ns=time.time_ns(),
+            object_kind=KIO_OBJECT_FILE,
         ),
     )
 
@@ -1929,9 +2219,23 @@ def _batch_recovery(
     )
 
 
-def _batch_digest(expected: FileSnapshot, supplied: str | None) -> str:
+def _batch_digest(
+    expected: FileSnapshot,
+    supplied: str | None,
+    *,
+    object_kind: str = KIO_OBJECT_FILE,
+) -> str:
     """Validate or compute the digest used to bind Trash evidence."""
 
+    _validate_object_kind(object_kind)
+    if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+        binding = metadata_binding(expected)
+        if supplied is not None and supplied != binding:
+            raise KioTrashUnavailable(
+                "kio_source_digest_invalid",
+                "empty-directory Trash requires a matching metadata binding",
+            )
+        return binding
     if supplied is not None:
         digest_prefix = f"{FULL_ALGORITHM}:"
         if is_metadata_binding(supplied):
@@ -1973,12 +2277,15 @@ def _coerce_batch_item(value: object) -> KioTrashBatchItem:
     if isinstance(value, KioTrashBatchItem):
         item = value
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        if len(value) not in {2, 3}:
-            raise TypeError("each KIO batch item must contain source, snapshot and optional digest")
+        if len(value) not in {2, 3, 4}:
+            raise TypeError(
+                "each KIO batch item must contain source, snapshot, optional digest and kind"
+            )
         item = KioTrashBatchItem(
             cast(str | os.PathLike[str], value[0]),
             cast(FileSnapshot, value[1]),
-            cast(str | None, value[2] if len(value) == 3 else None),
+            cast(str | None, value[2] if len(value) >= 3 else None),
+            cast(str, value[3] if len(value) == 4 else KIO_OBJECT_FILE),
         )
     else:
         raise TypeError("KIO batch items must be KioTrashBatchItem or a tuple")
@@ -1986,6 +2293,7 @@ def _coerce_batch_item(value: object) -> KioTrashBatchItem:
         raise TypeError("KIO batch item expected must be a FileSnapshot")
     if item.source_digest is not None and not isinstance(item.source_digest, str):
         raise TypeError("KIO batch source_digest must be a string or None")
+    _validate_object_kind(item.object_kind)
     return item
 
 
@@ -2106,7 +2414,13 @@ def _batch_curation_evidence(
             base_directory=_root.parent,
         ) != os.path.normpath(os.fspath(work.source)):
             raise ValueError("KIO batch Trash metadata names a different source")
-    _verify_curation_trash_evidence(evidence, work.item.expected, work.digest)
+    evidence["object_kind"] = work.item.object_kind
+    _verify_curation_trash_evidence(
+        evidence,
+        work.item.expected,
+        work.digest,
+        object_kind=work.item.object_kind,
+    )
     _fsync_directory(info_path.parent)
     return json.dumps(
         evidence,
@@ -2191,12 +2505,21 @@ def _default_kio_verifier_batch(
             trash_path = files_root / trash_name
             trash_metadata = os.lstat(trash_path)
             expected = work.item.expected
+            object_kind = work.item.object_kind
+            target_type_ok = (
+                stat.S_ISREG(trash_metadata.st_mode) and trash_metadata.st_nlink == 1
+                if object_kind == KIO_OBJECT_FILE
+                else stat.S_ISDIR(trash_metadata.st_mode)
+            )
             if (
                 stat.S_ISLNK(trash_metadata.st_mode)
-                or not stat.S_ISREG(trash_metadata.st_mode)
-                or trash_metadata.st_nlink != 1
+                or not target_type_ok
                 or trash_metadata.st_dev != expected.volume_id
                 or not stat_matches_snapshot(expected, trash_metadata)
+                or (
+                    object_kind == KIO_OBJECT_EMPTY_DIRECTORY
+                    and any(trash_path.iterdir())
+                )
             ):
                 return
             relocated = replace(expected, path=os.fspath(trash_path))
@@ -2269,6 +2592,7 @@ def _default_kio_verifier_batch(
                     "file_id": f"{expected.file_id:x}",
                     "size": expected.size,
                     "digest": work.digest,
+                    "object_kind": work.item.object_kind,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -2313,6 +2637,7 @@ def _batch_verified_result(
                 environment=environment,
                 home_directory=home_directory,
                 source_digest=work.digest,
+                object_kind=work.item.object_kind,
             )
         else:
             verification = verifier(kio_source, kio_expected, client)
@@ -2392,6 +2717,7 @@ def _batch_verified_result(
         mtime_ns=work.item.expected.mtime_ns,
         birthtime_ns=work.item.expected.birthtime_ns,
         verified_ns=time.time_ns(),
+        object_kind=work.item.object_kind,
     )
     return KioTrashResult(
         status=KioTrashStatus.APPLIED,
@@ -2418,6 +2744,8 @@ class _KioBatchAdmission:
 
 def _prepare_batch_inputs(
     items: Sequence[KioTrashBatchItem | tuple[object, ...]],
+    *,
+    root: Path | None = None,
 ) -> tuple[
     list[KioTrashBatchItem],
     list[KioTrashResult | None],
@@ -2438,8 +2766,20 @@ def _prepare_batch_inputs(
     for index, item in enumerate(normalized):
         try:
             source = _absolute_path(item.source, label="source")
-            _validate_source(source, item.expected)
-            digest = _batch_digest(item.expected, item.source_digest)
+            if item.object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+                if root is None:
+                    raise KioTrashUnavailable(
+                        "kio_directory_root_missing",
+                        "empty-directory Trash requires an explicit corpus root",
+                    )
+                _validate_empty_directory_source(source, item.expected, root=root)
+            else:
+                _validate_source(source, item.expected)
+            digest = _batch_digest(
+                item.expected,
+                item.source_digest,
+                object_kind=item.object_kind,
+            )
         except KioTrashUnavailable as exc:
             outcomes[index] = _batch_blocked(item, reason=exc.reason, detail=exc.detail)
             continue
@@ -2487,6 +2827,7 @@ def _prepare_batch_admission(
     environment: Mapping[str, str] | None,
     home_directory: Path | None,
     private_bus: bool,
+    root: Path | None,
 ) -> _KioBatchAdmission | None:
     """Preflight the shared client and retain only currently valid sources."""
 
@@ -2508,7 +2849,19 @@ def _prepare_batch_admission(
         ready_indexes: list[int] = []
         for work, index in zip(works, indexes, strict=True):
             try:
-                _validate_source(work.source, work.item.expected)
+                if work.item.object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+                    if root is None:
+                        raise KioTrashUnavailable(
+                            "kio_directory_root_missing",
+                            "empty-directory Trash requires an explicit corpus root",
+                        )
+                    _validate_empty_directory_source(
+                        work.source,
+                        work.item.expected,
+                        root=root,
+                    )
+                else:
+                    _validate_source(work.source, work.item.expected)
             except KioTrashUnavailable as exc:
                 outcomes[index] = _batch_blocked(work.item, reason=exc.reason, detail=exc.detail)
             else:
@@ -2572,7 +2925,11 @@ def _prepare_batch_command(
         for work in works:
             if use_claims:
                 try:
-                    work.claim = _claim_source(work.source, work.item.expected)
+                    work.claim = _claim_source(
+                        work.source,
+                        work.item.expected,
+                        object_kind=work.item.object_kind,
+                    )
                 except KioTrashClaimUnavailable as exc:
                     work.claim = exc.claim
                     work.kio_source = exc.claim.claim_path
@@ -2580,6 +2937,29 @@ def _prepare_batch_command(
                 work.kio_source = work.claim.claim_path
             else:
                 work.kio_source = work.source
+            if work.item.object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+                claimed_path = work.kio_source
+                if claimed_path is None:
+                    raise RuntimeError("empty-directory claim path is missing")
+                claimed_metadata = os.lstat(claimed_path)
+                if (
+                    stat.S_ISLNK(claimed_metadata.st_mode)
+                    or not stat.S_ISDIR(claimed_metadata.st_mode)
+                    or not stat_matches_snapshot(
+                        replace(work.item.expected, path=os.fspath(claimed_path)),
+                        claimed_metadata,
+                    )
+                ):
+                    raise KioTrashUnavailable(
+                        "kio_directory_identity_changed",
+                        "claimed directory identity changed before KIO",
+                    )
+                with os.scandir(claimed_path) as entries:
+                    if next(entries, None) is not None:
+                        raise KioTrashUnavailable(
+                            "kio_directory_not_empty",
+                            "claimed directory gained an entry before KIO",
+                        )
     except KioTrashUnavailable as exc:
         cancelled = isinstance(exc.__cause__, KeyboardInterrupt)
         _batch_restore_and_block(
@@ -2730,6 +3110,7 @@ def move_many_to_trash(
     timeout_seconds: float = DEFAULT_KIO_TIMEOUT_SECONDS,
     private_bus: bool = False,
     private_claim: bool = True,
+    root: Path | None = None,
 ) -> KioTrashBatchResult:
     """Move several files through one KIO invocation with item outcomes.
 
@@ -2744,7 +3125,7 @@ def move_many_to_trash(
     timeout = _validated_timeout(timeout_seconds)
     if not isinstance(private_bus, bool) or not isinstance(private_claim, bool):
         raise TypeError("private_bus and private_claim must be boolean")
-    normalized, outcomes, works, indexes = _prepare_batch_inputs(items)
+    normalized, outcomes, works, indexes = _prepare_batch_inputs(items, root=root)
     if not normalized:
         return KioTrashBatchResult(())
     if not works:
@@ -2759,6 +3140,7 @@ def move_many_to_trash(
         environment=environment,
         home_directory=home_directory,
         private_bus=private_bus,
+        root=root,
     )
     if admission is None:
         return _batch_result(outcomes)
@@ -2974,12 +3356,27 @@ class KioTrashService:
         else:
             yield self._environment, self._home_directory
 
-    def move(self, snapshot: FileSnapshot, *, source_digest: str) -> KioTrashResult:
+    def move(
+        self,
+        snapshot: FileSnapshot,
+        *,
+        source_digest: str,
+        root: Path | None = None,
+        object_kind: str = KIO_OBJECT_FILE,
+    ) -> KioTrashResult:
         """Run one admitted source through the same lifecycle as a batch."""
 
-        return self.move_many((KioTrashBatchItem(snapshot.path, snapshot, source_digest),))[0]
+        return self.move_many(
+            (KioTrashBatchItem(snapshot.path, snapshot, source_digest, object_kind),),
+            root=root,
+        )[0]
 
-    def move_many(self, items: Sequence[KioTrashBatchItem]) -> tuple[KioTrashResult, ...]:
+    def move_many(
+        self,
+        items: Sequence[KioTrashBatchItem],
+        *,
+        root: Path | None = None,
+    ) -> tuple[KioTrashResult, ...]:
         """Return one typed outcome per input, preserving order and receipts.
 
         Split at the item bound before invoking KIO.  Split at the argv bound
@@ -3007,7 +3404,11 @@ class KioTrashService:
             with self._operation_context() as (environment, home_directory):
                 started = True
                 self._move_batches(
-                    normalized, outcomes, environment=environment, home_directory=home_directory
+                    normalized,
+                    outcomes,
+                    environment=environment,
+                    home_directory=home_directory,
+                    root=root,
                 )
         except (OSError, RuntimeError, ValueError, TypeError, KeyboardInterrupt) as exc:
             if len(outcomes) == len(normalized):
@@ -3043,11 +3444,13 @@ class KioTrashService:
         *,
         environment: Mapping[str, str] | None,
         home_directory: Path | None,
+        root: Path | None,
     ) -> bool:
         if len(items) > MAX_KIO_BATCH_ITEMS:
             midpoint = len(items) // 2
             interrupted = self._move_batches(
-                items[:midpoint], outcomes, environment=environment, home_directory=home_directory
+                items[:midpoint], outcomes, environment=environment, home_directory=home_directory,
+                root=root,
             )
             if interrupted:
                 outcomes.extend(
@@ -3056,7 +3459,8 @@ class KioTrashService:
                 )
                 return True
             return self._move_batches(
-                items[midpoint:], outcomes, environment=environment, home_directory=home_directory
+                items[midpoint:], outcomes, environment=environment, home_directory=home_directory,
+                root=root,
             )
         try:
             batch = move_many_to_trash(
@@ -3069,6 +3473,7 @@ class KioTrashService:
                 timeout_seconds=self._timeout_seconds,
                 private_bus=self._runner is None and self._private_bus,
                 private_claim=self._runner is None and self._private_claim,
+                root=root,
             )
         except (OSError, RuntimeError, ValueError, TypeError, KeyboardInterrupt) as exc:
             interrupted = isinstance(exc, KeyboardInterrupt)
@@ -3117,7 +3522,8 @@ class KioTrashService:
         ):
             midpoint = len(items) // 2
             interrupted = self._move_batches(
-                items[:midpoint], outcomes, environment=environment, home_directory=home_directory
+                items[:midpoint], outcomes, environment=environment, home_directory=home_directory,
+                root=root,
             )
             if interrupted:
                 outcomes.extend(
@@ -3126,7 +3532,8 @@ class KioTrashService:
                 )
                 return True
             return self._move_batches(
-                items[midpoint:], outcomes, environment=environment, home_directory=home_directory
+                items[midpoint:], outcomes, environment=environment, home_directory=home_directory,
+                root=root,
             )
         outcomes.extend(checked)
         return batch.cancelled or any(
@@ -3165,5 +3572,6 @@ __all__ = [
     "read_claim_recovery_detail",
     "restore_trash_receipt",
     "trash_receipt_paths",
+    "validate_empty_directory_source",
     "verify_trash_receipt_evidence",
 ]

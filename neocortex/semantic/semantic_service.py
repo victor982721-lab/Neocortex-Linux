@@ -409,14 +409,6 @@ def _index_backend_factory(work_budget: SemanticWorkBudget):
     return create
 
 
-def _text_probe(backend: EmbeddingBackend) -> None:
-    _preparation.text_probe(backend)
-
-
-def _image_probe(backend: EmbeddingBackend) -> None:
-    _preparation.image_probe(backend)
-
-
 @_governed_retrieval("semantic")
 def prepare_semantic_models(
     state_directory: Path,
@@ -443,13 +435,6 @@ def _initialize_models(
     models: Iterable[EmbeddingModelSpec],
 ) -> None:
     _preparation.initialize_models(database, models)
-
-
-def _require_source_databases(
-    state_directory: Path,
-    source_kinds: Iterable[str],
-) -> None:
-    _preparation.require_source_databases(state_directory, source_kinds)
 
 
 # endregion [01]
@@ -566,17 +551,6 @@ def semantic_plan_payload(plan: SemanticPlan) -> dict[str, object]:
     return _planner.semantic_plan_payload(plan)
 
 
-def _grouped_text_records(
-    state_directory: Path,
-    source_kind: str,
-):
-    return _text_index.grouped_text_records(
-        state_directory,
-        source_kind,
-        source_record_iterator=iter_text_source_records,
-    )
-
-
 @_governed_retrieval("semantic")
 def index_text_embeddings(
     state_directory: Path,
@@ -685,28 +659,6 @@ def _query_vector(
         backend_factory=_backend,
         cancellation_check=cancellation_check,
     )
-
-
-def _registered_model_available(
-    database: Path,
-    expected: EmbeddingModelSpec,
-) -> bool:
-    return _search.registered_model_available(database, expected)
-
-
-def _indexed_model_available(
-    database: Path,
-    expected: EmbeddingModelSpec,
-) -> bool:
-    return _search.indexed_model_available(database, expected)
-
-
-def _unavailable_semantic_ranking(name: str, reason: str) -> SemanticRanking:
-    return _search.unavailable_semantic_ranking(name, reason)
-
-
-def _default_lexical_paths(state_directory: Path) -> LexicalStatePaths:
-    return _search.default_lexical_paths(state_directory)
 
 
 @_governed_retrieval("semantic")
@@ -818,21 +770,6 @@ def _classification_concepts(
     target_modality: EmbeddingModality,
 ) -> tuple[ConceptSpec, ...]:
     return _classification.classification_concepts(target_modality)
-
-
-def _prototype_text(
-    concept: ConceptSpec,
-    target_modality: EmbeddingModality,
-) -> str:
-    return _classification.prototype_text(concept, target_modality)
-
-
-def _label_prototype(
-    concept: ConceptSpec,
-    query_model: EmbeddingModelSpec,
-    target_modality: EmbeddingModality,
-) -> LabelPrototype:
-    return _classification.label_prototype(concept, query_model, target_modality)
 
 
 def _prepare_label_prototypes(

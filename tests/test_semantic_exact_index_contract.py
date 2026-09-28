@@ -293,10 +293,11 @@ def test_missing_head_and_future_owner_reject_without_migration_or_output(
         with sqlite3.connect(fixture.database) as connection:
             connection.execute("DELETE FROM published_embedding_heads")
     else:
+        future_version = _schema_module().SEMANTIC_SCHEMA_VERSION + 1
         with sqlite3.connect(fixture.database) as connection:
-            connection.execute("PRAGMA user_version=11")
+            connection.execute(f"PRAGMA user_version={future_version}")
             connection.execute(
-                "UPDATE metadata SET value='11' WHERE key='schema_version'"
+                "UPDATE metadata SET value=? WHERE key='schema_version'", (str(future_version),)
             )
     before = fixture.database.read_bytes()
 

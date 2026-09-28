@@ -7,7 +7,7 @@ from neocortex.persistence.operational_freshness import require_operational_iden
 import os
 import sqlite3
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from neocortex.progress import ProgressCallback
@@ -254,12 +254,55 @@ class ScanCheckpointRepositoryMixin:
 
         return resolve_scan_id(self._connection, scan_id)
 
-    def scan_content_digest(self, scan_id: int) -> bytes:
+    def current_scan_for_path(
+        self,
+        path: str | Path,
+        *,
+        work_check: Callable[[], None] | None = None,
+    ) -> int:
+        """Resolve the published inventory generation containing ``path``.
+
+        This owner-local lookup is used by coordinated physical-path
+        reconciliation.  It never guesses from a path-only cache row: the
+        selected scan must be complete, error-free, and its successor chain is
+        resolved before the caller mutates the owner.
+        """
+
+        candidate = Path(os.path.abspath(os.fspath(path)))
+        rows = self._connection.execute(
+            """SELECT scan_id,root FROM scans
+            WHERE status='complete' AND completed_ns IS NOT NULL AND errors=0
+            ORDER BY scan_id DESC"""
+        ).fetchall()
+        for index, row in enumerate(rows):
+            if work_check is not None and index % 128 == 0:
+                work_check()
+            root = Path(str(row[1]))
+            try:
+                if candidate.is_relative_to(root):
+                    return resolve_scan_id(self._connection, int(row[0]))
+            except ValueError:
+                continue
+        if work_check is not None:
+            work_check()
+        raise InventoryError(f"no complete inventory generation contains path: {candidate}")
+
+    def scan_content_digest(
+        self,
+        scan_id: int,
+        *,
+        work_check: Callable[[], None] | None = None,
+    ) -> bytes:
         """Return the canonical content identity of a complete scan head."""
 
-        return self._ensure_inventory_content_digest(scan_id)
+        return self._ensure_inventory_content_digest(scan_id, work_check=work_check)
 
-    def _ensure_inventory_content_digest(self, scan_id: int) -> bytes:
+    def _ensure_inventory_content_digest(
+        self,
+        scan_id: int,
+        *,
+        work_check: Callable[[], None] | None = None,
+    ) -> bytes:
         """Load or derive the content identity for one complete generation."""
 
         current = resolve_scan_id(self._connection, scan_id)
@@ -277,7 +320,11 @@ class ScanCheckpointRepositoryMixin:
             raise InventoryError(f"unknown scan_id: {scan_id}")
         if str(status[0]) != "complete":
             raise InventoryError(f"scan {current} has no complete inventory content identity")
-        digest = _inventory_content_digest(self._connection, current)
+        digest = _inventory_content_digest(
+            self._connection,
+            current,
+            work_check=work_check,
+        )
         with self._connection:
             self._connection.execute(
                 "INSERT OR IGNORE INTO inventory_generation_heads("
@@ -293,7 +340,12 @@ class ScanCheckpointRepositoryMixin:
         return bytes(row[0])
 
     def _create_inventory_successor(
-        self, scan_id: int, *, reason: str, copy_files: bool = True,
+        self,
+        scan_id: int,
+        *,
+        reason: str,
+        copy_files: bool = True,
+        work_check: Callable[[], None] | None = None,
     ) -> int:
         """Create a successor within the caller's publication transaction.
 
@@ -322,7 +374,12 @@ class ScanCheckpointRepositoryMixin:
         # Ensure the source has an identity before any successor can become
         # visible.  The original rows remain untouched and are available for
         # historical audit until the normal retention owner prunes them.
-        source_digest = self._ensure_inventory_content_digest(source_id)
+        if work_check is not None:
+            work_check()
+        source_digest = self._ensure_inventory_content_digest(
+            source_id,
+            work_check=work_check,
+        )
         now = time.time_ns()
         cursor = self._connection.execute(
             """INSERT INTO scans(
@@ -352,6 +409,8 @@ class ScanCheckpointRepositoryMixin:
             raise InventoryError("SQLite did not return an inventory successor identifier")
         successor_id = int(cursor.lastrowid)
         if copy_files:
+            if work_check is not None:
+                work_check()
             self._connection.execute(
                 """INSERT INTO files(
                 scan_id,path,volume_id,file_id,size,mtime_ns,birthtime_ns)
@@ -364,6 +423,8 @@ class ScanCheckpointRepositoryMixin:
                 "SELECT ?,path,ctime_ns FROM inventory_file_change_versions WHERE scan_id=?",
                 (successor_id, source_id),
             )
+            if work_check is not None:
+                work_check()
         self._connection.execute(
             "INSERT INTO inventory_generation_heads(scan_id,content_digest,created_ns) "
             "VALUES(?,?,?)",

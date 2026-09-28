@@ -707,6 +707,21 @@ nlink/ctime o un symlink produce `blocked/source_changed` antes de KIO y no toca
 otro archivo. Si la frontera de KIO ya quedó ambigua, el resultado es
 `recovery_required`; nunca se hace fallback por path.
 
+### Progreso y efectos de una corrida
+
+La vista humana separa extracción de catálogo/FTS y muestra el formato de Office
+más un desglose de Text. Filas con el mismo número pueden ser consumidores de
+una misma extracción, no un segundo OCR. Si la tabla supera la altura del
+terminal, continúa verticalmente en scrollback; no oculta el historial tras
+«Vista compacta». En terminal estrecho los valores omitidos de columnas aparecen
+en líneas auxiliares. El stream estructurado mantiene su contrato.
+
+El cierre distingue `considered`, propuestas/review, aplicados, advisory y
+`moved_cache_pending`, además de directorios vacíos retirados. Sólo aplicados
+con receipt son efectos reales. `image_retrieval_readiness` diferencia
+`ready`, `requires_calibration`, `stale`, `unavailable` e `invalid`: vectores
+publicados no significan búsqueda visual habilitada.
+
 ### Lifecycle durable de `--all` (0.14 instalado)
 
 Una corrida amplia puede fijar un presupuesto global opcional para todo el

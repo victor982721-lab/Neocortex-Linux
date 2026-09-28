@@ -331,6 +331,44 @@ class FileRepositoryMixin:
             is not None
         )
 
+    def unique_snapshot_for_identity(
+        self,
+        scan_id: int,
+        volume_id: int,
+        file_id: int,
+    ) -> FileSnapshot | None:
+        """Resolve one current inventory path for an identity, or abstain.
+
+        At most two rows are fetched deliberately: a second row represents a
+        hard-link alias (or an ambiguous inventory) and must not authorize a
+        child replay. The selected row is reobserved before returning so a
+        stale scan entry cannot become a path authority.
+        """
+
+        scan_id = resolve_scan_id(self._connection, scan_id)
+        rows = self._connection.execute(
+            "SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns "
+            "FROM files WHERE scan_id=? AND volume_id=? AND file_id=? "
+            "ORDER BY path LIMIT 2",
+            (scan_id, _id_blob(volume_id), _id_blob(file_id)),
+        ).fetchall()
+        if len(rows) != 1:
+            return None
+        path, volume, identity, size, mtime, birth = rows[0]
+        expected = FileSnapshot(
+            path,
+            int.from_bytes(volume, "little"),
+            int.from_bytes(identity, "little"),
+            int(size),
+            int(mtime),
+            int(birth),
+        )
+        try:
+            current = snapshot_path(expected.path)
+        except OSError:
+            return None
+        return current if current == expected else None
+
     def size_candidate_file_count(
         self, scan_id: int, *, max_file_bytes: int | None = None,
     ) -> int:

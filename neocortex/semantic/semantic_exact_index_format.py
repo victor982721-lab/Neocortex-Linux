@@ -837,12 +837,6 @@ def _open_write_stream_at(directory_fd: int, name: str) -> Any:
         raise
 
 
-def _chmod_readonly_at(directory_fd: int, name: str) -> None:
-    fd, _info = _open_regular_at(directory_fd, name)
-    with _fd_guard(fd, f"chmod fd {name}"):
-        os.fchmod(fd, stat.S_IRUSR)
-
-
 def _writer_fence(writer: _Writer) -> Mapping[str, int]:
     fence = writer.fence
     if fence is None:

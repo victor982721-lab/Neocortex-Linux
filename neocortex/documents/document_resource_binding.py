@@ -234,6 +234,77 @@ def parse_resource_binding(raw: object) -> dict[str, Any]:
         ) from exc
 
 
+def rebind_resource_binding_path(
+    raw: object,
+    *,
+    new_path: str,
+    expected_path: str | None = None,
+) -> dict[str, Any]:
+    """Return a current-owner binding whose physical locator follows a move.
+
+    A physical move changes the current locator, not the resource identity or
+    the revision that proves the observed object.  The binding schema has two
+    path-bearing fields for that locator: ``resource_ref.current_path`` and
+    ``physical_anchor_path``.  Keep this transition in the binding owner so a
+    catalog mutation cannot update one field and leave the other stale.
+
+    ``expected_path`` is an optional compare-and-rebind fence.  It is checked
+    against both current locator fields, without resolving or following either
+    path.  Rebinding is idempotent when the binding already points at
+    ``new_path``; this is required for recovery after the filesystem syscall.
+    Physical identity, birthtime, and anchor revision are copied unchanged and
+    validated again before the returned payload is accepted.
+    """
+
+    if not isinstance(new_path, str) or not new_path.startswith("/"):
+        raise ResourceBindingError(
+            "new resource binding path must be absolute",
+            field="physical_anchor_path",
+            encoding=BINDING_SCHEMA,
+            value=new_path,
+        )
+    binding = parse_resource_binding(raw)
+    resource_ref = binding["resource_ref"]
+    current_path = resource_ref["current_path"]
+    anchor_path = binding["physical_anchor_path"]
+    if current_path != anchor_path:
+        # parse_resource_binding currently enforces this invariant; retain the
+        # explicit guard here in case the owner parser evolves independently.
+        raise ResourceBindingError(
+            "resource binding path-bearing fields disagree",
+            field="resource_binding_json",
+            encoding=BINDING_SCHEMA,
+            value=raw,
+        )
+    if expected_path is not None:
+        if not isinstance(expected_path, str) or not expected_path.startswith("/"):
+            raise ResourceBindingError(
+                "expected resource binding path must be absolute",
+                field="physical_anchor_path",
+                encoding=BINDING_SCHEMA,
+                value=expected_path,
+            )
+        # The organization owner supplies the planned source path.  Allow an
+        # already-rebound destination during replay, but refuse a third
+        # locator: it would sever the owner from the physical receipt.
+        if current_path not in {expected_path, new_path}:
+            raise ResourceBindingError(
+                "resource binding path is neither the planned source nor destination",
+                field="physical_anchor_path",
+                encoding=BINDING_SCHEMA,
+                value=current_path,
+                code="resource_binding_locator_mismatch",
+            )
+    resource_ref["current_path"] = new_path
+    binding["physical_anchor_path"] = new_path
+    # Re-parse a canonical serialization so callers never persist a mutable
+    # partially validated mapping and so every non-path identity field remains
+    # exactly the binding-owner contract.
+    return parse_resource_binding(
+        json.dumps(binding, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+
+
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
@@ -292,4 +363,5 @@ __all__ = [
     "legacy_resource_binding",
     "parse_resource_binding",
     "physical_identity_from_components",
+    "rebind_resource_binding_path",
 ]

@@ -50,6 +50,7 @@ from .semantic_admission import (
     ContentAdmissionPolicy,
     filter_text_source_records,
 )
+from .semantic_tabular_projection import metadata_table_section
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteImmutableFence,
@@ -130,7 +131,7 @@ def _video_source_head(state_directory: Path) -> "SemanticSourceHead":
     )
 
 
-SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v3"
+SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v4-tabular-navigation"
 IMAGE_SOURCE_ADAPTER_VERSION = "semantic-image-source-v4-no-nudenet"
 SEMANTIC_TITLE_SECTION_KIND = "semantic_metadata_title"
 SEMANTIC_TITLE_POLICY = "semantic-content-aware-title-v3"
@@ -1007,12 +1008,16 @@ def _iter_text(
                     text_fingerprint_column="text_xxh3_128",
                     text_count_column="text_chars",
                 )
+                source_text = _decode_text(row["text_zlib"], int(row["text_chars"]))
+                metadata_navigation = metadata_table_section(
+                    source_text, str(row["content_kind"]), checkpoint=source_read_checkpoint,
+                )
                 yield TextSourceRecord(
                     item,
-                    TextSection(
+                    metadata_navigation or TextSection(
                         section_kind="document",
                         section_id="fulltext",
-                        text=_decode_text(row["text_zlib"], int(row["text_chars"])),
+                        text=source_text,
                         provenance={
                             "adapter": SOURCE_ADAPTER_VERSION,
                             "content_kind": str(row["content_kind"]),

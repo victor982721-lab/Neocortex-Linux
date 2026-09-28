@@ -148,6 +148,7 @@ from .semantic_schema import (
     _migrate_to_v8 as _migrate_to_v8,
     _migrate_to_v9 as _migrate_to_v9,
     _migrate_to_v10 as _migrate_to_v10,
+    _migrate_to_v11 as _migrate_to_v11,
     initialize_semantic_state as initialize_semantic_state,
     semantic_database,
     scrub_retired_image_provenance as scrub_retired_image_provenance,

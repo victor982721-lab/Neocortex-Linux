@@ -33,3 +33,25 @@ def subprocess_limit_violation(command: list[str]) -> None:
 
 def mutation_violation(source: str, target: str) -> None:
     shutil.move(source, target)
+
+
+def _semantic_owner_lease(path, timeout):
+    from neocortex.persistence.sqlite_paths import existing_sqlite_uri
+    from neocortex.persistence.sqlite_writer_snapshot import SQLiteProgressConnection
+    safe = sqlite3.connect(
+        existing_sqlite_uri(path), uri=True, timeout=timeout,
+        factory=SQLiteProgressConnection,
+    )
+    # A second unbounded open inside the allowed helper must not be hidden.
+    unsafe = sqlite3.connect(path)
+    return safe, unsafe
+
+
+def public_reader_using_lease_shape(path, timeout):
+    from neocortex.persistence.sqlite_paths import existing_sqlite_uri
+    from neocortex.persistence.sqlite_writer_snapshot import SQLiteProgressConnection
+    # Safe-looking syntax outside the authenticated owner seam is not enough.
+    return sqlite3.connect(
+        existing_sqlite_uri(path), uri=True, timeout=timeout,
+        factory=SQLiteProgressConnection,
+    )

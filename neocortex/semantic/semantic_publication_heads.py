@@ -551,7 +551,7 @@ def _semantic_schema(
         raise PublicationHeadsSchemaError("Semantic schema metadata is invalid") from exc
     if version is None:
         return None
-    if version not in {7, 8, 9, 10}:
+    if version not in {7, 8, 9, 10, 11}:
         raise PublicationHeadsSchemaError(
             f"Semantic schema is not the current publication schema: {version!r}"
         )

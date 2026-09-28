@@ -303,9 +303,9 @@ def test_v9_to_v10_preserves_chunk_columns_blob_and_domain_rows(tmp_path: Path) 
     assert _domain_rows(database) == before_domain
     after_history = _schema_history(database)
     assert after_history[:9] == before_history
-    assert tuple(row[0] for row in after_history) == tuple(range(1, 11))
+    assert tuple(row[0] for row in after_history) == tuple(range(1, semantic_schema.SEMANTIC_SCHEMA_VERSION + 1))
     with semantic_database(database, readonly=True) as connection:
-        assert semantic_schema._validate_semantic_read_schema(connection) == 10
+        assert semantic_schema._validate_semantic_read_schema(connection) == semantic_schema.SEMANTIC_SCHEMA_VERSION
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert connection.execute("PRAGMA defer_foreign_keys").fetchone()[0] == 0
     info = _text_chunk_table_info(database)
@@ -335,7 +335,7 @@ def test_empty_v9_to_v10_migration_is_idempotent_in_database_bytes(tmp_path: Pat
 
     assert after_second == after_first
     with semantic_database(database, readonly=True) as connection:
-        assert semantic_schema._validate_semantic_read_schema(connection) == 10
+        assert semantic_schema._validate_semantic_read_schema(connection) == semantic_schema.SEMANTIC_SCHEMA_VERSION
         assert connection.execute("SELECT COUNT(*) FROM text_chunks").fetchone()[0] == 0
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -439,17 +439,13 @@ def test_v10_recreated_source_dirty_triggers_work_and_rollback_is_atomic(tmp_pat
         assert final is not None and tuple(final) == (1, 0)
 
 
-@pytest.mark.parametrize("version", (7, 8, 9, 10))
-def test_semantic_read_schema_returns_real_version_for_v7_v8_v9_v10(
+@pytest.mark.parametrize("version", (7, 8, 9, 10, 11))
+def test_semantic_read_schema_returns_real_version_for_compatible_owners(
     tmp_path: Path,
     version: int,
 ) -> None:
-    if version < 10:
-        database = tmp_path / f"semantic-v{version}.sqlite3"
-        _create_schema_version(database, version)
-    else:
-        database, _model, _chunk = _create_v9_owner(tmp_path)
-        initialize_semantic_state(database)
+    database = tmp_path / f"semantic-v{version}.sqlite3"
+    _create_schema_version(database, version)
     with semantic_database(database, readonly=True) as connection:
         assert semantic_schema._validate_semantic_read_schema(connection) == version
         metadata = connection.execute(
@@ -459,12 +455,13 @@ def test_semantic_read_schema_returns_real_version_for_v7_v8_v9_v10(
     assert str(metadata[0]) == str(version)
 
 
-def test_future_v11_read_is_typed_and_does_not_migrate(tmp_path: Path) -> None:
+def test_future_read_is_typed_and_does_not_migrate(tmp_path: Path) -> None:
     database, _model, _chunk = _create_v9_owner(tmp_path)
     initialize_semantic_state(database)
     with semantic_database(database) as connection:
-        connection.execute("PRAGMA user_version=11")
-        connection.execute("UPDATE metadata SET value='11' WHERE key='schema_version'")
+        future_version = semantic_schema.SEMANTIC_SCHEMA_VERSION + 1
+        connection.execute(f"PRAGMA user_version={future_version}")
+        connection.execute("UPDATE metadata SET value=? WHERE key='schema_version'", (str(future_version),))
     before = _chunk_rows(database)
     with semantic_database(database, readonly=True) as connection:
         with pytest.raises(semantic_schema.SemanticStateError):

@@ -146,6 +146,262 @@ def _fold(value: str) -> str:
     )
 
 
+def _normal_number(value: str) -> str:
+    """Normalize only the presentation of a numeric measurement."""
+
+    normalized = value.replace(",", ".")
+    try:
+        number = float(normalized)
+    except ValueError:
+        return normalized
+    if number == int(number):
+        return str(int(number))
+    return format(number, ".12g")
+
+
+def _normal_unit(value: str) -> str:
+    return re.sub(r"\s+", "", _fold(value)).replace("·", "*")
+
+
+def _date_values(value: str) -> tuple[tuple[tuple[int, int, int], tuple[int, int]], ...]:
+    """Extract full day/month/year witnesses with original folded spans."""
+
+    folded = _fold(value)
+    found: list[tuple[tuple[int, int, int], tuple[int, int]]] = []
+    for match in _DATE_ISO.finditer(folded):
+        year, month, day = (int(part) for part in match.groups())
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            found.append(((year, month, day), match.span()))
+    for match in _DATE_NUMERIC.finditer(folded):
+        day, month, year = (int(part) for part in match.groups())
+        # Dates in the retrieval surface are day-first.  An unambiguous month
+        # greater than 12 is accepted as the alternate month/day spelling.
+        if month > 12 and day <= 12:
+            day, month = month, day
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            found.append(((year, month, day), match.span()))
+    for match in _DATE_WORD.finditer(folded):
+        day_first = match.group(1)
+        if day_first is not None:
+            day, month, year = int(day_first), _MONTHS[match.group(2)], int(match.group(3))
+        else:
+            month, day, year = _MONTHS[match.group(4)], int(match.group(5)), int(match.group(6))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            found.append(((year, month, day), match.span()))
+    return tuple(dict.fromkeys(found))
+
+
+def _constraint_profile(query: str) -> _StructuredConstraintProfile:
+    bounded = query[:MAX_STRUCTURED_QUERY_CHARS]
+    folded = _fold(bounded)
+    identifiers = tuple(
+        dict.fromkeys(
+            _fold(match.group())
+            for match in (*_COMPOUND_IDENTIFIER.finditer(bounded), *_UUID_IDENTIFIER.finditer(bounded))
+        )
+    )
+    # A compound identifier is already the strongest identity witness.  Do
+    # not also require its internal ``HCN-05``/``TC-22`` fragments as separate
+    # constraints; that would make aliases less tolerant without adding
+    # evidence.
+    codes: list[tuple[str, str]] = []
+    if not identifiers:
+        for match in _CODE_IDENTIFIER.finditer(bounded):
+            prefix, number = _fold(match.group(1)), match.group(2)
+            if prefix in _CODE_PREFIX_STOPWORDS:
+                continue
+            value = (prefix, str(int(number)))
+            if value not in codes:
+                codes.append(value)
+        for match in _UNIT_ALIAS.finditer(folded):
+            value = ("u", str(int(match.group(1))))
+            if value not in codes:
+                codes.append(value)
+    dates = tuple(value for value, _span in _date_values(bounded))
+    measurements = tuple(
+        dict.fromkeys(
+            (_normal_number(match.group(1)), _normal_unit(match.group(2)))
+            for match in _UNIT_VALUE.finditer(bounded)
+        )
+    )
+    return {
+        "identifiers": identifiers[:MAX_STRUCTURED_CONSTRAINTS],
+        "codes": tuple(codes[:MAX_STRUCTURED_CONSTRAINTS]),
+        "dates": dates[:MAX_STRUCTURED_CONSTRAINTS],
+        "measurements": measurements[:MAX_STRUCTURED_CONSTRAINTS],
+    }
+
+
+def structured_query_constraints(query: str) -> dict[str, object]:
+    """Return bounded syntax constraints used by retrieval, not by answering."""
+
+    if not isinstance(query, str):
+        raise ValueError("structured query constraints require a string query")
+    profile = _constraint_profile(query)
+    return {
+        "policy_signature": STRUCTURED_QUERY_POLICY,
+        "identifiers": list(profile["identifiers"]),
+        "codes": [list(value) for value in profile["codes"]],
+        "dates": [list(value) for value in profile["dates"]],
+        "measurements": [list(value) for value in profile["measurements"]],
+        "applicable": any(profile.values()),
+    }
+
+
+def _code_matches(text: str, prefix: str, number: str) -> tuple[tuple[int, int], ...]:
+    folded = _fold(text)
+    escaped_prefix = re.escape(prefix)
+    escaped_number = re.escape(number)
+    direct = re.compile(
+        rf"(?<![\w])[-]?{escaped_prefix}[- ]?0*{escaped_number}(?![\w-])",
+        re.IGNORECASE,
+    )
+    matches = [match.span() for match in direct.finditer(folded)]
+    if prefix == "u":
+        alias = re.compile(
+            rf"\b(?:unidad|unit|unite|unité|einheit)\s*[-#]?\s*0*{escaped_number}\b",
+            re.IGNORECASE,
+        )
+        matches.extend(match.span() for match in alias.finditer(folded))
+    return tuple(matches)
+
+
+def _minimum_constraint_span(
+    spans_by_constraint: list[tuple[tuple[int, int], ...]],
+) -> tuple[int, int] | None:
+    """Find the tightest text interval containing one witness per constraint."""
+
+    events = sorted(
+        (start, end, index)
+        for index, spans in enumerate(spans_by_constraint)
+        for start, end in spans[:32]
+    )
+    if not events:
+        return None
+    counts = [0] * len(spans_by_constraint)
+    covered = 0
+    left = 0
+    best: tuple[int, int] | None = None
+    for right, (_start, _end, right_index) in enumerate(events):
+        if counts[right_index] == 0:
+            covered += 1
+        counts[right_index] += 1
+        while covered == len(spans_by_constraint) and left <= right:
+            first, _first_end, first_index = events[left]
+            last = events[right][1]
+            candidate = (first, last)
+            if best is None or candidate[1] - candidate[0] < best[1] - best[0]:
+                best = candidate
+            counts[first_index] -= 1
+            if counts[first_index] == 0:
+                covered -= 1
+            left += 1
+    return best
+
+
+def structured_query_support(query: str, text: str) -> dict[str, object]:
+    """Assess identity/date/unit coherence inside one scored text span.
+
+    ``status`` is a retrieval disposition only.  ``coherent`` means that the
+    requested syntactic witnesses were found close enough to cite together;
+    it does not establish that the document is true, current or authorized.
+    """
+
+    if not isinstance(query, str) or not isinstance(text, str):
+        raise ValueError("structured query support requires string query and text")
+    profile = _constraint_profile(query)
+    if not any(profile.values()):
+        return {
+            "policy_signature": STRUCTURED_QUERY_POLICY,
+            "status": "not_applicable",
+            "coherent": False,
+            "hard_mismatch": False,
+            "constraints": [],
+            "missing_constraints": [],
+            "matched_constraints": [],
+            "constraint_span_chars": None,
+            "constraint_span_terms": None,
+        }
+
+    folded = _fold(text)
+    constraints: list[dict[str, object]] = []
+    spans_by_constraint: list[tuple[tuple[int, int], ...]] = []
+
+    def add_constraint(kind: str, value: object, spans: tuple[tuple[int, int], ...]) -> None:
+        matched = bool(spans)
+        constraint: dict[str, object] = {
+            "kind": kind,
+            "value": value,
+            "matched": matched,
+        }
+        if matched:
+            constraint["span"] = list(spans[0])
+        spans_by_constraint.append(spans)
+        constraints.append(constraint)
+
+    for identifier in profile["identifiers"]:
+        escaped = re.escape(str(identifier))
+        spans = tuple(match.span() for match in re.finditer(
+            rf"(?<![\w-]){escaped}(?![\w-])", folded, re.IGNORECASE
+        ))
+        add_constraint("compound_identifier", identifier, spans)
+    for prefix, number in profile["codes"]:
+        add_constraint("equipment_code", f"{prefix}{number}", _code_matches(text, str(prefix), str(number)))
+    text_dates = _date_values(text)
+    for requested in profile["dates"]:
+        spans = tuple(span for value, span in text_dates if value == requested)
+        add_constraint("date", list(requested), spans)
+    for number, unit in profile["measurements"]:
+        spans = tuple(
+            match.span()
+            for match in _UNIT_VALUE.finditer(text)
+            if _normal_number(match.group(1)) == number
+            and _normal_unit(match.group(2)) == unit
+        )
+        add_constraint("measurement", [number, unit], spans)
+
+    missing = [value for value in constraints if not value["matched"]]
+    matched = [value for value in constraints if value["matched"]]
+    coherent_span_chars: int | None = None
+    coherent_span_terms: int | None = None
+    coherent = False
+    if not missing:
+        interval = _minimum_constraint_span(spans_by_constraint)
+        if interval is not None:
+            first, last = interval
+        else:
+            first = last = 0
+        if interval is not None:
+            coherent_span_chars = last - first
+            coherent_span_terms = len(_TERM.findall(text[first:last]))
+            coherent = coherent_span_chars <= MAX_STRUCTURED_SPAN_CHARS
+    hard_mismatch = bool(missing)
+    return {
+        "policy_signature": STRUCTURED_QUERY_POLICY,
+        "status": "coherent" if coherent else "mismatch",
+        "coherent": coherent,
+        "hard_mismatch": hard_mismatch,
+        "constraints": constraints,
+        "missing_constraints": [value["kind"] for value in missing],
+        "matched_constraints": [value["kind"] for value in matched],
+        "constraint_span_chars": coherent_span_chars,
+        "constraint_span_terms": coherent_span_terms,
+    }
+
+
+def query_requests_explicit_title(query: str) -> bool:
+    """Recognize a user-requested basename/title channel without broadening all search."""
+
+    if not isinstance(query, str):
+        raise ValueError("title query detection requires a string query")
+    bounded = query[:MAX_STRUCTURED_QUERY_CHARS]
+    return bool(
+        _TITLE_QUERY_MARKER.search(bounded)
+        or _FILENAME_LIKE_TOKEN.search(bounded)
+        or _FILENAME_EXTENSION.search(bounded)
+    )
+
+
 def _prepare(query: str, text: str) -> tuple[str, str]:
     if not isinstance(query, str) or not isinstance(text, str):
         raise ValueError("query evidence checks require string query and text")
@@ -489,6 +745,90 @@ _EVENT_DATE = re.compile(
     r"\d{1,2}\s+(?:de\s+)?(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|"
     r"january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(?:de\s+)?\d{4})?)\b"
 )
+
+# Structured retrieval constraints are deliberately small and syntax-led.  They
+# are not an entity resolver and never turn a score into a fact.  Their only
+# purpose is to keep a composite identifier, a date, or a measured value from
+# being satisfied by unrelated terms in the same document (for example ``05``
+# in an equipment code versus ``0.05 MPa`` in another report).
+STRUCTURED_QUERY_POLICY = "retrieval-constraint-coherence-v1"
+MAX_STRUCTURED_QUERY_CHARS = 4_096
+MAX_STRUCTURED_CONSTRAINTS = 16
+MAX_STRUCTURED_SPAN_CHARS = 1_024
+TITLE_QUERY_POLICY = "retrieval-explicit-title-channel-v1"
+
+_COMPOUND_IDENTIFIER = re.compile(
+    r"(?<![\w-])(?:[A-Z]{2,}[A-Z0-9]*(?:-[A-Z0-9]+){2,})(?![\w-])",
+    re.IGNORECASE,
+)
+_UUID_IDENTIFIER = re.compile(
+    r"(?<![\w-])[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?![\w-])",
+    re.IGNORECASE,
+)
+_CODE_IDENTIFIER = re.compile(
+    r"(?<![\w])[-]?([A-Z]{1,6})[- ]?(\d{1,5})(?![\w-])",
+    re.IGNORECASE,
+)
+_UNIT_VALUE = re.compile(
+    r"(?<![\w.])([+-]?\d+(?:[.,]\d+)?)\s*"
+    r"(mva|mpa|kpa|pa|bar|psi|kv|v|ka|a|hz|mhz|°?c|°?f|n\s*[·.*]\s*m|nm|mm|cm|kg|%)"
+    r"(?![\w])",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    "enero": 1, "january": 1, "januar": 1,
+    "febrero": 2, "february": 2, "februar": 2,
+    "marzo": 3, "march": 3, "marz": 3,
+    "abril": 4, "april": 4,
+    "mayo": 5, "may": 5, "mai": 5,
+    "junio": 6, "june": 6, "juni": 6,
+    "julio": 7, "july": 7, "juli": 7,
+    "agosto": 8, "august": 8,
+    "septiembre": 9, "setiembre": 9, "september": 9, "sept": 9,
+    "octubre": 10, "october": 10,
+    "noviembre": 11, "november": 11,
+    "diciembre": 12, "december": 12,
+    "aout": 8,
+}
+_MONTH_PATTERN = "|".join(sorted(_MONTHS, key=len, reverse=True))
+_DATE_ISO = re.compile(r"(?<!\w)(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?!\w)")
+_DATE_NUMERIC = re.compile(r"(?<!\w)(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\w)")
+_DATE_WORD = re.compile(
+    rf"(?:(?<!\w)(\d{{1,2}})\.?\s+(?:de\s+|den\s+)?({_MONTH_PATTERN})\s+"
+    rf"(?:de\s+)?(\d{{4}})(?!\w)|"
+    rf"(?<!\w)({_MONTH_PATTERN})\s+(\d{{1,2}})(?:,\s*|\s+)(\d{{4}})(?!\w))",
+    re.IGNORECASE,
+)
+_UNIT_ALIAS = re.compile(
+    r"\b(?:unidad|unit|unite|unité|einheit)\s*[-#]?\s*(\d{1,5})\b",
+    re.IGNORECASE,
+)
+_CODE_PREFIX_STOPWORDS = frozenset(
+    {
+        "a", "al", "de", "del", "el", "en", "la", "las", "los", "por",
+        "the", "of", "on", "and", "que", "un", "una",
+    }
+)
+_TITLE_QUERY_MARKER = re.compile(
+    r"\b(?:filename|file\s+name|basename|title|document\s+name|"
+    r"nombre(?:\s+del?|\s+de)?\s+(?:archivo|fichero|documento)|"
+    r"titulo|título)\b",
+    re.IGNORECASE,
+)
+_FILENAME_LIKE_TOKEN = re.compile(
+    r"(?<![\w])[A-Za-z0-9][A-Za-z0-9.-]*_[A-Za-z0-9._-]*(?![\w])"
+)
+_FILENAME_EXTENSION = re.compile(
+    r"(?<![\w])[A-Za-z0-9][A-Za-z0-9._ -]{1,180}\.(?:pdf|docx?|xlsx?|xlsm|ods|odt|pptx?|csv|txt|eml)(?![\w])",
+    re.IGNORECASE,
+)
+
+
+class _StructuredConstraintProfile(TypedDict):
+    identifiers: tuple[str, ...]
+    codes: tuple[tuple[str, str], ...]
+    dates: tuple[tuple[int, int, int], ...]
+    measurements: tuple[tuple[str, str], ...]
 
 
 def _requested_subjects(query: str) -> tuple[str, ...]:

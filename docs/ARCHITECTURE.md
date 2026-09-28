@@ -744,6 +744,25 @@ operación y ejecutabilidad son dimensiones distintas; sólo los archivos físic
 sucesores pueden recibir una propuesta de organización y un flag SQLite no
 concede autoridad.
 Los planes legacy sin ámbito probado permanecen advisory y no ejecutables.
+Los movimientos autorizados usan `renameat2` no-replace con padres fijados por
+FD; el journal conserva intent, receipt y `moved_cache_pending` hasta conciliar
+los owners. La reconciliación de Inventory crea una generación COW por lote,
+no UPDATE sobre históricos ni una copia por archivo. Las rutas actuales y sus
+bindings físicos se actualizan juntas; las publicaciones históricas no se
+reescriben. Directorios sólo cruzan KIO como `empty_directory` tras comprobar
+vacío e identidad; un cambio concurrente exige abstención o recovery.
+
+En la ruta integrada, EML se prepara una vez con límites MIME/bytes/deadline;
+los adjuntos completos se publican atómicamente como archivos físicos. Su
+manifest vive en State, no en Corpus. El replay revalida padre e hijos por
+identidad/hash y permite reutilizar un keeper de deduplicación equivalente
+con evidencia explícita. No vuelve a crear árboles retirados si sus hijos ya
+existen organizados. Los ZIP recién materializados pasan por el intake normal.
+
+La proyección dense de CSV/TSV de navegación no es una cita de contenido:
+conserva unos pocos ejemplos y lo declara; el texto original permanece en FTS.
+Knowledge expone esa señal como descubrimiento advisory, nunca EvidenceRef.
+
 
 Knowledge v2 proyecta fuentes únicas y citas con localizadores, manteniendo
 recuperación, relaciones, evidencia y presentación como coberturas separadas.

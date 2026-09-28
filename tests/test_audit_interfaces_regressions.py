@@ -108,8 +108,11 @@ def test_semantic_preparation_cancellation_keeps_public_exit_130(
 
     captured = capsys.readouterr()
     assert code == 130
-    assert "cancelled" in captured.err.casefold()
-    assert "completion incomplete" in captured.err
+    # Human presentation is localized; the JSON test below owns the stable
+    # English machine status/completion contract.
+    assert "cancelado" in captured.err.casefold()
+    assert "0/?" in captured.err
+    assert "COMPLETADA" not in captured.err
 
 
 @pytest.mark.parametrize("origin", ["prepare", "stage", "framework"])

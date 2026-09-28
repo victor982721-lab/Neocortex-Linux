@@ -4,6 +4,35 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-28 — Utilidad del corpus y efectos Linux verificables
+
+- Organización ejecuta movimientos POSIX no-replace sólo con ámbito, identidad
+  y evidencia suficientes. Registra intent/receipt, sincroniza todos los owners
+  afectados por lote y conserva generaciones históricas del inventario.
+- La limpieza de directorios vacíos usa KIO reversible con comprobación junto
+  al efecto; restore reclama también su metadata antes de retirar el receipt.
+- Text conserva atributos XML útiles y discrimina blobs. La corrida integrada
+  materializa adjuntos EML con límites y lineage, incluye ZIP adjuntos y evita
+  regenerarlos después de organización o deduplicación verificada.
+- ZIP valida marcadores XML mediante streaming y admite expansión medida dentro
+  de cuotas finitas. Las colisiones de archivos usan destinos deterministas sin
+  overwrite. Corrupción, cifrado y límites siguen siendo causas distintas; no
+  se borra un original corrupto por inferencia ni se anuncia reparación inexistente.
+- Recuperación conserva diagramas técnicos antes confundidos con fórmulas y
+  exige evidencia coherente para identificadores, unidades y fechas. Knowledge
+  separa navegación por nombre/metadatos de citas de contenido.
+- Exportes tabulares de navegación conservan texto/FTS íntegro, pero usan un
+  resumen pequeño explícitamente advisory para embeddings. Semantic schema11
+  comprime nuevos receipts de forma lossless sin alterar sus bytes públicos v1
+  ni reescribir históricos.
+- Progreso diferencia extracción, catálogo/FTS, formato y vectores. Al exceder
+  la altura disponible continúa hacia abajo en scrollback, sin vista compacta
+  que oculte tareas. El cierre distingue propuestas, efectos y búsqueda visual
+  calibrada; publicar vectores no equivale a habilitar búsquedas de imagen.
+- Se retiran helpers privados sin consumidores, conservando contratos públicos
+  y seams de compatibilidad. Replay Text evita una consulta de capacidad por
+  archivo sin eliminar lectura/hash ni validación de materializaciones.
+
 ## 2026-09-27 — Corrección integral de procesamiento y escala
 
 - PDF enumera metadatos mediante su propio writer y una selección TEMP estable;

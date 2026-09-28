@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import unicodedata
 from collections.abc import Iterable
 from threading import RLock
+from typing import TypedDict
 
 from rich import box
 from rich.align import Align
@@ -16,7 +18,6 @@ from rich.measure import Measurement
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.progress import Progress, Task, TaskID
-from rich.rule import Rule
 from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
@@ -41,6 +42,8 @@ _METRIC_PRESENTATION = {
     "cache_synced": ("caché sinc.", "cyan"),
     "review": ("revisión", "yellow"),
     "blocked": ("bloqueados", "bold red"),
+    "advisory_blocked": ("abstenciones advisory", "yellow"),
+    "cache_pending": ("caché pendiente", "yellow"),
     "stale": ("obsoletos", "yellow"),
     "already_organized": ("ya organizados", "cyan"),
     "errors": ("errores", "bold red"),
@@ -60,6 +63,8 @@ _METRIC_PRESENTATION = {
     "reused": ("reutilizados", "cyan"),
     "embedded": ("vectores", "green"),
     "generation": ("generación", "bright_black"),
+    "model_id": ("modelo", "bright_black"),
+    "source_scope": ("contenido", "blue"),
     "status": ("estado", "white"),
     "atomic": ("ZIP atómicos", "white"),
     "generic": ("ZIP genéricos", "white"),
@@ -136,6 +141,16 @@ _PRIMARY_METRICS = frozenset((*_METRIC_FIELDS.values(), "status"))
 _DROP_PRIORITY = ("elapsed", "waits", "new", "cache", "unit")
 
 
+class _ProgressFields(TypedDict):
+    unit: str
+    metrics: tuple[ProgressMetric, ...]
+    operation: str
+    phase: str
+    event_finished: bool
+    completed_count: int
+    total_count: int | None
+
+
 class _AsciiPresentation:
     """Transliterate only the human view; never mutate source events or keys."""
 
@@ -185,9 +200,10 @@ class _DynamicTerminalConsole(Console):
         # Interactive sizing comes from the PTY instead, including fallback.
         self._width = None
         self._height = None
-        self._environ = self._environ.copy()
-        self._environ.pop("COLUMNS", None)
-        self._environ.pop("LINES", None)
+        environment = dict(self._environ)
+        environment.pop("COLUMNS", None)
+        environment.pop("LINES", None)
+        self._environ = environment
 
     @property
     def size(self) -> ConsoleDimensions:
@@ -196,6 +212,10 @@ class _DynamicTerminalConsole(Console):
             return super().size
         columns, lines = dimensions
         return ConsoleDimensions(columns, lines)
+
+    @size.setter
+    def size(self, new_size: tuple[int, int]) -> None:
+        self._width, self._height = new_size
 
 
 def _default_console() -> Console:
@@ -211,7 +231,7 @@ def _default_console() -> Console:
 def _group_index(operation: str, phase: str) -> int:
     if operation == "framework" and phase == "prepare":
         return 0
-    if operation in {"dedup", "zip-intake"} or (
+    if operation in {"dedup", "zip-intake", "email-intake"} or (
         operation == "framework"
         and phase in {"content-types", "duplicates", "zip-intake-reconciliation"}
     ):
@@ -223,12 +243,20 @@ def _group_index(operation: str, phase: str) -> int:
     return 4
 
 
-def _task_label(operation: str, phase: str) -> str:
+def _task_label(operation: str, phase: str, metrics: dict[str, int | str] | None = None) -> str:
     if operation == "zip-intake":
         return "Revisar contenedores"
+    if operation == "email-intake":
+        return "Adjuntos de correo"
     if operation in _ROUTE_LABELS:
         route = _ROUTE_LABELS[operation]
-        suffix = {"fts": "Texto", "profile": "Perfil"}.get(phase)
+        if phase.startswith("catalog-"):
+            kind = phase.removeprefix("catalog-")
+            label = kind.upper() if kind not in _ROUTE_LABELS else _ROUTE_LABELS[kind]
+            return f"{label} / Catálogo"
+        if phase.startswith("format:"):
+            return f"{phase.removeprefix('format:').upper()} / Extracción"
+        suffix = {"fts": "FTS", "profile": "Perfil", "extract": "Extracción"}.get(phase)
         return f"{route} / {suffix}" if suffix else route
     if operation == "framework":
         return {
@@ -258,7 +286,11 @@ def _task_label(operation: str, phase: str) -> str:
             "blocked": "Modelo",
             "retry": "Reintento",
         }.get(kind, "Semantic")
-        return f"{label} {scope.upper()}" if scope and kind != "generation" else label
+        if kind == "generation":
+            source = str((metrics or {}).get("source_scope", ""))
+            scope_label = {"text": "Texto", "image": "Imagen", "image-ocr": "OCR imagen"}.get(source, "")
+            return f"{label} {scope_label} G{scope}" if scope_label else f"{label} G{scope}"
+        return f"{label} {scope.upper()}" if scope else label
     if phase == "organization-plan":
         return "Planificar organización"
     if phase == "organization-apply":
@@ -322,7 +354,7 @@ def _task_cells(task: Task) -> dict[str, Text]:
     }.get(status, "default")
     cells = {
         "label": Text(_task_label(
-            str(task.fields.get("operation", "")), str(task.fields.get("phase", "")),
+            str(task.fields.get("operation", "")), str(task.fields.get("phase", "")), metrics,
         ), style="bold default"),
         "advance": Text(f"{completed}/{total_text}"),
         "unit": Text("conten." if task.fields.get("operation") == "zip-intake"
@@ -352,6 +384,7 @@ class _GroupedProgress(Progress):
         self._layout_console = console
         self.compact = False
         self._displayed_metrics: dict[TaskID, frozenset[str]] = {}
+        self._displayed_fields: dict[TaskID, frozenset[str]] = {}
         super().__init__(
             console=console, transient=transient, refresh_per_second=refresh_per_second,
         )
@@ -425,6 +458,7 @@ class _GroupedProgress(Progress):
                 cell.append_text(row["errors"])
                 table.add_row(cell)
                 self._displayed_metrics[task.id] = frozenset({"status", "errors"})
+                self._displayed_fields[task.id] = frozenset({"label", "advance", "status", "errors"})
             return table
         self.compact = self.compact or fields != list(
             _ROUTE_FIELDS if route_section else _GENERAL_FIELDS
@@ -457,6 +491,7 @@ class _GroupedProgress(Progress):
         ) | {"status"}
         for task, row in zip(visible, cells, strict=True):
             self._displayed_metrics[task.id] = displayed
+            self._displayed_fields[task.id] = frozenset(fields)
             table.add_row(*(row[field] for field in fields))
         return table
 
@@ -502,11 +537,28 @@ class _GroupedProgress(Progress):
             Align.center(table, width=self._table_width()) if self._decorated() else table
         ]
         for task in members:
+            expected_fields = _ROUTE_FIELDS if group in {2, 3} else _GENERAL_FIELDS
+            omitted = [field for field in expected_fields
+                       if field not in self._displayed_fields.get(task.id, frozenset(expected_fields))]
+            if omitted:
+                cells = _task_cells(task)
+                values = " · ".join(f"{_FIELD_LABELS[field]}: {cells[field].plain}" for field in omitted)
+                contents.append(Text(f"{cells['label'].plain} · {values}", style="dim"))
+            format_summary = self._text_format_summary(task)
+            if format_summary is not None:
+                contents.append(format_summary)
             if task.fields.get("operation") == "zip-intake":
                 summary = self._zip_summary(task)
                 contents.extend((Text(""),
                                  Align.center(summary, width=self._table_width())
                                  if self._decorated() else summary))
+            if task.fields.get("phase") in {"organization-apply", "organization-plan", "empty-directories"}:
+                metrics = _metric_values(task)
+                effect_values = [f"{_METRIC_PRESENTATION.get(k, (k, ''))[0]}={metrics[k]}"
+                          for k in ("applied", "blocked", "advisory_blocked", "review",
+                                    "cache_pending", "remaining") if k in metrics]
+                if effect_values:
+                    contents.append(Text(" · ".join(effect_values)))
         if not self._decorated():
             return Group(Text(title, style="bold"), Padding(Group(*contents), (0, 0, 0, 2)))
         # One frame per stage, not per metric or row. Terminal foreground is
@@ -519,80 +571,28 @@ class _GroupedProgress(Progress):
             width=self._layout_width(), padding=padding, safe_box=True,
         ))
 
-    def _focus_renderables(self, tasks: list[Task]) -> Iterable[RenderableType]:
-        """Keep current work and warnings in a short live viewport.
-
-        This is a presentation filter, not a second task/history store. The
-        complete dashboard returns when Live stops; the structured stream is
-        never filtered. Completed history must not push a failure offscreen.
-        """
-
-        unsuccessful = {"failed", "error", "cancelled", "canceled", "partial", "incomplete",
-                        "blocked", "unavailable", "paused", "interrumpido", "unknown"}
-        known_statuses = unsuccessful | {"running", "pending", "complete", "completed", "success",
-                                        "ok", "applied", "planned", "skipped"}
-
-        def priority(task: Task) -> tuple[int, int]:
-            metrics = _metric_values(task)
-            status = str(metrics.get("status", metrics.get("completion_status", ""))).lower()
-            errors = metrics.get("errors")
-            unknown_status = bool(status) and status not in known_statuses
-            if status in unsuccessful or unknown_status or (type(errors) is int and errors > 0):
-                if status in unsuccessful or unknown_status:
-                    return (0 if task.fields.get("operation") in _ROUTE_LABELS else 1), -task.id
-                return 2, -task.id
-            if not task.fields.get("event_finished", False):
-                return 3, -task.id
-            return 4, -task.id
-
-        relevant = [task for task in tasks if priority(task)[0] < 4]
-        # A row can stack its count and state if the horizontal budget is too
-        # small. Reserve that space before selecting rows, not after drawing.
-        candidates = sorted(relevant or tasks, key=priority)
-        stacked = len(self.make_tasks_table(candidates).columns) == 1
-        zip_task = next((task for task in tasks if task.fields.get("operation") == "zip-intake"), None)
-        zip_line: Text | None = None
-        zip_rows = 0
-        if zip_task is not None:
-            metrics = _metric_values(zip_task)
-
-            def observed(key: str, alias: str = "") -> str:
-                value = metrics.get(key, metrics.get(alias))
-                return str(value) if type(value) is int and value >= 0 else "—"
-
-            zip_line = Text(
-                f".zip: {observed('zip_files_inventoried')} · "
-                f"paquetes: {observed('atomic_packages', 'atomic')} · "
-                f"gen.: {observed('generic_identified', 'generic')}",
-            )
-            zip_rows = max(1, (zip_line.cell_len + self._layout_width() - 1) // self._layout_width())
-        available = max(1, self._layout_console.height - 5 - zip_rows)
-        selected: list[Task] = []
-        for task in candidates:
-            rows = 1
-            if stacked:
-                cells = _task_cells(task)
-                rows = 3 + int(cells["advance"].cell_len > self._table_width())
-                rows += max(0, (cells["status"].cell_len + cells["errors"].cell_len + 12 - 1)
-                            // self._table_width())
-            if rows > available and selected:
-                break
-            selected.append(task)
-            available -= rows
-            if available <= 0:
-                break
-        selected.sort(key=_task_order)
-        margin = max(0, (self._layout_console.width - self._layout_width()) // 2)
-        yield Padding(Rule(Text("Trabajo actual y avisos", style="bold default"), style="cyan",
-                           align="center"), (0, margin))
-        yield Align.center(self.make_tasks_table(selected), width=self._layout_width())
-        if zip_line is not None:
-            yield Align.center(zip_line, width=self._layout_width())
-        hidden = len(tasks) - len(selected)
-        if hidden:
-            yield Align.center(Text(
-                f"Vista compacta: {hidden} más; detalle al finalizar.", style="dim",
-            ), width=self._layout_width())
+    def _text_format_summary(self, task: Task) -> Table | None:
+        """Project typed per-format observations, without reprocessing sources."""
+        formats: dict[str, dict[str, int]] = {}
+        for name, value in _metric_values(task).items():
+            parts = name.split(":", 2)
+            if len(parts) == 3 and parts[0] == "format" and type(value) is int:
+                formats.setdefault(parts[2], {})[parts[1]] = value
+        if not formats:
+            return None
+        table = Table(box=None, padding=(0, 1), header_style="dim", width=self._table_width())
+        table.add_column("Formato", no_wrap=False)
+        table.add_column("Cobertura observada", overflow="fold")
+        labels = {"email": "EML", "markdown": "MD", "txt": "TXT"}
+        for kind, metrics in sorted(formats.items()):
+            values = []
+            for key, label in (("candidates", "observados"), ("processed", "completos"),
+                               ("cache_hits", "caché"), ("extracted", "extraídos"),
+                               ("errors", "errores"), ("cached_errors", "errores caché")):
+                if key in metrics:
+                    values.append(f"{label}={metrics[key]}")
+            table.add_row(labels.get(kind, kind.upper()), " · ".join(values))
+        return table
 
     def get_renderables(self) -> Iterable[RenderableType]:
         ascii_only = self._layout_console.options.ascii_only or (
@@ -605,16 +605,7 @@ class _GroupedProgress(Progress):
         tasks = sorted((task for task in self.tasks if task.visible), key=_task_order)
         self.compact = False
         self._displayed_metrics = {}
-        groups = {_group_index(str(task.fields.get("operation", "")),
-                               str(task.fields.get("phase", ""))) for task in tasks}
-        zip_rows = 5 if self._table_width() >= 70 else 8
-        expected_rows = len(tasks) + len(groups) * 5 + sum(
-            zip_rows for task in tasks if task.fields.get("operation") == "zip-intake"
-        ) + 2
-        if (tasks and self._decorated() and self.live.is_started and not self.details
-                and expected_rows > self._layout_console.height):
-            yield from self._focus_renderables(tasks)
-            return
+        self._displayed_fields = {}
         shown_group = False
         for group, title in enumerate(_GROUP_LABELS):
             members = [
@@ -685,17 +676,83 @@ class RichProgress:
         self._tasks: dict[tuple[str, str], TaskID] = {}
         self._lock = RLock()
         self._started = False
+        self._transient = transient
+        self._scrollback = False
+        self._printed: dict[TaskID, tuple[float, tuple[object, ...]]] = {}
+
+    def _overflowing(self) -> bool:
+        """Switch to an append-only log instead of hiding completed rows.
+
+        Live cannot erase lines which have scrolled beyond a terminal's height.
+        Repainting an oversized dashboard repeatedly would duplicate history.
+        Estimate conservatively; once switched, never erase existing scrollback.
+        """
+        if self._transient or not self._console.is_terminal or self._console.is_dumb_terminal:
+            return False
+        tasks = [task for task in self._progress.tasks if task.visible]
+        groups = {_group_index(str(t.fields.get("operation", "")),
+                               str(t.fields.get("phase", ""))) for t in tasks}
+        rows = len(tasks) + len(groups) * 5 + 2
+        if self._console.width < 100:
+            rows += 2 * len(tasks)  # wrapped primary counters/time stay visible
+        rows += sum(8 for task in tasks if task.fields.get("operation") == "zip-intake")
+        for task in tasks:
+            formats = {name.split(":", 2)[2] for name in _metric_values(task)
+                       if name.startswith("format:") and len(name.split(":", 2)) == 3}
+            if formats:
+                rows += 3 + 2 * len(formats)
+        if self._progress.details:
+            rows += 2 + 2 * len(tasks)
+        return rows > self._console.height
+
+    @staticmethod
+    def _print_signature(task: Task) -> tuple[object, ...]:
+        return (task.fields.get("completed_count"), task.fields.get("total_count"),
+                task.fields.get("event_finished"), task.fields.get("metrics"), task.description)
+
+    def _print_scrollback_task(self, task: Task, *, final: bool = False) -> None:
+        now = time.monotonic()
+        signature = self._print_signature(task)
+        previous = self._printed.get(task.id)
+        if previous is not None:
+            if previous[1] == signature:
+                return
+            if not final and not task.fields.get("event_finished") and now - previous[0] < 5.0:
+                return
+        group = _group_index(str(task.fields.get("operation", "")),
+                             str(task.fields.get("phase", "")))
+        renderable = self._progress._section(_GROUP_LABELS[group], [task], group=group)
+        if self._console.options.ascii_only or os.environ.get("NEOCORTEX_PROGRESS_ASCII") == "1":
+            renderable = _AsciiPresentation(renderable)
+        self._console.print(renderable)
+        self._printed[task.id] = (now, signature)
+
+    def _switch_to_scrollback(self) -> None:
+        # Clear the bounded viewport once, then emit the complete accumulated
+        # state to the terminal's normal history. No alternate screen is used.
+        self._progress.live.transient = True
+        self._progress.stop()
+        self._scrollback = True
+        self._console.print(self._progress.get_renderable())
+        now = time.monotonic()
+        self._printed = {task.id: (now, self._print_signature(task))
+                         for task in self._progress.tasks}
 
     def start(self) -> None:
         with self._lock:
             if not self._started:
-                self._progress.start()
+                if not self._scrollback:
+                    self._progress.start()
                 self._started = True
 
     def stop(self) -> None:
         with self._lock:
             if self._started:
-                self._progress.stop()
+                if self._scrollback:
+                    for task in self._progress.tasks:
+                        self._print_scrollback_task(task, final=True)
+                else:
+                    self._progress.stop()
                 self._started = False
 
     def __call__(self, event: ProgressEvent) -> None:
@@ -703,7 +760,7 @@ class RichProgress:
             if not self._started:
                 self.start()
             task_id = self._tasks.get(event.key)
-            fields = {
+            fields: _ProgressFields = {
                 "unit": event.unit,
                 "metrics": event.metrics,
                 "operation": event.operation,
@@ -753,6 +810,12 @@ class RichProgress:
                 task = next(task for task in self._progress.tasks if task.id == task_id)
                 task.total = event.total
                 self._progress.stop_task(task_id)
+            task = next(task for task in self._progress.tasks if task.id == task_id)
+            if not self._scrollback and self._overflowing():
+                self._switch_to_scrollback()
+            elif self._scrollback:
+                self._print_scrollback_task(task)
+            elif event.finished:
                 self._progress.refresh()
 
     def __enter__(self) -> "RichProgress":

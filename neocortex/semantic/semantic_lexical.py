@@ -543,7 +543,11 @@ def query_term_support(
     cancellation_check: CancellationCheck | None = None,
 ) -> dict[str, object]:
     """Explain literal coverage, never infer entailment or relevance probability."""
-    from .semantic_query_evidence import query_role_counterevidence, requested_evidence_checks
+    from .semantic_query_evidence import (
+        query_role_counterevidence,
+        requested_evidence_checks,
+        structured_query_support,
+    )
 
     _literal_checkpoint(cancellation_check)
     selected = _prepared_literal_query(query, prepared, cancellation_check)
@@ -558,6 +562,7 @@ def query_term_support(
     counterevidence = query_role_counterevidence(query, text)
     _literal_checkpoint(cancellation_check)
     witness_checks = requested_evidence_checks(query, text)
+    structured_support = structured_query_support(query, text)
     _literal_checkpoint(cancellation_check)
     return {
         "policy_signature": QUERY_SUPPORT_POLICY,
@@ -576,6 +581,7 @@ def query_term_support(
         "minimum_span_terms": analysis.minimum_span_terms,
         "role_counterevidence": counterevidence,
         "requested_witness_checks": witness_checks,
+        "structured_support": structured_support,
     }
 
 

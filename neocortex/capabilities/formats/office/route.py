@@ -8,7 +8,7 @@ from ..fts_lookup import initialize_format_fts_lookup
 
 import sqlite3
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any as Any
 from typing import Literal, cast
@@ -140,6 +140,15 @@ def _extract_office_work(work: _OfficeWork) -> _OfficeWorkResult:
 
 
 @dataclass(slots=True)
+class _OfficeFormatMetrics:
+    processed: int = 0
+    cache_hits: int = 0
+    cached_errors: int = 0
+    extracted: int = 0
+    errors: int = 0
+
+
+@dataclass(slots=True)
 class _OfficeRunMetrics:
     candidate_pool: int
     eligible: int
@@ -153,6 +162,19 @@ class _OfficeRunMetrics:
     deletion_candidates: int = 0
     retryable_errors: int = 0
     pruned: int = 0
+    by_format: dict[str, _OfficeFormatMetrics] = field(default_factory=dict)
+
+    def record_format(
+        self, format_name: str, *, cached: bool, cached_error: bool = False,
+        outcome: _OfficeCandidateOutcome | None = None,
+    ) -> None:
+        item = self.by_format.setdefault(format_name, _OfficeFormatMetrics())
+        item.processed += 1
+        item.cache_hits += int(cached)
+        item.cached_errors += int(cached_error)
+        if outcome is not None:
+            item.extracted += outcome.extracted
+            item.errors += outcome.errors
 
     def apply(self, outcome: _OfficeCandidateOutcome) -> None:
         self.extracted += outcome.extracted
@@ -467,13 +489,19 @@ class OfficeRoute:
         ) as results:
             for result in results:
                 self.cancellation.checkpoint()
+                outcome = None
                 if result.cached:
                     metrics.cache_hits += 1
                     metrics.cached_errors += int(result.cached_error)
                 else:
-                    metrics.apply(self._persist_elastic_result(
+                    outcome = self._persist_elastic_result(
                         connection, result, reconciliations,
-                    ))
+                    )
+                    metrics.apply(outcome)
+                metrics.record_format(
+                    result.work.format_name, cached=result.cached,
+                    cached_error=result.cached_error, outcome=outcome,
+                )
                 metrics.processed += 1
                 self._commit_batch(connection, metrics, reconciliations)
 
@@ -583,13 +611,14 @@ class OfficeRoute:
             cached,
             reconciliations,
         )
+        outcome = None
         if consumed:
             metrics.cache_hits += 1
             metrics.cached_errors += int(cached_error)
         else:
-            metrics.apply(
-                self._process_candidate(connection, snapshot, format_name, reconciliations)
-            )
+            outcome = self._process_candidate(connection, snapshot, format_name, reconciliations)
+            metrics.apply(outcome)
+        metrics.record_format(format_name, cached=consumed, cached_error=cached_error, outcome=outcome)
         metrics.processed += 1
         self._commit_batch(connection, metrics, reconciliations)
 
@@ -632,10 +661,20 @@ class OfficeRoute:
                     ProgressMetric("cached_errors", metrics.cached_errors),
                     ProgressMetric("errors", metrics.errors),
                     ProgressMetric("completed_work", metrics.extracted),
+                    ProgressMetric("new_work", metrics.processed - metrics.cache_hits),
                     ProgressMetric("memory_waits", self.memory_gate.wait_count),
                 ),
             ),
         )
+        for format_name, item in sorted(metrics.by_format.items()):
+            emit_progress(self.progress, ProgressEvent(
+                "office", f"format:{format_name}", f"Office {format_name.upper()}",
+                item.processed, item.processed if finished else None, "documentos", finished,
+                (ProgressMetric("cache_hits", item.cache_hits),
+                 ProgressMetric("cached_errors", item.cached_errors),
+                 ProgressMetric("new_work", item.processed - item.cache_hits),
+                 ProgressMetric("errors", item.errors)),
+            ))
 
     def _summary(self, metrics: _OfficeRunMetrics) -> OfficeRouteSummary:
         processing = self.config.processing_provenance

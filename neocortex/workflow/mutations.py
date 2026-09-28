@@ -36,6 +36,8 @@ from neocortex.deduplication import (
     stat_matches_snapshot,
 )
 from neocortex.safety.kio_trash import (
+    KIO_OBJECT_EMPTY_DIRECTORY,
+    KIO_OBJECT_FILE,
     KioTrashBatchItem,
     KioTrashResult,
     KioTrashService,
@@ -44,6 +46,7 @@ from neocortex.safety.kio_trash import (
     is_metadata_binding,
     metadata_binding,
     trash_receipt_paths,
+    validate_empty_directory_source,
 )
 from neocortex.workflow.actions.action_policy import validate_mutation_path
 from neocortex.workflow.actions.file_action_recovery import effect_receipt_json
@@ -532,6 +535,7 @@ class KioTrashBackend:
     """
 
     name = "kio-trash-path-bound-v1"
+    supports_empty_directories = True
 
     def __init__(
         self,
@@ -565,15 +569,33 @@ class KioTrashBackend:
             return BackendOutcome("blocked", "kio_backend_supports_trash_only")
         if not hasattr(effect, "source") or not hasattr(candidate, "root"):
             return BackendOutcome("blocked", "kio_runner_not_injected")
+        source = getattr(effect, "source", None)
+        source_digest = getattr(effect, "source_digest", None)
+        if not isinstance(source, FileSnapshot) or not isinstance(source_digest, str):
+            return BackendOutcome("blocked", "kio_source_binding_invalid")
 
-        if self._revalidate_native:
+        object_kind = getattr(effect, "object_kind", KIO_OBJECT_FILE)
+        if object_kind not in {KIO_OBJECT_FILE, KIO_OBJECT_EMPTY_DIRECTORY}:
+            return BackendOutcome("blocked", "kio_object_kind_invalid")
+        if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+            try:
+                validate_empty_directory_source(
+                    Path(source.path),
+                    source,
+                    root=Path(candidate.root),
+                )
+            except (MutationError, OSError, RuntimeError, ValueError) as exc:
+                return BackendOutcome("blocked", "kio_preflight_failed", str(exc))
+        elif self._revalidate_native:
             try:
                 _validate_effect_physical(effect, Path(candidate.root))
             except (MutationError, OSError, RuntimeError, ValueError) as exc:
                 return BackendOutcome("blocked", "kio_preflight_failed", str(exc))
         result = self._service.move(
-            effect.source,
-            source_digest=effect.source_digest,
+            source,
+            source_digest=source_digest,
+            root=Path(candidate.root),
+            object_kind=object_kind,
         )
         return self._backend_outcome(effect, result)
 
@@ -591,8 +613,10 @@ class KioTrashBackend:
                 "KIO reported an applied item without a receipt",
             )
         try:
-            source = effect.source
-            source_digest = effect.source_digest
+            source = getattr(effect, "source", None)
+            source_digest = getattr(effect, "source_digest", None)
+            if not isinstance(source, FileSnapshot) or not isinstance(source_digest, str):
+                raise ValueError("KIO receipt source binding is invalid")
             evidence = json.loads(result.receipt.trash_evidence)
             trash_receipt_paths(evidence, source, source_digest)
             receipt = effect_receipt_json(
@@ -605,6 +629,7 @@ class KioTrashBackend:
                 {
                     "backend": self.name,
                     "source_digest": source_digest,
+                    "object_kind": getattr(effect, "object_kind", KIO_OBJECT_FILE),
                     "trash": evidence,
                 }
             )
@@ -623,6 +648,7 @@ class KioTrashBackend:
         *,
         root: Path,
         source_digest: str,
+        object_kind: str = KIO_OBJECT_FILE,
     ) -> BackendOutcome:
         """Apply one planned snapshot without manufacturing a new plan."""
 
@@ -633,12 +659,13 @@ class KioTrashBackend:
             keeper=None,
             keeper_digest=None,
             target_path=None,
+            object_kind=object_kind,
         )
         return self.apply(ApplyCandidate("framework", "", Path(root), effect))
 
     def apply_many_snapshots(
         self,
-        items: Sequence[tuple[FileSnapshot, str]],
+        items: Sequence[tuple[FileSnapshot, str] | tuple[FileSnapshot, str, str]],
         *,
         root: Path,
     ) -> tuple[BackendOutcome, ...]:
@@ -657,14 +684,17 @@ class KioTrashBackend:
             if (
                 not isinstance(item, Sequence)
                 or isinstance(item, (str, bytes, bytearray))
-                or len(item) != 2
+                or len(item) not in {2, 3}
                 or not isinstance(item[0], FileSnapshot)
                 or not isinstance(item[1], str)
             ):
                 raise TypeError(
                     "each KIO batch item must contain (FileSnapshot, source_digest)"
                 )
-            snapshot, source_digest = item
+            snapshot, source_digest = item[:2]
+            object_kind = item[2] if len(item) == 3 else KIO_OBJECT_FILE
+            if object_kind not in {KIO_OBJECT_FILE, KIO_OBJECT_EMPTY_DIRECTORY}:
+                raise TypeError("unsupported KIO object kind")
             effect = SimpleNamespace(
                 action="trash",
                 source=snapshot,
@@ -672,21 +702,27 @@ class KioTrashBackend:
                 keeper=None,
                 keeper_digest=None,
                 target_path=None,
+                object_kind=object_kind,
             )
             try:
-                _validate_effect_physical(effect, root)
+                if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
+                    validate_empty_directory_source(Path(snapshot.path), snapshot, root=root)
+                else:
+                    _validate_effect_physical(effect, root)
             except (MutationError, OSError, RuntimeError, ValueError) as exc:
                 outcomes[index] = BackendOutcome(
                     "blocked", "kio_preflight_failed", str(exc)
                 )
                 continue
             valid_effects.append(effect)
-            valid_items.append(KioTrashBatchItem(snapshot.path, snapshot, source_digest))
+            valid_items.append(
+                KioTrashBatchItem(snapshot.path, snapshot, source_digest, object_kind)
+            )
             valid_indexes.append(index)
         if not valid_items:
             return tuple(item for item in outcomes if item is not None)
 
-        batch_outcomes = self._service.move_many(valid_items)
+        batch_outcomes = self._service.move_many(valid_items, root=root)
         for index, effect, result in zip(
             valid_indexes, valid_effects, batch_outcomes, strict=True
         ):

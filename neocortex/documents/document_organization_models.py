@@ -293,6 +293,14 @@ def _organization_plan_contract_view(row: sqlite3.Row) -> _OrganizationPlanContr
         blockers = json.loads(row["blockers_json"])
         if not isinstance(blockers, list) or not all(isinstance(value, str) for value in blockers):
             raise ValueError("organization_blockers_invalid")
+        organization_root = Path(str(row["organization_root"]))
+        persisted_executable = bool(int(row["executable"]))
+        if not organization_root.is_relative_to(scope.root):
+            # A destination outside the selected source scope cannot be handed
+            # to the descriptor-relative Linux backend, regardless of a
+            # writable SQLite flag.
+            persisted_executable = False
+            blockers = [*blockers, "backend_unavailable", "authorization_required"]
         return _OrganizationPlanContractView(
             source_scope_id=scope.scope_id,
             source_root=str(scope.root),
@@ -303,12 +311,10 @@ def _organization_plan_contract_view(row: sqlite3.Row) -> _OrganizationPlanContr
             representation_kind=str(row["representation_kind"] or "unknown"),
             operation_kind=str(row["operation_kind"] or "unresolved"),
             eligibility_status=str(row["eligibility_status"]),
-            # This facade has no grant-consuming backend.  A persisted flag
-            # alone cannot attest execution authority or backend availability.
-            executable=False,
-            blockers=tuple(
-                sorted(set(blockers) | {"backend_unavailable", "authorization_required"})
-            ),
+            # The persisted bit is only a planner capability hint.  Apply still
+            # revalidates scope, identity, no-replace and backend evidence.
+            executable=persisted_executable and not blockers,
+            blockers=tuple(sorted(set(blockers))),
         )
     except (ValueError, TypeError, KeyError):
         return _OrganizationPlanContractView(

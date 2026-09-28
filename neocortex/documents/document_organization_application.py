@@ -11,10 +11,12 @@ import os
 import sqlite3
 import stat as stat_module
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from neocortex.platform.policy import sqlite_path_collation, stat_birthtime_ns
+from neocortex.foundation.file_identity import FileIdentity, FileIdentityEncoding
 
 from neocortex.deduplication import FileSnapshot, snapshot_path
 from neocortex.progress import (
@@ -35,9 +37,19 @@ from neocortex.safety.corpus_access import (
     CorpusMutationGuard,
     path_trees_intersect,
 )
-from .document_cache_sync import synchronize_moved_document
+from neocortex.safety.kio_trash import metadata_binding
+from neocortex.workflow.mutations import ApplyCandidate, PosixRenameBackend
+from .document_cache_sync import (
+    DocumentMoveTransition,
+    synchronize_moved_document,
+    synchronize_moved_documents,
+)
 from .document_catalog import document_catalog_database, initialize_document_catalog
 from .document_organization_scope import OrganizationInputScope, assess_organization_resource
+from .document_resource_binding import (
+    ResourceBindingError,
+    rebind_resource_binding_path,
+)
 from .document_organization_models import (
     ORGANIZATION_APPLY_BATCH_SIZE,
     ORGANIZATION_PROGRESS_INTERVAL,
@@ -63,6 +75,33 @@ from neocortex.safety.protected_content import ProtectedContentError
 
 
 _PATH_COLLATION = sqlite_path_collation()
+_ORGANIZATION_MOVE_RECEIPT_SCHEMA = "neocortex.organization-move-receipt/v1"
+_ORGANIZATION_MOVE_BACKEND = "posix-link-unlink-no-replace-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class _OrganizationFilesystemOutcome:
+    """One physical boundary result, including durable evidence when moved."""
+
+    status: str
+    detail: str
+    receipt_json: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"moved", "blocked", "stale", "failed", "recovery_required"}:
+            raise ValueError(f"unsupported organization filesystem status: {self.status}")
+        if self.status == "moved" and not self.receipt_json:
+            raise ValueError("a moved organization outcome requires a receipt")
+
+
+@dataclass(frozen=True, slots=True)
+class _OrganizationMoveEffect:
+    """Duck-typed effect consumed by :class:`PosixRenameBackend`."""
+
+    action: str
+    source: FileSnapshot
+    source_digest: str
+    target_path: Path
 
 
 @dataclass(slots=True)
@@ -121,6 +160,17 @@ class _OrganizationApplyCounters:
             remaining=remaining,
         )
 
+    def resolve_cache_sync(self, count: int, *, complete: bool) -> None:
+        """Resolve physical moves after one coalesced owner publication."""
+
+        if count < 0 or count > self.cache_pending:
+            raise ValueError("cache-sync resolution count is outside pending moves")
+        if not complete:
+            return
+        self.cache_pending -= count
+        self.applied += count
+        self.cache_synced += count
+
 
 def apply_document_organization(
     catalog_path: Path,
@@ -129,6 +179,8 @@ def apply_document_organization(
     mutation_guard: CorpusMutationGuard,
     max_actions: int = 100,
     on_progress: OrganizationApplyProgressCallback | None = None,
+    framework_lock_held: bool = False,
+    checkpoint: Callable[[], None] | None = None,
 ) -> OrganizationApplySummary:
     """Apply plans and mark them complete only after every cache is synchronized."""
 
@@ -150,6 +202,8 @@ def apply_document_organization(
                 rows,
                 mutation_guard,
                 on_progress,
+                framework_lock_held,
+                checkpoint,
             )
         except BaseException as exc:
             _fail_organization_run(connection, run_id, exc)
@@ -202,6 +256,8 @@ def _execute_organization_apply_run(
     rows: list[sqlite3.Row],
     mutation_guard: CorpusMutationGuard,
     on_progress: OrganizationApplyProgressCallback | None,
+    framework_lock_held: bool,
+    checkpoint: Callable[[], None] | None,
 ) -> OrganizationApplySummary:
     protected_denials, root_stat = _prepare_selected_organization_plans(
         catalog_path,
@@ -221,6 +277,8 @@ def _execute_organization_apply_run(
         mutation_guard,
         counters,
         on_progress,
+        framework_lock_held,
+        checkpoint,
     )
     summary = counters.summary(
         run_id=run_id,
@@ -270,8 +328,19 @@ def _organization_execution_denials(
             if scope.scope_id != row["source_scope_id"]:
                 raise ValueError("organization_scope_digest_mismatch")
             scope.verify(connection)
-            assessment = assess_organization_resource(row, scope)
-            if not assessment.included:
+            # Once the filesystem move is durable, the catalog document path is
+            # intentionally rebound to the destination while the owner caches
+            # may still be pending.  The original resource binding still names
+            # the pre-effect locator, so re-running the pre-effect assessment
+            # would incorrectly turn a resumable cache transition into a
+            # scope denial.  The physical receipt and scope/root fences are
+            # checked again by the replay path below.
+            assessment = (
+                None
+                if str(row["status"]) in {"applying", "moved_cache_pending"}
+                else assess_organization_resource(row, scope)
+            )
+            if assessment is not None and not assessment.included:
                 denials[plan_id] = assessment.reason or "organization_scope_unverified"
             elif (
                 row["representation_kind"] != "physical_file"
@@ -280,10 +349,19 @@ def _organization_execution_denials(
                 denials[plan_id] = "organization_operation_not_physical"
             elif not row["executable"] or json.loads(row["blockers_json"]):
                 denials[plan_id] = "organization_plan_advisory_only"
-            else:
-                # This legacy API has no explicit grant-consuming backend.
-                # A writable database flag is not effect permission.
+            elif row["destination_path"] is None:
+                denials[plan_id] = "organization_plan_has_no_destination"
+            elif not Path(str(row["organization_root"])).is_relative_to(scope.root):
+                # The no-replace backend must open one selected source-scope
+                # descriptor for both source and destination.  Do not let a
+                # writable database flag widen that root.
                 denials[plan_id] = "organization_authorized_backend_unavailable"
+            else:
+                # The persisted bit is only a capability hint.  The actual
+                # permission boundary is consumed below by the live guard and
+                # descriptor-relative backend, which revalidates the source
+                # immediately before renameat2.
+                continue
         except (OSError, ValueError, TypeError, KeyError) as exc:
             denials[plan_id] = f"organization_contract_invalid:{type(exc).__name__}"
     return denials
@@ -299,7 +377,10 @@ def _apply_selected_organization_rows(
     mutation_guard: CorpusMutationGuard,
     counters: _OrganizationApplyCounters,
     on_progress: OrganizationApplyProgressCallback | None,
+    framework_lock_held: bool,
+    checkpoint: Callable[[], None] | None,
 ) -> None:
+    pending_rows: list[sqlite3.Row] = []
     for selected_index, row in enumerate(rows, start=1):
         outcome = _apply_organization_row(
             connection,
@@ -309,15 +390,78 @@ def _apply_selected_organization_rows(
             row,
             protected_denials,
             mutation_guard,
+            synchronize_cache=False,
         )
         counters.record(outcome)
         connection.commit()
+        if outcome.cache_pending:
+            refreshed = connection.execute(
+                "SELECT * FROM organization_plans WHERE plan_id=?",
+                (row["plan_id"],),
+            ).fetchone()
+            if refreshed is not None:
+                pending_rows.append(refreshed)
         _report_organization_apply_progress(
             on_progress,
             counters,
             selected_index=selected_index,
             selected_total=len(rows),
         )
+    if not pending_rows:
+        return
+    transitions = tuple(
+        DocumentMoveTransition(
+            source_kind=str(row["source_kind"]),
+            file_key=str(row["file_key"]),
+            old_path=str(row["source_path"]),
+            new_path=str(row["destination_path"]),
+            volume_id=str(row["volume_id"]),
+            file_id=str(row["file_id"]),
+        )
+        for row in pending_rows
+    )
+    sync = synchronize_moved_documents(
+        catalog_path.parent,
+        transitions,
+        framework_lock_held=framework_lock_held,
+        work_check=checkpoint,
+    )
+    sync_json = sync.as_json()
+    counters.resolve_cache_sync(len(pending_rows), complete=sync.complete)
+    for row in pending_rows:
+        receipt = _stored_move_receipt(row["cache_sync_json"])
+        envelope = _cache_sync_envelope(sync_json, receipt)
+        if sync.complete:
+            connection.execute(
+                """UPDATE organization_plans SET status='applied',
+                detail=?,completed_ns=?,cache_sync_status='synced',
+                cache_sync_json=?,cache_sync_error=NULL WHERE plan_id=?""",
+                (
+                    "filesystem move and batch cache synchronization completed",
+                    time.time_ns(),
+                    envelope,
+                    row["plan_id"],
+                ),
+            )
+        else:
+            connection.execute(
+                """UPDATE organization_plans SET status='moved_cache_pending',
+                detail=?,completed_ns=NULL,cache_sync_status='pending',
+                cache_sync_json=?,cache_sync_error=? WHERE plan_id=?""",
+                (
+                    "filesystem move completed; batch cache synchronization pending",
+                    envelope,
+                    sync.error_message,
+                    row["plan_id"],
+                ),
+            )
+    connection.commit()
+    _report_organization_apply_progress(
+        on_progress,
+        counters,
+        selected_index=len(rows),
+        selected_total=len(rows),
+    )
 
 
 def _apply_organization_row(
@@ -328,6 +472,8 @@ def _apply_organization_row(
     row: sqlite3.Row,
     protected_denials: dict[str, str],
     mutation_guard: CorpusMutationGuard,
+    *,
+    synchronize_cache: bool = True,
 ) -> _ApplyRowOutcome:
     plan_id = str(row["plan_id"])
     if plan_id in protected_denials:
@@ -345,6 +491,7 @@ def _apply_organization_row(
         root,
         root_stat,
         mutation_guard,
+        synchronize_cache=synchronize_cache,
     )
 
 
@@ -450,9 +597,12 @@ def _apply_selected_organization_plan(
     root: Path,
     root_stat: os.stat_result,
     mutation_guard: CorpusMutationGuard,
+    *,
+    synchronize_cache: bool = True,
 ) -> _ApplyRowOutcome:
     status = str(row["status"])
     detail = str(row["detail"] or "")
+    filesystem: _OrganizationFilesystemOutcome | None = None
     if status != "moved_cache_pending":
         row = _disambiguate_apply_destination(connection, row, mutation_guard)
         status = str(row["status"])
@@ -471,22 +621,39 @@ def _apply_selected_organization_plan(
                     ),
                 )
                 connection.commit()
-            status, detail = _apply_one_plan(
+            filesystem = _apply_one_plan(
                 row,
                 catalog_path.parent,
                 root,
                 root_stat,
                 mutation_guard,
+                connection=connection,
             )
+            status = filesystem.status
+            detail = filesystem.detail
         if status == "moved":
-            _record_moved_path(connection, row, detail)
+            assert filesystem is not None and filesystem.receipt_json is not None
+            recorded_status = _record_moved_path(
+                connection,
+                row,
+                detail,
+                receipt_json=filesystem.receipt_json,
+            )
             connection.commit()
-            status = "moved_cache_pending"
+            if recorded_status == "recovery_required":
+                return _ApplyRowOutcome("recovery_required")
+            status = recorded_status
     if status == "moved_cache_pending":
+        pending_receipt = _validate_pending_organization_move(connection, row)
+        if pending_receipt is None:
+            return _ApplyRowOutcome("recovery_required")
+        if not synchronize_cache:
+            return _ApplyRowOutcome("moved_cache_pending", cache_pending=True)
         return _synchronize_applied_organization_plan(
             connection,
             catalog_path,
             row,
+            physical_receipt=pending_receipt,
         )
     completed_ns = None if status == "recovery_required" else time.time_ns()
     connection.execute(
@@ -499,10 +666,90 @@ def _apply_selected_organization_plan(
     return _ApplyRowOutcome(status)
 
 
+def _validate_pending_organization_move(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> str | None:
+    """Revalidate the already-crossed physical boundary before cache writes."""
+
+    source = Path(str(row["source_path"]))
+    destination_value = row["destination_path"]
+    if destination_value is None:
+        detail = "moved cache pending row has no destination"
+        connection.execute(
+            "UPDATE organization_plans SET status='recovery_required',detail=?,completed_ns=NULL WHERE plan_id=?",
+            (detail, row["plan_id"]),
+        )
+        return None
+    destination = Path(str(destination_value))
+    expected, identity_error = _planned_source_snapshot(row, source)
+    if identity_error is not None or expected is None:
+        detail = identity_error[1] if identity_error is not None else "planned source snapshot missing"
+        connection.execute(
+            "UPDATE organization_plans SET status='recovery_required',detail=?,completed_ns=NULL WHERE plan_id=?",
+            (detail, row["plan_id"]),
+        )
+        return None
+    recovered = _recover_organization_destination(
+        source,
+        destination,
+        expected,
+        receipt_json=_stored_move_receipt(row["cache_sync_json"]),
+        effect_pending=str(row["status"]) in {"applying", "moved_cache_pending"},
+    )
+    if recovered is None:
+        detail = "moved cache pending row no longer proves destination identity"
+        connection.execute(
+            "UPDATE organization_plans SET status='recovery_required',detail=?,completed_ns=NULL WHERE plan_id=?",
+            (detail, row["plan_id"]),
+        )
+        return None
+    if recovered.status != "moved" or recovered.receipt_json is None:
+        connection.execute(
+            "UPDATE organization_plans SET status='recovery_required',detail=?,completed_ns=NULL WHERE plan_id=?",
+            (recovered.detail, row["plan_id"]),
+        )
+        return None
+    try:
+        _rebind_current_catalog_document(connection, row)
+    except (ResourceBindingError, RuntimeError) as exc:
+        detail = f"catalog resource binding recovery required: {type(exc).__name__}: {exc}"
+        connection.execute(
+            """UPDATE organization_plans
+            SET status='recovery_required',detail=?,completed_ns=NULL,
+            cache_sync_status='pending',cache_sync_error=?
+            WHERE plan_id=?""",
+            (detail, detail, row["plan_id"]),
+        )
+        return None
+    if _stored_move_receipt(row["cache_sync_json"]) is None:
+        # Preserve a receipt reconstructed from the exact destination snapshot
+        # before any owner cache rebinding is attempted.
+        raw = row["cache_sync_json"]
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) and raw else {}
+        except ValueError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["physical_receipt"] = json.loads(recovered.receipt_json)
+        connection.execute(
+            "UPDATE organization_plans SET cache_sync_json=? WHERE plan_id=?",
+            (
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                row["plan_id"],
+            ),
+        )
+        connection.commit()
+    return recovered.receipt_json
+
+
 def _synchronize_applied_organization_plan(
     connection: sqlite3.Connection,
     catalog_path: Path,
     row: sqlite3.Row,
+    *,
+    physical_receipt: str | None = None,
 ) -> _ApplyRowOutcome:
     sync = synchronize_moved_document(
         catalog_path.parent,
@@ -513,6 +760,9 @@ def _synchronize_applied_organization_plan(
         volume_id=str(row["volume_id"]),
         file_id=str(row["file_id"]),
     )
+    if physical_receipt is None:
+        physical_receipt = _stored_move_receipt(row["cache_sync_json"])
+    sync_json = _cache_sync_envelope(sync.as_json(), physical_receipt)
     if sync.complete:
         connection.execute(
             """UPDATE organization_plans
@@ -522,7 +772,7 @@ def _synchronize_applied_organization_plan(
             (
                 "filesystem move and cache synchronization completed",
                 time.time_ns(),
-                sync.as_json(),
+                sync_json,
                 row["plan_id"],
             ),
         )
@@ -534,12 +784,49 @@ def _synchronize_applied_organization_plan(
         cache_sync_error=? WHERE plan_id=?""",
         (
             "filesystem move completed; cache synchronization pending",
-            sync.as_json(),
+            sync_json,
             sync.error_message,
             row["plan_id"],
         ),
     )
     return _ApplyRowOutcome("moved_cache_pending", cache_pending=True)
+
+
+def _cache_sync_envelope(sync_json: str, physical_receipt: str | None) -> str:
+    """Keep the physical receipt beside cache evidence without a schema change."""
+
+    try:
+        payload = json.loads(sync_json)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - sync owns its schema
+        raise RuntimeError("cache synchronization returned invalid JSON") from exc
+    if not isinstance(payload, dict):  # pragma: no cover - defensive contract guard
+        raise RuntimeError("cache synchronization returned a non-object payload")
+    if physical_receipt is not None:
+        try:
+            receipt = json.loads(physical_receipt)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("filesystem move returned an invalid receipt") from exc
+        if not isinstance(receipt, dict):
+            raise RuntimeError("filesystem move returned a non-object receipt")
+        payload["physical_receipt"] = receipt
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _stored_move_receipt(raw: object) -> str | None:
+    """Read the receipt from either the current envelope or legacy sync JSON."""
+
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    receipt = payload.get("physical_receipt")
+    if not isinstance(receipt, dict):
+        return None
+    return json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def apply_all_document_organization(
@@ -550,6 +837,7 @@ def apply_all_document_organization(
     batch_size: int = ORGANIZATION_APPLY_BATCH_SIZE,
     progress: ProgressCallback | None = None,
     progress_operation: str = "framework",
+    checkpoint: Callable[[], None] | None = None,
 ) -> OrganizationApplySummary:
     """Consume every actionable plan in bounded, resumable apply batches."""
 
@@ -601,6 +889,8 @@ def apply_all_document_organization(
             mutation_guard=mutation_guard,
             max_actions=batch_size,
             on_progress=report_batch,
+            framework_lock_held=True,
+            checkpoint=checkpoint,
         )
         batches += 1
         last_run_id = current.catalog_run_id
@@ -742,6 +1032,7 @@ def _emit_organization_apply_progress(
                 ProgressMetric("blocked", blocked),
                 ProgressMetric("advisory_blocked", advisory_blocked),
                 ProgressMetric("errors", failed),
+                ProgressMetric("cache_pending", remaining),
                 ProgressMetric("remaining", remaining),
             ),
         ),
@@ -785,34 +1076,165 @@ def _record_moved_path(
     connection: sqlite3.Connection,
     row: sqlite3.Row,
     detail: str,
+    *,
+    receipt_json: str,
+) -> str:
+    _validate_organization_move_receipt(
+        receipt_json,
+        source=Path(str(row["source_path"])),
+        destination=Path(str(row["destination_path"])),
+        expected=_planned_source_snapshot(row, Path(str(row["source_path"])))[0],
+    )
+    try:
+        _rebind_current_catalog_document(connection, row)
+    except (ResourceBindingError, RuntimeError) as exc:
+        # The filesystem boundary has already crossed.  Keep its receipt and
+        # stop at explicit recovery rather than reporting success with a
+        # stale current-owner locator or dropping evidence of the move.
+        detail = f"catalog resource binding recovery required: {type(exc).__name__}: {exc}"
+        connection.execute(
+            """UPDATE organization_plans
+            SET status='recovery_required',detail=?,move_completed_ns=?,
+            completed_ns=NULL,cache_sync_status='pending',cache_sync_json=?,
+            cache_sync_error=? WHERE plan_id=?""",
+            (
+                detail,
+                time.time_ns(),
+                _cache_sync_envelope(
+                    json.dumps(
+                        {
+                            "schema": _ORGANIZATION_MOVE_RECEIPT_SCHEMA,
+                            "databases": [],
+                            "complete": False,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    receipt_json,
+                ),
+                detail,
+                row["plan_id"],
+            ),
+        )
+        return "recovery_required"
+    connection.execute(
+        """UPDATE organization_plans
+        SET status='moved_cache_pending',detail=?,move_completed_ns=?,
+        completed_ns=NULL,cache_sync_status='pending',cache_sync_json=?,cache_sync_error=NULL
+        WHERE plan_id=?""",
+        (
+            detail,
+            time.time_ns(),
+            _cache_sync_envelope(
+                json.dumps(
+                    {
+                        "schema": _ORGANIZATION_MOVE_RECEIPT_SCHEMA,
+                        "databases": [],
+                        "complete": False,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                receipt_json,
+            ),
+            row["plan_id"],
+        ),
+    )
+    return "moved_cache_pending"
+
+
+def _rebind_current_catalog_document(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
 ) -> None:
+    """Atomically rebind the mutable catalog owner after a physical move.
+
+    Published ``catalog_generation_documents`` rows are immutable historical
+    evidence and are intentionally not touched here.  Only the current
+    ``documents`` owner follows the exact physical receipt destination.
+    """
+
+    source = str(row["source_path"])
     destination = str(row["destination_path"])
     document = connection.execute(
-        """SELECT path FROM documents WHERE source_kind=? AND file_key=?""",
+        """SELECT path,resource_binding_json FROM documents
+        WHERE source_kind=? AND file_key=?""",
         (row["source_kind"], row["file_key"]),
     ).fetchone()
     if document is None:
         raise RuntimeError("organization plan no longer has a catalog document")
     current = Path(str(document["path"]))
-    if not _same_path(current, Path(destination)):
-        if not _same_path(current, Path(str(row["source_path"]))):
-            raise RuntimeError("catalog path is neither planned source nor destination")
-        connection.execute(
-            """UPDATE documents SET path=?,updated_ns=?
-            WHERE source_kind=? AND file_key=?""",
-            (
-                destination,
-                time.time_ns(),
-                row["source_kind"],
-                row["file_key"],
-            ),
+    if not _same_path(current, Path(destination)) and not _same_path(current, Path(source)):
+        raise RuntimeError("catalog path is neither planned source nor destination")
+    raw_binding = document["resource_binding_json"]
+    if raw_binding is None:
+        raise ResourceBindingError(
+            "current catalog document has no physical resource binding",
+            field="resource_binding_json",
+            encoding="missing",
+            value=None,
+            code="resource_binding_missing",
         )
+    rebound = rebind_resource_binding_path(
+        raw_binding,
+        expected_path=source,
+        new_path=destination,
+    )
+    if rebound["source_kind"] != row["source_kind"] or rebound["file_key"] != row["file_key"]:
+        raise ResourceBindingError(
+            "current catalog resource binding owner does not match organization plan",
+            field="resource_binding_json",
+            encoding="owner",
+            value=raw_binding,
+            code="resource_binding_owner_mismatch",
+        )
+    try:
+        expected_identity = FileIdentity(int(row["volume_id"]), int(row["file_id"]))
+        physical_identity = FileIdentity.decode(
+            rebound["physical_identity"]["packed_key"],
+            encoding=FileIdentityEncoding.PACKED_HEX_V1,
+        )
+        expected_birthtime = int(row["birthtime_ns"])
+        expected_size = int(row["size"])
+        expected_mtime = int(row["mtime_ns"])
+        revision = rebound["physical_anchor_revision"]
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ResourceBindingError(
+            "current catalog resource binding identity cannot be verified",
+            field="physical_identity",
+            encoding="organization-plan",
+            value=raw_binding,
+            code="resource_binding_identity_unresolved",
+        ) from exc
+    if (
+        physical_identity != expected_identity
+        or rebound["physical_identity"]["birthtime_ns"] != expected_birthtime
+        or revision["size"] != expected_size
+        or revision["mtime_ns"] != expected_mtime
+    ):
+        raise ResourceBindingError(
+            "current catalog resource binding identity differs from organization plan",
+            field="physical_identity",
+            encoding="organization-plan",
+            value=raw_binding,
+            code="resource_binding_identity_mismatch",
+        )
+    binding_json = json.dumps(
+        rebound,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     connection.execute(
-        """UPDATE organization_plans
-        SET status='moved_cache_pending',detail=?,move_completed_ns=?,
-        completed_ns=NULL,cache_sync_status='pending',cache_sync_error=NULL
-        WHERE plan_id=?""",
-        (detail, time.time_ns(), row["plan_id"]),
+        """UPDATE documents SET path=?,resource_binding_json=?,updated_ns=?
+        WHERE source_kind=? AND file_key=?""",
+        (
+            destination,
+            binding_json,
+            time.time_ns(),
+            row["source_kind"],
+            row["file_key"],
+        ),
     )
 
 
@@ -912,25 +1334,35 @@ def _create_validated_apply_root(
     parent_stat: os.stat_result,
     mutation_guard: CorpusMutationGuard,
 ) -> os.stat_result:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent_fd = os.open(parent, flags)
     try:
-        root.mkdir()
-    except FileExistsError:
-        if not root.is_dir() or root.is_symlink() or _is_junction(root):
-            raise ValueError("organization root appeared as an unsafe filesystem object") from None
-    _require_directory_identity(
-        parent,
-        parent_stat,
-        role="organization root parent",
-    )
-    _require_disjoint_path_trees(
-        state_directory,
-        root,
-        detail="organization root and framework state directory",
-    )
-    root_stat = os.stat(root, follow_symlinks=False)
-    _require_directory_identity(root, root_stat, role="organization root")
-    _require_organization_tree_allowed(root, mutation_guard)
-    return root_stat
+        pinned = os.fstat(parent_fd)
+        if (pinned.st_dev, pinned.st_ino) != (parent_stat.st_dev, parent_stat.st_ino):
+            raise ValueError("organization root parent changed before creation")
+        _require_directory_identity(parent, pinned, role="organization root parent")
+        try:
+            os.mkdir(root.name, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        child_fd = os.open(root.name, flags, dir_fd=parent_fd)
+        try:
+            root_stat = os.fstat(child_fd)
+            if root_stat.st_dev != parent_stat.st_dev:
+                raise ValueError("organization root crosses a filesystem boundary")
+            os.fsync(parent_fd)
+        finally:
+            os.close(child_fd)
+        _require_directory_identity(parent, parent_stat, role="organization root parent")
+        _require_directory_identity(root, root_stat, role="organization root")
+        _require_disjoint_path_trees(
+            state_directory, root,
+            detail="organization root and framework state directory",
+        )
+        _require_organization_tree_allowed(root, mutation_guard)
+        return root_stat
+    finally:
+        os.close(parent_fd)
 
 
 def _apply_one_plan(
@@ -939,11 +1371,13 @@ def _apply_one_plan(
     root: Path,
     root_stat: os.stat_result,
     mutation_guard: CorpusMutationGuard,
-) -> tuple[str, str]:
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> _OrganizationFilesystemOutcome:
     source = Path(str(row["source_path"]))
     destination_value = row["destination_path"]
     if destination_value is None:
-        return "blocked", "plan has no destination"
+        return _OrganizationFilesystemOutcome("blocked", "plan has no destination")
     destination = Path(str(destination_value))
     mutation_guard.require_paths_allowed(source, destination)
     boundary_error = _organization_boundary_error(
@@ -955,12 +1389,35 @@ def _apply_one_plan(
         mutation_guard,
     )
     if boundary_error is not None:
-        return "blocked", boundary_error
+        return _OrganizationFilesystemOutcome("blocked", boundary_error)
+    try:
+        scope = OrganizationInputScope.from_json(row["source_scope_json"])
+        if connection is not None:
+            scope.verify(connection)
+        else:
+            scope.verify()
+        backend_root = scope.root
+        if not source.is_relative_to(backend_root) or not destination.is_relative_to(backend_root):
+            return _OrganizationFilesystemOutcome(
+                "blocked",
+                "organization source and destination must remain inside the selected source scope",
+            )
+    except (OSError, TypeError, ValueError) as exc:
+        return _OrganizationFilesystemOutcome(
+            "blocked",
+            f"organization backend root cannot be verified: {type(exc).__name__}: {exc}",
+        )
     expected, identity_error = _planned_source_snapshot(row, source)
     if identity_error is not None:
-        return identity_error
+        return _OrganizationFilesystemOutcome(*identity_error)
     assert expected is not None
-    recovered = _recover_organization_destination(source, destination, expected)
+    recovered = _recover_organization_destination(
+        source,
+        destination,
+        expected,
+        receipt_json=_stored_move_receipt(row["cache_sync_json"]),
+        effect_pending=str(row["status"]) in {"applying", "moved_cache_pending"},
+    )
     if recovered is not None:
         return recovered
     current, source_error = _validated_organization_source(
@@ -969,7 +1426,7 @@ def _apply_one_plan(
         int(root_stat.st_dev),
     )
     if source_error is not None:
-        return source_error
+        return _OrganizationFilesystemOutcome(*source_error)
     assert current is not None
     return _move_organization_source(
         source,
@@ -979,6 +1436,8 @@ def _apply_one_plan(
         root,
         root_stat,
         mutation_guard,
+        backend_root=backend_root,
+        owner_id=f"organization-plan:{row['plan_id']}",
     )
 
 
@@ -1033,22 +1492,74 @@ def _recover_organization_destination(
     source: Path,
     destination: Path,
     expected: FileSnapshot,
-) -> tuple[str, str] | None:
+    *,
+    receipt_json: str | None = None,
+    effect_pending: bool = False,
+) -> _OrganizationFilesystemOutcome | None:
     source_present = os.path.lexists(source)
     destination_present = os.path.lexists(destination)
     if not destination_present:
+        if effect_pending and not source_present:
+            return _OrganizationFilesystemOutcome(
+                "recovery_required",
+                "neither source nor destination exists during recovery",
+            )
         return None
     if source_present:
-        return "blocked", "both source and destination exist during recovery"
-    if destination.is_symlink() or _is_junction(destination) or not destination.is_file():
-        return "blocked", "recovery destination is not a regular file"
+        return _OrganizationFilesystemOutcome(
+            "blocked", "both source and destination exist during recovery"
+        )
+    try:
+        destination_metadata = os.lstat(destination)
+    except OSError as exc:
+        return _OrganizationFilesystemOutcome(
+            "failed", f"recovery destination metadata failed: {type(exc).__name__}: {exc}"
+        )
+    if (
+        stat_module.S_ISLNK(destination_metadata.st_mode)
+        or not stat_module.S_ISREG(destination_metadata.st_mode)
+        or destination_metadata.st_nlink != 1
+        or _is_junction(destination)
+    ):
+        return _OrganizationFilesystemOutcome(
+            "recovery_required" if effect_pending else "blocked",
+            "recovery destination is not a unique regular file",
+        )
     try:
         recovered = snapshot_path(destination)
     except OSError as exc:
-        return "failed", f"destination snapshot failed: {type(exc).__name__}: {exc}"
+        return _OrganizationFilesystemOutcome(
+            "recovery_required" if effect_pending else "failed",
+            f"destination snapshot failed: {type(exc).__name__}: {exc}",
+        )
     if not same_snapshot(expected, recovered):
-        return "blocked", "recovery destination does not match the planned snapshot"
-    return "moved", "recovered a completed move from its exact destination snapshot"
+        return _OrganizationFilesystemOutcome(
+            "recovery_required" if effect_pending else "blocked",
+            "recovery destination does not match the planned snapshot",
+        )
+    if receipt_json is None:
+        receipt_json = _organization_move_receipt(
+            source,
+            destination,
+            recovered,
+            detail="recovered a completed move from its exact destination snapshot",
+        )
+    else:
+        try:
+            _validate_organization_move_receipt(
+                receipt_json,
+                source=source,
+                destination=destination,
+                expected=expected,
+            )
+        except ValueError as exc:
+            return _OrganizationFilesystemOutcome(
+                "recovery_required" if effect_pending else "blocked",
+                f"stored move receipt is invalid: {exc}",
+            )
+    return _OrganizationFilesystemOutcome(
+        "moved", "recovered a completed move from its exact destination snapshot", receipt_json
+    )
 
 
 def _validated_organization_source(
@@ -1083,9 +1594,206 @@ def _move_organization_source(
     root: Path,
     root_stat: os.stat_result,
     mutation_guard: CorpusMutationGuard,
-) -> tuple[str, str]:
-    del source, destination, expected, state_directory, root, root_stat, mutation_guard
-    return "blocked", "linux_mutation_backend_unavailable"
+    *,
+    backend_root: Path,
+    owner_id: str,
+) -> _OrganizationFilesystemOutcome:
+    """Apply one identity-bound Linux move through the no-replace backend."""
+
+    try:
+        # Destination parents are created only after all corpus/state fences have
+        # been checked.  The descriptor-relative backend repeats path and source
+        # identity validation immediately before renameat2.
+        _create_destination_parent(
+            state_directory,
+            source,
+            root,
+            destination,
+            root_stat,
+            mutation_guard,
+        )
+        mutation_guard.require_paths_allowed(source, destination)
+        _require_organization_boundaries(
+            state_directory,
+            root,
+            source,
+            destination,
+            root_stat,
+            mutation_guard,
+        )
+        scope_root_stat = os.stat(backend_root, follow_symlinks=False)
+        if not stat_module.S_ISDIR(scope_root_stat.st_mode) or backend_root.is_symlink():
+            return _OrganizationFilesystemOutcome(
+                "blocked", "selected source scope is no longer a real directory"
+            )
+
+        def before_syscall() -> None:
+            """Re-check all mutable fences at the renameat2 frontier."""
+
+            mutation_guard.require_paths_allowed(source, destination)
+            _require_organization_boundaries(
+                state_directory,
+                root,
+                source,
+                destination,
+                root_stat,
+                mutation_guard,
+            )
+            _require_directory_identity(
+                backend_root,
+                scope_root_stat,
+                role="selected source scope root",
+            )
+
+        source_digest = metadata_binding(expected)
+        effect = _OrganizationMoveEffect(
+            action="move",
+            source=expected,
+            source_digest=source_digest,
+            target_path=destination,
+        )
+        outcome = PosixRenameBackend().apply(
+            ApplyCandidate(
+                owner_id=owner_id,
+                owner_digest=source_digest,
+                root=backend_root,
+                effect=effect,
+            ),
+            before_syscall=before_syscall,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _OrganizationFilesystemOutcome(
+            "blocked", f"linux organization backend preflight failed: {type(exc).__name__}: {exc}"
+        )
+    if outcome.status == "applied":
+        if outcome.receipt_json is None:  # pragma: no cover - backend contract enforces this
+            return _OrganizationFilesystemOutcome(
+                "recovery_required", "linux organization backend returned no receipt"
+            )
+        try:
+            receipt = _organization_move_receipt_from_backend(outcome.receipt_json)
+            _validate_organization_move_receipt(
+                receipt,
+                source=source,
+                destination=destination,
+                expected=expected,
+            )
+        except ValueError as exc:
+            return _OrganizationFilesystemOutcome(
+                "recovery_required", f"linux organization move receipt is invalid: {exc}"
+            )
+        return _OrganizationFilesystemOutcome("moved", "filesystem move verified", receipt)
+    if outcome.status == "recovery_required":
+        return _OrganizationFilesystemOutcome(
+            "recovery_required",
+            outcome.detail or f"linux organization move requires recovery: {outcome.reason}",
+        )
+    return _OrganizationFilesystemOutcome(
+        "blocked",
+        outcome.detail or f"linux organization move blocked: {outcome.reason}",
+    )
+
+
+def _organization_move_receipt_from_backend(raw: str) -> str:
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("backend receipt is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("backend receipt is not an object")
+    payload["organization_receipt_schema"] = _ORGANIZATION_MOVE_RECEIPT_SCHEMA
+    payload.setdefault("backend", _ORGANIZATION_MOVE_BACKEND)
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _organization_move_receipt(
+    source: Path,
+    destination: Path,
+    target: FileSnapshot,
+    *,
+    detail: str,
+) -> str:
+    """Reconstruct durable evidence after an interrupted DB write."""
+
+    payload = {
+        "backend": _ORGANIZATION_MOVE_BACKEND,
+        "detail": detail,
+        "operation": "move",
+        "organization_receipt_schema": _ORGANIZATION_MOVE_RECEIPT_SCHEMA,
+        "receipt_type": "successful_return_and_observation",
+        "schema_version": 1,
+        "source_digest": metadata_binding(target),
+        "source_absent": True,
+        "source_path": str(source),
+        "target_identity": {
+            "birthtime_ns": target.birthtime_ns,
+            "file_id": f"{target.file_id:x}",
+            "mtime_ns": target.mtime_ns,
+            "path": str(destination),
+            "size": target.size,
+            "volume_id": f"{target.volume_id:x}",
+        },
+        "target_path": str(destination),
+        "target_digest": metadata_binding(target),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _validate_organization_move_receipt(
+    receipt_json: str,
+    *,
+    source: Path,
+    destination: Path,
+    expected: FileSnapshot | None,
+) -> None:
+    if expected is None:
+        raise ValueError("planned source snapshot is missing")
+    try:
+        payload = json.loads(receipt_json)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("receipt is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("receipt is not an object")
+    if payload.get("organization_receipt_schema") not in {
+        None,
+        _ORGANIZATION_MOVE_RECEIPT_SCHEMA,
+    }:
+        raise ValueError("receipt schema is unsupported")
+    if payload.get("operation") not in {"move", "rename"}:
+        raise ValueError("receipt operation is not a move")
+    if payload.get("source_absent") is not True:
+        raise ValueError("receipt does not attest source absence")
+    if not _same_path(Path(str(payload.get("source_path", ""))), source):
+        raise ValueError("receipt source path differs from the plan")
+    if not _same_path(Path(str(payload.get("target_path", ""))), destination):
+        raise ValueError("receipt destination path differs from the plan")
+    target_identity = payload.get("target_identity")
+    if not isinstance(target_identity, dict):
+        raise ValueError("receipt target identity is missing")
+    try:
+        identity = (
+            int(str(target_identity["volume_id"]), 16),
+            int(str(target_identity["file_id"]), 16),
+        )
+        metadata = (
+            int(target_identity["size"]),
+            int(target_identity["mtime_ns"]),
+            int(target_identity["birthtime_ns"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("receipt target identity is malformed") from exc
+    if identity != expected.identity or metadata != (
+        expected.size,
+        expected.mtime_ns,
+        expected.birthtime_ns,
+    ):
+        raise ValueError("receipt target identity differs from the planned source")
+    if not _same_path(Path(str(target_identity.get("path", ""))), destination):
+        raise ValueError("receipt target identity path differs from the plan")
+    expected_binding = metadata_binding(expected)
+    for field in ("source_digest", "target_digest"):
+        if field in payload and payload[field] != expected_binding:
+            raise ValueError(f"receipt {field} differs from the planned source")
 
 
 def _disambiguate_apply_destination(
@@ -1286,48 +1994,44 @@ def _create_destination_parent(
         )
     except RuntimeError as exc:
         raise ValueError(str(exc)) from exc
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent_fd = os.open(root, flags)
     current = root
-    for part in relative.parts:
-        current /= part
-        try:
-            entry = validate_mutation_path(
-                root,
-                current,
-                role="organization destination directory",
-                allow_missing_leaf=True,
+    try:
+        pinned_root = os.fstat(parent_fd)
+        if (pinned_root.st_dev, pinned_root.st_ino) != (root_stat.st_dev, root_stat.st_ino):
+            raise ValueError("organization root changed before parent creation")
+        for part in relative.parts:
+            parent_stat = os.fstat(parent_fd)
+            _require_directory_identity(current, parent_stat, role="destination parent")
+            child = current / part
+            mutation_guard.require_paths_allowed(source, destination, child)
+            _require_organization_boundaries(
+                state_directory, root, source, destination, root_stat, mutation_guard,
             )
-            if entry is None:
-                _require_organization_tree_allowed(current.parent, mutation_guard)
-                mutation_guard.require_paths_allowed(source, destination, current)
+            try:
+                os.mkdir(part, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            child_fd = os.open(part, flags, dir_fd=parent_fd)
+            try:
+                child_stat = os.fstat(child_fd)
+                if child_stat.st_dev != root_stat.st_dev:
+                    raise ValueError("organization destination crosses a filesystem boundary")
+                _require_directory_identity(current, parent_stat, role="destination parent")
+                _require_directory_identity(child, child_stat, role="destination directory")
                 _require_organization_boundaries(
-                    state_directory,
-                    root,
-                    source,
-                    destination,
-                    root_stat,
-                    mutation_guard,
+                    state_directory, root, source, destination, root_stat, mutation_guard,
                 )
-                try:
-                    current.mkdir()
-                except FileExistsError:
-                    pass
-                _require_organization_boundaries(
-                    state_directory,
-                    root,
-                    source,
-                    destination,
-                    root_stat,
-                    mutation_guard,
-                )
-                entry = validate_mutation_path(
-                    root,
-                    current,
-                    role="organization destination directory",
-                )
-        except RuntimeError as exc:
-            raise ValueError(str(exc)) from exc
-        if entry is None or not stat_module.S_ISDIR(entry.st_mode):
-            raise ValueError(f"organization destination component is not a directory: {current}")
+                os.fsync(parent_fd)
+            except BaseException:
+                os.close(child_fd)
+                raise
+            os.close(parent_fd)
+            parent_fd = child_fd
+            current = child
+    finally:
+        os.close(parent_fd)
 
 
 def _require_organization_tree_allowed(

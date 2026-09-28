@@ -148,7 +148,7 @@ def test_public_planner_consumes_video_records_without_models_or_state_mutation(
     owner = _create_video_owner(tmp_path)
     owner_before = owner.read_bytes()
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
 
     plan = plan_semantic_index(
         tmp_path,

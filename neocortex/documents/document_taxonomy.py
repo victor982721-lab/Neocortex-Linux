@@ -6,6 +6,7 @@ value models, built-in vocabulary, bounded overlays, and evidence specialists.
 
 from __future__ import annotations
 from dataclasses import dataclass
+import re
 
 from .document_naming import NAMING_VERSION, suggest_document_stem
 from .document_signals import (
@@ -99,9 +100,10 @@ __all__ = (  # noqa: RUF022
 
 # region [01] Stable public classification contract
 
-# v17 bounds the complete catalog text prefix, including page/chunk separators.
+# v18 prioritizes structured document intent over incidental vocabulary in
+# bounded catalog signals and invalidates prior classification replays.
 # The shared signature invalidates both observer replay and per-document cache.
-CLASSIFIER_VERSION = "technical-document-classifier-v17"
+CLASSIFIER_VERSION = "technical-document-classifier-v18"
 
 
 def document_classifier_signature(taxonomy: TechnicalTaxonomy) -> str:
@@ -270,11 +272,63 @@ def _classification_confidence(
         confidence = max(confidence, _calibrated_kind_confidence(primary))
     if signals.source_status == "partial":
         confidence = max(0.0, confidence - 0.08)
+        if primary.label == "reporte_actividades" and not any(
+            "estructura=reporte_actividades_diario" in item for item in primary.evidence
+        ):
+            confidence = min(confidence, 0.67)
     if ambiguous:
         confidence = max(0.0, confidence - 0.08)
     if normative_ambiguity:
         confidence = min(confidence, 0.67)
+    if any("source:heading_only_insufficient_content" in item for item in primary.evidence):
+        # A title/heading and a short footer are not a completed certificate or
+        # report.  Keep this at review confidence even when a broad kind rule
+        # scored the heading as a plausible technical document.
+        confidence = min(confidence, 0.60)
     return round(min(1.0, confidence), 6)
+
+
+def _heading_only_primary(
+    signals: DocumentSignals,
+    primary: ScoredLabel,
+) -> bool:
+    """Detect a bounded heading-only extract without certifying its kind."""
+
+    if signals.source_kind not in {"pdf", "docx", "xlsx"}:
+        return False
+    if signals.page_count is None:
+        return False
+    if primary.label not in {
+        "certificado_calibracion",
+        "certificado_calidad",
+        "informe_inspeccion",
+        "informe_tecnico",
+        "reporte_resultados_pruebas",
+    }:
+        return False
+    if any("calibracion_" in item for item in primary.evidence):
+        # A dedicated calibration specialist has already proved subject,
+        # traceability/identity and results evidence; a short first-page
+        # extract is not equivalent to the heading-only F070 case.
+        return False
+    text = re.sub(r"\s+", " ", signals.leading_text).strip()
+    if not text or len(text) > 480:
+        return False
+    substantive_markers = sum(
+        bool(
+            re.search(
+                pattern,
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+        for pattern in (
+            r"\b(?:RESULTADO|RESULTADOS|MEDICION|MEDICIONES|MEASUREMENT|TABLE|TABLA)\b",
+            r"\b(?:FECHA|DATE|SERIE|SERIAL|INSTRUMENTO|INSTRUMENT)\s*[:#]",
+            r"\b(?:CONCLUSION|CONCLUSIONES|OBSERVACIONES|OBSERVATIONS)\b",
+        )
+    )
+    return substantive_markers < 2
 
 
 def _classification_uncertainty(
@@ -297,6 +351,12 @@ def _classification_decision(
     evidence: _ClassificationEvidence,
 ) -> _ClassificationDecision:
     primary, ambiguous, normative_ambiguity = _kind_ambiguity(evidence.kinds)
+    if _heading_only_primary(signals, primary):
+        primary = ScoredLabel(
+            primary.label,
+            primary.score,
+            (*primary.evidence, "source:heading_only_insufficient_content"),
+        )
     confidence = _classification_confidence(
         signals,
         evidence,
@@ -382,6 +442,15 @@ def _materialize_document_classification(
         organization=naming_organization,
         topic=topics[0].label if topics else None,
     )
+    classification_evidence = _combined_evidence(evidence, topics)
+    if (
+        "source:heading_only_insufficient_content" in decision.primary.evidence
+        and "source:heading_only_insufficient_content" not in classification_evidence
+    ):
+        classification_evidence = (
+            *classification_evidence,
+            "source:heading_only_insufficient_content",
+        )
     return DocumentClassification(
         classifier_signature=document_classifier_signature(taxonomy),
         primary_kind=decision.primary.label,
@@ -398,7 +467,7 @@ def _materialize_document_classification(
         activities=evidence.activities,
         confidence=decision.confidence,
         uncertainty=decision.uncertainty,
-        evidence=_combined_evidence(evidence, topics)[:24],
+        evidence=classification_evidence[:24],
         suggested_stem=naming.stem,
         naming_signature=NAMING_VERSION,
         naming_evidence=naming.evidence,

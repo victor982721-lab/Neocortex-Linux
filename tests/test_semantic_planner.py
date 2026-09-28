@@ -313,7 +313,7 @@ def test_text_plan_is_deterministic_bounded_and_creates_no_state(
     source = _create_pdf_state(tmp_path, (text, text))
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
 
     first = plan_semantic_index(
         tmp_path,
@@ -511,7 +511,7 @@ def test_plan_cancellation_cleans_scratch_and_preserves_owner(tmp_path: Path) ->
     source = _create_pdf_state(tmp_path, ("uno", "dos", "tres"))
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     checkpoints = 0
 
     class PlannedCancellation(RuntimeError):
@@ -661,7 +661,7 @@ def test_scratch_byte_bound_is_strictly_validated(
     maximum: object,
 ) -> None:
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
 
     with pytest.raises(ValueError, match="max_scratch_bytes"):
         plan_semantic_index(
@@ -686,7 +686,7 @@ def test_scratch_quota_is_inclusive_hard_bounded_and_observable(
     source = _create_pdf_state(tmp_path, texts)
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
 
     baseline = plan_semantic_index(
         tmp_path,
@@ -767,7 +767,7 @@ def test_sqlite_full_during_reuse_mark_is_translated_and_cleans_scratch(
     _create_pdf_state(tmp_path, (text,))
     _create_semantic_payload(tmp_path, text)
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
@@ -810,7 +810,7 @@ def test_sql_progress_cancellation_is_re_raised_and_cleans_scratch(
     )
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     sql_callbacks = 0
 
     class PlannedSQLCancellation(RuntimeError):
@@ -845,7 +845,7 @@ def test_sql_progress_cancellation_is_re_raised_and_cleans_scratch(
 def test_locked_owner_retry_is_short_and_cancellable(tmp_path: Path) -> None:
     source = _create_pdf_state(tmp_path, ("Owner bloqueado",))
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     retry_checkpoints = 0
 
     class LockedOwnerCancellation(RuntimeError):
@@ -892,7 +892,7 @@ def test_locked_owner_retry_is_short_and_cancellable(tmp_path: Path) -> None:
 def test_keyboard_interrupt_cleans_private_scratch(tmp_path: Path) -> None:
     _create_pdf_state(tmp_path, ("uno", "dos", "tres"))
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     checkpoints = 0
 
     def interrupt() -> None:
@@ -1386,7 +1386,7 @@ def test_missing_image_owner_is_a_domain_block_without_state_creation(
     tmp_path: Path,
 ) -> None:
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
 
     with pytest.raises(SemanticPlanBlocked, match="image owner state is missing"):
         plan_semantic_index(
@@ -1603,7 +1603,7 @@ def test_json_payload_refuses_nonfinite_values_even_after_illicit_mutation(
 def test_arbitrary_planner_fault_cleans_scratch(tmp_path: Path) -> None:
     _create_pdf_state(tmp_path, ("fault",))
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     with patch.object(
@@ -1630,7 +1630,7 @@ def test_semantic_sql_progress_cancellation_is_bridged_exactly(
     _create_pdf_state(tmp_path, tuple(text + str(index) for index in range(200)))
     _create_semantic_payload(tmp_path, text + "0")
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
 
     class SemanticSQLCancellation(RuntimeError):
         pass
@@ -1668,7 +1668,7 @@ def test_image_plan_attach_is_readonly_query_only_and_detaches_on_success(
     _create_image_state(tmp_path, include_dedup=True, ocr_text=None)
     dedup = tmp_path / "dedup.sqlite3"
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
@@ -1731,7 +1731,7 @@ def test_attach_failure_is_controlled_closes_owner_and_cleans_scratch(
 ) -> None:
     _create_image_state(tmp_path, include_dedup=True, ocr_text=None)
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
@@ -1784,7 +1784,7 @@ def test_image_data_version_fence_blocks_mid_plan_mutation(tmp_path: Path) -> No
         ocr_text=None,
     )
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     real_projector = planner_module._plan_images
@@ -1825,7 +1825,7 @@ def test_attached_dedup_data_version_fence_blocks_mid_plan_mutation(
     _create_image_state(tmp_path, include_dedup=True, ocr_text=None)
     dedup = tmp_path / "dedup.sqlite3"
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     wal_connection = sqlite3.connect(dedup, timeout=5.0)
     try:
         assert str(wal_connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() == "wal"
@@ -1875,7 +1875,7 @@ def test_dedup_schema_is_revalidated_between_probe_and_attach(
     _create_image_state(tmp_path, include_dedup=True, ocr_text=None)
     dedup = tmp_path / "dedup.sqlite3"
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     real_validator = planner_module._validated_dedup_schema
@@ -1922,7 +1922,7 @@ def test_late_cancellation_before_scratch_commit_is_exact_and_cleans_scratch(
     source = _create_pdf_state(tmp_path, ("Cancelación final",))
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     class LatePlanCancellation(RuntimeError):
@@ -1968,7 +1968,7 @@ def test_final_cancellation_after_scratch_close_is_exact_and_cleans_scratch(
     source = _create_pdf_state(tmp_path, ("Cancelación tras cierre",))
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     class FinalPlanCancellation(RuntimeError):
@@ -2024,7 +2024,7 @@ def test_detach_failure_does_not_mask_exact_cancellation(tmp_path: Path) -> None
         ocr_text=None,
     )
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     class ExactImageCancellation(RuntimeError):
@@ -2109,7 +2109,7 @@ def test_detach_failure_does_not_mask_primary_projection_error(
         ocr_text=None,
     )
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     owner_uri = readonly_sqlite_uri(image_path)
@@ -2181,7 +2181,7 @@ def test_detach_failure_without_primary_is_controlled_and_closes_owner(
         ocr_text=None,
     )
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     owner_uri = readonly_sqlite_uri(image_path)
@@ -2249,7 +2249,7 @@ def test_accumulator_rollback_failure_does_not_mask_primary_sqlite_error(
     if preexisting:
         _create_semantic_payload(tmp_path, text)
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
@@ -2309,7 +2309,7 @@ def test_scratch_create_close_failure_does_not_mask_primary_setup_error(
     tmp_path: Path,
 ) -> None:
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
@@ -2363,7 +2363,7 @@ def test_readonly_owner_close_failure_preserves_primary_or_surfaces_unique(
     source = _create_pdf_state(tmp_path, ("Cierre de owner",))
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     owner_uri = readonly_sqlite_uri(source)
@@ -2441,7 +2441,7 @@ def test_final_scratch_close_failure_preserves_primary_or_surfaces_unique(
     source = _create_pdf_state(tmp_path, ("Cierre de scratch",))
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
@@ -2539,7 +2539,7 @@ def test_snapshot_rollback_failure_preserves_primary_or_surfaces_unique(
     primary_present: bool,
 ) -> None:
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     if owner_kind == "text":
@@ -2648,7 +2648,7 @@ def test_plan_orchestrator_resolves_modularization_seams_dynamically(
     _create_pdf_state(tmp_path, ("Contrato de seam dinámico",))
     _create_image_state(tmp_path, include_dedup=True, ocr_text=None)
     scratch = tmp_path / "scratch"
-    scratch.mkdir()
+    scratch.mkdir(mode=0o700)
     from neocortex.semantic import semantic_planner as planner_module
 
     seam_names = (

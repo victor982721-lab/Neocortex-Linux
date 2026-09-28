@@ -647,6 +647,12 @@ def _emit_generation_progress(
     completed = summary.done + summary.errors + summary.stale
     total = completed + summary.unfinished
     observed_reused = max(reused, summary.done - embedded)
+    selected_sources = summary.cursor.get("selected_sources", ())
+    source_scope = (
+        "image" if backend.model.modality is EmbeddingModality.IMAGE else
+        "image-ocr" if isinstance(selected_sources, (list, tuple)) and "image-ocr" in selected_sources
+        else "text"
+    )
     emit_progress(
         progress,
         ProgressEvent(
@@ -668,6 +674,8 @@ def _emit_generation_progress(
                 ProgressMetric("errors", max(summary.errors, failed)),
                 ProgressMetric("remaining", summary.unfinished),
                 ProgressMetric("generation", summary.generation_id),
+                ProgressMetric("source_scope", source_scope),
+                ProgressMetric("model_id", backend.model.model_id),
                 ProgressMetric("status", summary.status),
             ),
         ),

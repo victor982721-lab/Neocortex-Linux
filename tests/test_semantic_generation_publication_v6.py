@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from neocortex.semantic.semantic_receipt_storage import decode_receipt_storage
+
 from neocortex.semantic import semantic_generation_repository
 from neocortex.semantic import semantic_lineage_repository
 from neocortex.semantic import semantic_schema
@@ -876,7 +878,7 @@ def test_historical_overwritten_clone_uses_exact_physical_producer(
     assert successor_member["base_member_id"] is None
     assert successor_receipt is not None
     assert str(successor_receipt["execution_mode"]) == "replay"
-    assert json.loads(str(successor_receipt["receipt_json"]))["causation_id"] == (
+    assert json.loads(decode_receipt_storage(str(successor_receipt["receipt_json"])))["causation_id"] == (
         selected_producer_key
     )
 
@@ -1424,7 +1426,7 @@ def test_done_job_metadata_restage_rebinds_current_item_revision_without_inferen
     assert len({int(row["item_revision_id"]) for row in embedding_receipts}) == 3
     producer_key = str(embedding_receipts[0]["receipt_key"])
     assert {
-        str(json.loads(str(row["receipt_json"]))["causation_id"]) for row in embedding_receipts[1:]
+        str(json.loads(decode_receipt_storage(str(row["receipt_json"])))["causation_id"]) for row in embedding_receipts[1:]
     } == {producer_key}
     assert int(rebound_member["member_id"]) not in {
         int(baseline_member["member_id"]),
@@ -1933,7 +1935,7 @@ def test_receiptless_legacy_base_member_rebinds_through_exact_attestation(
         ("semantic.vector_payload.legacy_attest", "executed"),
         ("semantic.embedding", "cache_hit"),
     ]
-    assert json.loads(str(rows[1]["receipt_json"]))["causation_id"] == str(rows[0]["receipt_key"])
+    assert json.loads(decode_receipt_storage(str(rows[1]["receipt_json"])))["causation_id"] == str(rows[0]["receipt_key"])
     assert member is not None
     assert member["base_member_id"] is None
     assert int(member["item_revision_id"]) > 1

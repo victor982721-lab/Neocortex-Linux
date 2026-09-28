@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 import hashlib
+import base64
+import binascii
+import io
 import json
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -19,7 +23,7 @@ from email import policy
 from email.parser import BytesParser
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, sha256
 
@@ -80,7 +84,6 @@ from neocortex.foundation.processing_provenance import (
     python_runtime_component,
 )
 from neocortex.safety.route_filters import CandidateSelection
-from neocortex.capabilities.formats.xml_safety import safe_xml_fromstring
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from .text_derivation_repository import (
     TextCacheObservation,
@@ -106,11 +109,12 @@ from .text_fts_lookup import (
     initialize_text_fts_lookup,
     prune_text_fts_for_run,
     record_text_fts_row,
+    text_route_lookups_available,
     text_fts_file_key_predicate,
 )
 
 
-TEXT_ROUTE_VERSION = "text-route-v3"
+TEXT_ROUTE_VERSION = "text-route-v4"
 _TEXT_EXTRACT_STAGE_ID = "text.extract"
 _TEXT_EXTRACT_STAGE_VERSION = "2"
 # Checked-in digest of the normalized Text-owned extractor contract.  It is
@@ -118,7 +122,7 @@ _TEXT_EXTRACT_STAGE_VERSION = "2"
 # hash; the source characterization requires updating it when those symbols
 # change, which in turn changes every affected processing signature.
 _TEXT_EXTRACTOR_CONTRACT_SHA256 = (
-    "sha256:99bb9e9ddabf86269d595c8623c3e1f33ad23f4c12c9d55f0e636a295c63047f"
+    "sha256:8021bc30ef3ee9aa53d2dc221266dc7983954f9ecc327d49ada3729e26471864"
 )
 _TEXT_IMPLEMENTATION_SCHEMA = "neocortex.text-implementation-contract/v1"
 _TEXT_DISTRIBUTION_NAME = "neocortex-framework"
@@ -137,6 +141,28 @@ _MAX_DERIVATION_VALUE_CHARS = 4_096
 MAX_EMAIL_PARTS = 4_096
 MAX_EMAIL_DEPTH = 64
 MAX_EMAIL_PART_BYTES = 8 * 1024 * 1024
+XML_ATTRIBUTE_TEXT_SCHEMA = "neocortex.xml-attributes/v1"
+_XML_ATTRIBUTE_VALUE_LIMIT = 2_048
+_XML_ATTRIBUTE_NAME_LIMIT = 256
+_XML_SENSITIVE_ATTRIBUTE_NAMES = frozenset(
+    {
+        "certificado",
+        "certificate",
+        "cadenaoriginal",
+        "certchain",
+        "digest",
+        "digestvalue",
+        "firma",
+        "signature",
+        "signaturevalue",
+        "sello",
+        "sellocfdi",
+        "sellosat",
+        "x509certificate",
+    }
+)
+_XML_RELATIONSHIP_NAME_PARTS = ("relacion", "relationship", "relation", "rel")
+_BASE64_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
 TEXT_ROUTE_MIMES = (
     "text/plain",
     "text/csv",
@@ -478,6 +504,7 @@ def _extractor_selector(mime: str, path: str) -> tuple[str, str]:
     if mime == "application/xml":
         return "strict_text_decode+xml_itertext", "xml"
     content_kind = {
+        "text/plain": "txt",
         "text/csv": "csv",
         "text/tab-separated-values": "tsv",
         "text/markdown": "markdown",
@@ -541,9 +568,41 @@ def _selection_allows_reuse(selection: CapabilitySelection) -> bool:
     )
 
 
+def _format_counter_key(prefix: str, value: str) -> str:
+    """Build a stable progress-counter key from an observed MIME/content kind."""
+
+    normalized = "".join(
+        character if character.isalnum() or character in {"/", ".", "-", "_"} else "_"
+        for character in value.casefold()
+    )
+    return f"format_{prefix}:{normalized}"
+
+
+def _format_kind_for_mime(mime: str) -> str:
+    """Canonical display kind derived from the observed MIME, never a path."""
+
+    return {
+        "text/plain": "txt",
+        "text/csv": "csv",
+        "text/tab-separated-values": "tsv",
+        "text/markdown": "markdown",
+        "text/html": "html",
+        "application/xml": "xml",
+        "application/json": "json",
+        "message/rfc822": "email",
+    }.get(mime.casefold(), mime.casefold())
+
+
+def _increment_format_counter(counters: dict[str, int], prefix: str, value: str) -> None:
+    key = _format_counter_key(prefix, value)
+    counters[key] = counters.get(key, 0) + 1
+
+
 def _record_extracted_counters(
     counters: dict[str, int],
     extracted: _ExtractedText | TextValidatedRepresentation,
+    *,
+    cache_hit: bool = False,
 ) -> None:
     counters["text_chars"] += len(extracted.text)
     counters["truncated"] += int(extracted.truncated)
@@ -551,6 +610,15 @@ def _record_extracted_counters(
         counters["emails"] += 1
     else:
         counters["plain_text"] += 1
+    # Content kind is produced by the selected extractor (or a validated
+    # replay), not inferred from a filename.  The metrics are intentionally
+    # additive to the existing aggregate summary contract.
+    _increment_format_counter(counters, "processed", extracted.content_kind)
+    _increment_format_counter(
+        counters,
+        "cache_hits" if cache_hit else "extracted",
+        extracted.content_kind,
+    )
 
 
 def _work_reproducibility(selection: CapabilitySelection) -> ReproducibilityClass:
@@ -808,6 +876,24 @@ def _email_text(payload: bytes, limit: int) -> _ExtractedText:
         for key in ("date", "from", "to", "cc", "message-id")
         if message.get(key)
     }
+    # Attachment bytes are intentionally not folded into the parent's body.
+    # Record a bounded inventory so callers can present the coverage gap and
+    # hand the same message to ``email_intake.materialize_email_attachments``
+    # after the physical-child gate is authorized.
+    try:
+        from .email_intake import EmailAttachmentError, iter_email_attachments
+
+        attachment_rows = tuple(
+            item.to_dict() for item in iter_email_attachments(message)
+        )
+        metadata["attachment_count"] = len(attachment_rows)
+        metadata["attachments"] = attachment_rows
+        metadata["attachments_status"] = "available_for_materialization"
+    except EmailAttachmentError as exc:
+        metadata["attachment_count"] = 0
+        metadata["attachments"] = []
+        metadata["attachments_status"] = exc.status
+        metadata["attachments_reason"] = exc.reason
     return _ExtractedText(
         text=text,
         content_kind="email",
@@ -818,6 +904,181 @@ def _email_text(payload: bytes, limit: int) -> _ExtractedText:
         truncated=truncated,
         detail="stdlib_email_visible_text",
     )
+
+
+def _xml_qname(value: str, namespaces: dict[str, str]) -> str:
+    """Render an ElementTree expanded name without losing namespace provenance."""
+
+    if value.startswith("{") and "}" in value:
+        uri, local = value[1:].split("}", 1)
+        prefix = next((key for key, candidate in namespaces.items() if candidate == uri), None)
+        if prefix is None:
+            prefix = f"ns{len(namespaces)}"
+            namespaces[prefix] = uri
+        return f"{prefix}:{local[:_XML_ATTRIBUTE_NAME_LIMIT]}"
+    return value[:_XML_ATTRIBUTE_NAME_LIMIT]
+
+
+def _xml_attribute_is_sensitive(name: str, value: str) -> tuple[bool, str]:
+    """Return whether an XML attribute must stay out of searchable text.
+
+    CFDI seals/certificates are signed or encoded blobs, not useful document
+    evidence.  The explicit names cover the known vocabulary; the bounded
+    base64 check also catches a renamed certificate without treating ordinary
+    short identifiers as a blob.
+    """
+
+    local_name = name.rsplit("}", 1)[-1].casefold().replace("-", "")
+    if local_name in _XML_SENSITIVE_ATTRIBUTE_NAMES:
+        return True, "sensitive_name"
+    compact = "".join(value.split())
+    if len(compact) >= 256 and _BASE64_RE.fullmatch(compact):
+        try:
+            decoded = base64.b64decode(compact, validate=True)
+        except (ValueError, binascii.Error):
+            # URL-safe signatures are also common in exports; they remain
+            # excluded when their shape is unmistakably encoded material.
+            try:
+                decoded = base64.urlsafe_b64decode(compact + "=" * (-len(compact) % 4))
+            except (ValueError, binascii.Error):
+                decoded = b""
+        if len(decoded) >= 128:
+            return True, "base64_blob"
+    return False, ""
+
+
+def _xml_local_name(name: str) -> str:
+    return name.rsplit("}", 1)[-1].casefold()
+
+
+def _xml_structured_text(payload: bytes, limit: int) -> tuple[str, dict[str, object], bool]:
+    """Extract bounded XML fields while preserving namespace/relationship evidence.
+
+    ``Element.itertext()`` is intentionally not used here: CFDI stores useful
+    values in attributes and stores certificate/seal material in other
+    attributes.  A streaming parser keeps the correction bounded even when a
+    document contains a large legitimate body.
+    """
+
+    if limit < 1:
+        raise ValueError("XML text limit must be positive")
+    namespaces: dict[str, str] = {}
+    lines: list[str] = []
+    chars = 0
+    truncated = False
+    node_count = 0
+    included_attributes = 0
+    excluded_attributes = 0
+    excluded_names: set[str] = set()
+    relationship_empty = 0
+    relationship_valued = 0
+
+    def add_line(value: str) -> None:
+        nonlocal chars, truncated
+        if not value or truncated:
+            return
+        separator = 1 if lines else 0
+        remaining = limit - chars - separator
+        if remaining <= 0:
+            truncated = True
+            return
+        if len(value) > remaining:
+            lines.append(value[:remaining])
+            chars += remaining + separator
+            truncated = True
+            return
+        if separator:
+            chars += separator
+        lines.append(value)
+        chars += len(value)
+
+    # ``safe_xml_iterparse`` scans every block for unsafe declarations before
+    # ElementTree sees it.  Keep the raw payload in BytesIO only because Text
+    # already admitted the source as one bounded input.
+    from neocortex.capabilities.formats.xml_safety import safe_xml_iterparse
+
+    try:
+        context = safe_xml_iterparse(
+            io.BytesIO(payload),
+            events=("start", "end", "start-ns"),
+        )
+        for event, value in cast(Iterable[tuple[str, object]], context):
+            if event == "start-ns":
+                if not isinstance(value, tuple) or len(value) != 2:
+                    raise ValueError("XML namespace event is malformed")
+                prefix, uri = value
+                namespaces[str(prefix or "default")] = str(uri)
+                continue
+            if event != "end":
+                continue
+            element = cast(ET.Element, value)
+            node_count += 1
+            qualified = _xml_qname(str(element.tag), namespaces)
+            attributes: list[str] = []
+            for raw_name, raw_value in sorted(element.attrib.items(), key=lambda item: str(item[0])):
+                name = _xml_qname(str(raw_name), namespaces)
+                text_value = str(raw_value).strip()
+                if len(text_value) > _XML_ATTRIBUTE_VALUE_LIMIT:
+                    text_value = text_value[:_XML_ATTRIBUTE_VALUE_LIMIT]
+                sensitive, _reason = _xml_attribute_is_sensitive(str(raw_name), text_value)
+                if sensitive:
+                    excluded_attributes += 1
+                    excluded_names.add(_xml_local_name(str(raw_name)))
+                    continue
+                included_attributes += 1
+                # Keep values easy to search while retaining field names and
+                # the qualified namespace prefix.
+                attributes.append(f"{name}={text_value!r}")
+            direct_text = " ".join((element.text or "").split())
+            if len(direct_text) > _XML_ATTRIBUTE_VALUE_LIMIT:
+                direct_text = direct_text[:_XML_ATTRIBUTE_VALUE_LIMIT]
+                value_truncated = True
+            else:
+                value_truncated = False
+            relation = any(part in _xml_local_name(str(element.tag)) for part in _XML_RELATIONSHIP_NAME_PARTS)
+            has_children = bool(list(element))
+            if relation:
+                if not attributes and not direct_text and not has_children:
+                    relationship_empty += 1
+                    add_line(f"{qualified} [empty relationship]")
+                else:
+                    relationship_valued += 1
+            if not (attributes or direct_text or relation or has_children):
+                # Preserve the existence of meaningful empty XML elements (and
+                # their namespace) without creating a large empty embedding.
+                add_line(f"{qualified} [empty]")
+            else:
+                line = qualified
+                if attributes:
+                    line += " " + " ".join(attributes)
+                if direct_text:
+                    line += f" text={direct_text!r}"
+                add_line(line)
+            if value_truncated and not truncated:
+                truncated = True
+            element.clear()
+    except ET.ParseError:
+        raise
+    metadata: dict[str, object] = {
+        "xml_schema": XML_ATTRIBUTE_TEXT_SCHEMA,
+        "xml_provenance": {
+            "source": "elementtree_stream_attributes",
+            "namespace_map": [
+                {"prefix": prefix, "uri": uri}
+                for prefix, uri in sorted(namespaces.items())
+            ],
+            "node_count": node_count,
+            "included_attribute_count": included_attributes,
+            "excluded_attribute_count": excluded_attributes,
+            "excluded_attribute_names": sorted(excluded_names),
+            "relationship_classification": {
+                "empty": relationship_empty,
+                "valued": relationship_valued,
+            },
+            "bounded": True,
+        },
+    }
+    return "\n".join(lines), metadata, truncated
 
 
 def _extract_builtin(
@@ -836,13 +1097,23 @@ def _extract_builtin(
     if mime == "message/rfc822":
         return _email_text(payload, config.max_text_chars)
     value, encoding = _decode_text(payload)
+    metadata: dict[str, object] = {"encoding": encoding}
+    detail = f"encoding={encoding}"
     if mime == "text/html":
         value = _visible_html(value)
+        text, truncated = _bounded(value, config.max_text_chars)
     elif mime == "application/xml":
-        root = safe_xml_fromstring(value)
-        value = "\n".join(part.strip() for part in root.itertext() if part.strip())
-    text, truncated = _bounded(value, config.max_text_chars)
+        value, xml_metadata, xml_truncated = _xml_structured_text(
+            payload,
+            config.max_text_chars,
+        )
+        metadata.update(xml_metadata)
+        detail = f"encoding={encoding};structured_xml_attributes"
+        text, truncated = value, xml_truncated
+    else:
+        text, truncated = _bounded(value, config.max_text_chars)
     kind = {
+        "text/plain": "txt",
         "text/csv": "csv",
         "text/tab-separated-values": "tsv",
         "text/markdown": "markdown",
@@ -854,9 +1125,9 @@ def _extract_builtin(
         text=text,
         content_kind=kind,
         media_type=mime,
-        metadata={"encoding": encoding},
+        metadata=metadata,
         truncated=truncated,
-        detail=f"encoding={encoding}",
+        detail=detail,
     )
 
 
@@ -1031,7 +1302,7 @@ class TextRoute:
 
     def _run_elastic_candidates(
         self, connection, text_runtime_status, provenance, effective_signatures,
-        counters, selected,
+        counters, selected, lookup_available,
     ) -> None:
         from neocortex.runtime.control.elastic_workers import ImmediateResult, elastic_map
         from .text_processing import (
@@ -1050,6 +1321,7 @@ class TextRoute:
 
         def prepare(item):
             mime, snapshot = item
+            _increment_format_counter(counters, "candidates", _format_kind_for_mime(mime))
             self.cancellation.checkpoint()
             request = _text_capability_request(mime, snapshot.size)
             key = request.execution_contract_fingerprint
@@ -1077,6 +1349,7 @@ class TextRoute:
                 self._publish_cancellation(connection, work, exc)
                 raise
             except handled_errors as exc:
+                _increment_format_counter(counters, "errors", _format_kind_for_mime(mime))
                 resource, revision, binding = _partial_input_binding(snapshot)
                 work = self._begin_derivation(
                     connection, candidate_provenance, resource, revision, binding,
@@ -1101,10 +1374,13 @@ class TextRoute:
                 and self._claim_recoverable_retry(connection, snapshot, cached_failure)
             )
             if cached_failure is not None and not automatic_retry:
+                _increment_format_counter(counters, "cached_errors", _format_kind_for_mime(mime))
                 self._refresh_cached_error(connection, snapshot, file_key, signature)
                 return immediate(cache_hits=1, cached_errors=1)
             reusable = (
-                self._reusable_derivation(connection, file_key, resource, revision, signature)
+                self._reusable_derivation(
+                    connection, file_key, resource, revision, signature, lookup_available
+                )
                 if reuse_allowed else None
             )
             if reusable is not None:
@@ -1125,7 +1401,7 @@ class TextRoute:
                 )
                 delta = dict.fromkeys(counters, 0)
                 delta["cache_hits"] = 1
-                _record_extracted_counters(delta, reusable[1])
+                _record_extracted_counters(delta, reusable[1], cache_hit=True)
                 return immediate(**delta)
             work = self._begin_derivation(
                 connection, candidate_provenance, resource, revision, binding, selection,
@@ -1157,7 +1433,7 @@ class TextRoute:
                     self.cancellation.checkpoint()
                     if result.completed_metrics:
                         for name, value in result.completed_metrics:
-                            counters[name] += value
+                            counters[name] = counters.get(name, 0) + value
                     else:
                         work, snapshot, mime = pending[result.attempt_id]
                         from neocortex.runtime.control.global_resources import current_resource_grant
@@ -1174,6 +1450,7 @@ class TextRoute:
                             if snapshot_path(snapshot.path) != snapshot:
                                 raise FileChangedError("Text source changed before publication")
                         except handled_errors as exc:
+                            _increment_format_counter(counters, "errors", _format_kind_for_mime(mime))
                             retryable = self._publish_error(connection, work, snapshot, mime, exc)
                             counters["processed"] += 1
                             counters["errors"] += 1
@@ -1199,6 +1476,7 @@ class TextRoute:
         resource: ResourceRef,
         revision: RevisionRef,
         signature: str,
+        lookup_available: bool | None = None,
     ) -> tuple[TextReusableDerivation, TextValidatedRepresentation] | None:
         try:
             reusable = read_reusable_text_derivation_from_connection(
@@ -1206,6 +1484,7 @@ class TextRoute:
                 file_key,
                 stage_id=_TEXT_EXTRACT_STAGE_ID,
                 processing_signature=signature,
+                lookup_available=lookup_available,
             )
         except TextDerivationIntegrityError:
             return None
@@ -1802,6 +2081,11 @@ class TextRoute:
             connection.commit()
 
     def _emit(self, completed: int, total: int, summary: dict[str, int], *, finished=False) -> None:
+        format_metrics = tuple(
+            ProgressMetric(f"format:{key.removeprefix('format_')}", value)
+            for key, value in sorted(summary.items())
+            if key.startswith("format_")
+        )
         emit_progress(
             self.progress,
             ProgressEvent(
@@ -1815,6 +2099,7 @@ class TextRoute:
                 (
                     ProgressMetric("cache_hits", summary["cache_hits"]),
                     ProgressMetric("errors", summary["errors"]),
+                    *format_metrics,
                 ),
             ),
         )
@@ -1870,13 +2155,15 @@ class TextRoute:
         self._emit(0, selected, counters)
         with text_database(self.config.state_path, create=False) as connection:
             initialize_text_fts_lookup(connection)
+            lookup_available = text_route_lookups_available(connection)
             if callable(getattr(self.memory_gate, "worker_capacity", None)):
                 self._run_elastic_candidates(
                     connection, text_runtime_status, provenance,
-                    effective_signatures, counters, selected,
+                    effective_signatures, counters, selected, lookup_available,
                 )
             else:
                 for mime, snapshot in self._candidates():
+                    _increment_format_counter(counters, "candidates", _format_kind_for_mime(mime))
                     capability_request = _text_capability_request(mime, snapshot.size)
                     broker_key = capability_request.execution_contract_fingerprint
                     capability_broker = capability_brokers.get(broker_key)
@@ -1921,6 +2208,7 @@ class TextRoute:
                             self._publish_cancellation(connection, work, exc)
                             raise
                         except handled_errors as exc:
+                            _increment_format_counter(counters, "errors", _format_kind_for_mime(mime))
                             resource, revision, input_binding = _partial_input_binding(snapshot)
                             work = self._begin_derivation(
                                 connection,
@@ -1967,6 +2255,7 @@ class TextRoute:
                                 )
                             )
                             if cached_failure is not None and not automatic_retry:
+                                _increment_format_counter(counters, "cached_errors", _format_kind_for_mime(mime))
                                 self._refresh_cached_error(
                                     connection,
                                     snapshot,
@@ -1985,6 +2274,7 @@ class TextRoute:
                                     resource,
                                     revision,
                                     candidate_signature,
+                                    lookup_available,
                                 )
                                 if reuse_allowed
                                 else None
@@ -2015,7 +2305,7 @@ class TextRoute:
                                     reusable_state[0],
                                 )
                                 counters["cache_hits"] += 1
-                                _record_extracted_counters(counters, reusable_state[1])
+                                _record_extracted_counters(counters, reusable_state[1], cache_hit=True)
                             else:
                                 try:
                                     extracted = _extract(
@@ -2033,6 +2323,7 @@ class TextRoute:
                                     self._publish_cancellation(connection, work, exc)
                                     raise
                                 except handled_errors as exc:
+                                    _increment_format_counter(counters, "errors", _format_kind_for_mime(mime))
                                     retryable = self._publish_error(
                                         connection,
                                         work,

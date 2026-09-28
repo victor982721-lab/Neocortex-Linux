@@ -553,12 +553,21 @@ def run_semantic_status(args: argparse.Namespace) -> int:
     """Show bounded semantic state without creating or migrating it."""
 
     from neocortex.semantic.semantic_service import SEMANTIC_DATABASE_NAME, semantic_status
+    from neocortex.semantic.image_retrieval_calibration import image_retrieval_readiness
 
     try:
         status = semantic_status(args.state_directory)
     except Exception as exc:  # direct diagnostics must not leak library tracebacks
         return _semantic_failure("semantic-status", exc, offline=False)
     database = args.state_directory / SEMANTIC_DATABASE_NAME
+    readiness = image_retrieval_readiness(database)
+    print(
+        f"SEMANTIC_IMAGE_READINESS status={readiness.status} "
+        f"reason={readiness.reason} action={readiness.action} "
+        f"generation={readiness.generation_id or '-'} "
+        f"calibration={readiness.calibration_signature or '-'} "
+        f"processing_signature={readiness.indexed_processing_signature or '-'}"
+    )
     if not status.exists:
         print(f"SEMANTIC_STATUS exists=0 database={database}")
         return 0

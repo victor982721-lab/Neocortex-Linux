@@ -233,7 +233,7 @@ def _zip_limits(config: object) -> ZipIntakeLimits:
             defaults.max_total_uncompressed_bytes,
         ),
         max_total_temp_bytes=integer(
-            "archive_max_total_uncompressed_bytes",
+            "archive_max_total_temp_bytes",
             defaults.max_total_temp_bytes,
         ),
         max_nested_depth=integer("archive_max_depth", defaults.max_nested_depth),
@@ -243,6 +243,19 @@ def _zip_limits(config: object) -> ZipIntakeLimits:
         max_central_directory_bytes=integer(
             "archive_max_central_directory_bytes",
             defaults.max_central_directory_bytes,
+        ),
+        auto_measured_budget=bool(
+            getattr(config, "archive_auto_measured_budget", defaults.auto_measured_budget)
+        ),
+        auto_max_member_bytes=integer(
+            "archive_auto_max_member_bytes", defaults.auto_max_member_bytes
+        ),
+        auto_max_total_uncompressed_bytes=integer(
+            "archive_auto_max_total_uncompressed_bytes",
+            defaults.auto_max_total_uncompressed_bytes,
+        ),
+        auto_max_expansion_ratio=float(
+            getattr(config, "archive_auto_max_expansion_ratio", defaults.auto_max_expansion_ratio)
         ),
     )
 

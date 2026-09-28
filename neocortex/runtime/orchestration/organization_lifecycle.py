@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -133,11 +134,24 @@ def run_organization_stages(
                 payload["reason"] = reason
             state.publish_run_stage(run_id, name, status, details=payload, checkpoint=checkpoint)
 
+    read_run_budget = getattr(state, "read_run_budget", None)
+    budgeted = callable(read_run_budget) and read_run_budget(run_id) is not None
+    last_budget_check = time.monotonic()
+
     def checkpoint_cancellation() -> None:
+        nonlocal last_budget_check
         try:
             cancellation.checkpoint()
         except CancellationRequested as exc:
             raise KeyboardInterrupt("organization cancelled") from exc
+        # Organization owner work can cross a large Inventory COW/digest SQL
+        # statement.  Reuse the same lifecycle boundary as the route runners
+        # so a configured deadline or durable run-budget exhaustion interrupts
+        # that statement too; cancellation alone is not the whole budget.
+        now = time.monotonic()
+        if budgeted and now - last_budget_check >= 0.1:
+            state.check_run_budget(run_id)
+            last_budget_check = now
 
     def checked_progress(event: object) -> None:
         checkpoint_cancellation()
@@ -225,7 +239,13 @@ def run_organization_stages(
     state.set_run_phase(run_id, "organization_apply")
     publish("organization_apply", "running", checkpoint)
     try:
-        apply_summary = apply_all_document_organization(config.document_catalog_database, organization_root, progress=checked_progress, mutation_guard=state.corpus_mutation_guard(run_id))
+        apply_summary = apply_all_document_organization(
+            config.document_catalog_database,
+            organization_root,
+            progress=checked_progress,
+            mutation_guard=state.corpus_mutation_guard(run_id),
+            checkpoint=checkpoint_cancellation,
+        )
         # Only validated advisory proposals are terminal, effect-free
         # abstentions. Keep invalid, protected, stale and uncertain outcomes
         # unresolved, using the same typed contract as CLI reporting.

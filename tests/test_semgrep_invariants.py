@@ -22,7 +22,7 @@ EXPECTED_FINDINGS = {
     "neo-no-eval-execution": 1,
     "neo-no-os-system": 1,
     "neo-no-corpus-execution": 1,
-    "neo-sqlite-unsafe-read": 1,
+    "neo-sqlite-unsafe-read": 3,
     "neo-subprocess-without-limits": 1,
     "neo-mutation-without-grant-fence": 1,
 }
@@ -86,7 +86,10 @@ def _run_semgrep(*, home: Path, config: Path) -> dict[str, object]:
             "--no-rewrite-rule-ids",
             "--jobs",
             "1",
-            str(ROOT / "neocortex"),
+            # Explicit source targets preserve rule path anchoring in a private
+            # source export without .git; a directory target may be rerooted
+            # by Semgrep and silently exclude every product file.
+            *(str(path) for path in sorted((ROOT / "neocortex").rglob("*.py"))),
             str(FIXTURES / "positive.py"),
             str(FIXTURES / "negative.py"),
         ],

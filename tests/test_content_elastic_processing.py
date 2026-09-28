@@ -33,6 +33,28 @@ _REAL_TEXT = text_processing.parse_text_work
 
 def _record(work, operation):
     started = time.monotonic_ns()
+    # Prove process overlap at both capacity-3 epochs without relying on
+    # interpreter startup finishing within a 120ms synthetic task. A serial
+    # pool cannot pass this rendezvous: the first peer times out before the
+    # second task can start. The capacity-1 epoch remains unmodified.
+    source = Path(work.snapshot.path)
+    ordinal = int(source.stem.rsplit("-", 1)[1])
+    peer = (
+        {0: 1, 1: 0, 11: 12, 12: 11}.get(ordinal)
+        if (source.parent / ".concurrency-rendezvous").is_file() else None
+    )
+    if peer is not None:
+        ready = source.parent / f".ready-{ordinal:02}"
+        temporary = source.parent / f".ready-{ordinal:02}.{os.getpid()}.tmp"
+        temporary.write_text(str(os.getpid()))
+        os.replace(temporary, ready)
+        peer_path = source.parent / f".ready-{peer:02}"
+        deadline = time.monotonic() + 5.0
+        while not peer_path.exists():
+            if time.monotonic() >= deadline:
+                raise AssertionError("capacity-3 epoch did not start concurrent processes")
+            time.sleep(0.005)
+        assert int(peer_path.read_text()) != os.getpid()
     time.sleep(0.12)
     result = operation(work)
     Path(work.snapshot.path + ".probe.json").write_text(json.dumps({
@@ -145,6 +167,7 @@ def test_content_processes_shrink_and_recover_with_owner_and_result_reservation(
 ):
     gate = _Gate(adaptive=True)
     route, paths, originals = _route(tmp_path, kind, gate)
+    (paths[0].parent / ".concurrency-rendezvous").write_text("two capacity-3 epochs")
     module, name, worker = {
         "docx": (docx, "_extract_docx_work", _record_docx),
         "office": (office, "_extract_office_work", _record_office),

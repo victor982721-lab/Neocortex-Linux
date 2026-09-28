@@ -49,7 +49,11 @@ from neocortex.semantic.semantic_lexical import (
 )
 from neocortex.semantic.semantic_models import ContentFingerprint, ResolvedSearchHit
 from neocortex.semantic.semantic_sources import SEMANTIC_TITLE_POLICY, SEMANTIC_TITLE_SECTION_KIND
-from neocortex.semantic.semantic_search_service import classify_image_query_intent
+from neocortex.semantic.semantic_search_service import (
+    classify_image_query_intent,
+)
+from neocortex.semantic.semantic_query_evidence import query_requests_explicit_title
+from neocortex.semantic.semantic_tabular_projection import TABULAR_METADATA_POLICY
 from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge
 # endregion [01]
 
@@ -372,6 +376,8 @@ def _evidence_from_resolved(
     evidence_ref_type: type[EvidenceRef],
     extracted_method: EvidenceMethod,
 ) -> EvidenceRef:
+    if resolved.section_kind == "text_metadata_navigation":
+        raise ValueError("table navigation summary is advisory, not original-row evidence")
     provenance = resolved.section_provenance
     nested_locator = provenance.get("locator")
     locator = nested_locator if isinstance(nested_locator, Mapping) else {}
@@ -611,7 +617,14 @@ def resource_discovery_signal_from_resolved(
         if legacy_provenance is not None
         else resolved.section_kind
     )
-    if (
+    table_navigation = (
+        resolved.source_kind == "text"
+        and title_section_kind == "text_metadata_navigation"
+        and provenance.get("policy_signature") == TABULAR_METADATA_POLICY
+        and provenance.get("basis") == "parsed_identifier_heavy_table"
+        and provenance.get("advisory_only") is True
+    )
+    if not table_navigation and (
         title_section_kind != SEMANTIC_TITLE_SECTION_KIND
         or provenance.get("policy_signature") != SEMANTIC_TITLE_POLICY
         or provenance.get("basis")
@@ -659,7 +672,10 @@ def resource_discovery_signal_from_resolved(
             generation=generation,
             query_model_signature=resolved.hit.query_model_signature,
         ),
-        reason="semantic_title matched durable advisory title metadata",
+        reason=(
+            "semantic navigation summary; original rows remain in source lexical search"
+            if table_navigation else "semantic_title matched durable advisory title metadata"
+        ),
         fusion_weight=fusion_weight,
         warnings=tuple(
             sorted(
@@ -1075,6 +1091,11 @@ def _search_semantic_step(
     # Channel isolation is an implementation detail, not a user request to see
     # images.  Derive modality once from the original query and explicit filters.
     image_intent = image_query_intent(context.plan)
+    explicit_title = (
+        expected_name == "semantic_text"
+        and include_title
+        and query_requests_explicit_title(context.plan.normalized_query)
+    )
     return context.semantic_search(
         context.paths.semantic.parent,
         context.plan.normalized_query,
@@ -1089,7 +1110,14 @@ def _search_semantic_step(
         image_query_intent=image_intent,
         allow_ambiguous_images=False,
         local_files_only=True,
-        evidence_mode=context.plan.retrieval_mode is context.evidence_mode,
+        # Explicit filename/title retrieval still returns substantive content
+        # and a separate advisory title ranking.  The latter is materialized
+        # as a discovery signal below, never as metadata evidence.
+        evidence_mode=(
+            False
+            if explicit_title
+            else context.plan.retrieval_mode is context.evidence_mode
+        ),
         cancellation_check=(
             context.cancellation.checkpoint if context.cancellation.enabled else None
         ),
@@ -1112,6 +1140,7 @@ def _materialize_semantic_candidates(
             ranking.resolved[: step.candidate_limit],
             1,
         )
+        if value.section_kind != "text_metadata_navigation"
     )
 
 
@@ -1216,6 +1245,26 @@ def _append_semantic_step_result(
         return
     ranking = matching_rankings[0]
     candidates = _materialize_semantic_candidates(context, step, ranking)
+    navigation = tuple(
+        value for value in ranking.resolved[:step.candidate_limit]
+        if value.section_kind == "text_metadata_navigation"
+    )
+    if navigation:
+        # Conversion of already-observed hits, not another query or an extra
+        # vote for substantive evidence. Keep the resource/navigation channel
+        # separate from EvidenceRef, even when the request asks for evidence.
+        signals, rejected = _materialize_semantic_discovery_signals(
+            context,
+            RetrievalStep("semantic_discovery", "semantic_navigation", "tabular navigation", step.candidate_limit, False),
+            replace(ranking, resolved=navigation, fusion_weight=0.5),
+        )
+        output.discovery_signals.extend(signals)
+        output.reports.append(RankingExecution(
+            name="semantic_navigation", channel="semantic_discovery", executed=True,
+            available=ranking.available, complete=ranking.complete and rejected == 0,
+            returned=len(signals), vectors_scanned=0, owner="semantic",
+            reason="advisory_navigation_projection" if not rejected else "invalid_navigation_provenance",
+        ))
     if candidates:
         output.rankings[expected_name] = candidates
     output.reports.append(
@@ -1248,12 +1297,27 @@ def _execute_semantic_step(
     discovery_step: RetrievalStep | None,
 ) -> None:
     expected_name = step.ranking_name
-    include_title = expected_name == "semantic_text" and discovery_step is not None
+    explicit_title = (
+        expected_name == "semantic_text"
+        and query_requests_explicit_title(context.plan.normalized_query)
+    )
+    include_title = expected_name == "semantic_text" and (
+        discovery_step is not None or explicit_title
+    )
+    effective_discovery_step = discovery_step
+    if explicit_title and effective_discovery_step is None:
+        effective_discovery_step = RetrievalStep(
+            "semantic_discovery",
+            "semantic_title",
+            "explicit filename/title query uses advisory metadata discovery",
+            step.candidate_limit,
+            False,
+        )
     if vector_budget < 1:
         _append_semantic_no_budget_reports(
             output,
             expected_name,
-            discovery_step,
+            effective_discovery_step,
             include_title=include_title,
         )
         return
@@ -1270,7 +1334,7 @@ def _execute_semantic_step(
             output,
             result,
             step,
-            discovery_step,
+            effective_discovery_step,
             started_ns,
             include_title=include_title,
         )
@@ -1280,7 +1344,7 @@ def _execute_semantic_step(
             context,
             output,
             expected_name,
-            discovery_step,
+            effective_discovery_step,
             exc,
             started_ns,
             include_title=include_title,

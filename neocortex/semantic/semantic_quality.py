@@ -27,12 +27,75 @@ MAX_TITLE_SAMPLE_CHARS = 32_768
 _TOKEN = re.compile(r"\S+", re.UNICODE)
 _BASE64_RUN = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{80,}={0,2}(?![A-Za-z0-9+/=])")
 _BASE64_TOKEN = re.compile(r"[A-Za-z0-9+/]{32,}={0,2}")
-_CELL_REFERENCE = re.compile(r"(?<![A-Za-z0-9_])\$?[A-Z]{1,3}\$?\d{1,7}")
+_CELL_REFERENCE = re.compile(
+    # A leading dash is a common electrical tag (``-U9``/``-TC22``), not a
+    # spreadsheet cell operator.  Keep it out of the cell-reference count,
+    # while still accepting real references separated by formula punctuation.
+    r"(?<![A-Za-z0-9_-])\$?[A-Z]{1,3}\$?\d{1,7}(?![A-Za-z0-9_-])"
+)
 _FORMULA_MARKER = re.compile(
     r"(?i)(?:\b(?:IF|SUM|SQRT|VLOOKUP|HLOOKUP|INDEX|MATCH|COUNTIF|SUMIF)\s*\(|"
-    r"(?:^|\s)[=+\-](?:\$?[A-Z]{1,3}\$?\d+|\())"
+    # Unary ``-`` is only a formula marker when it has a token boundary on
+    # both sides.  This prevents ``-U9`` and ``-TC22`` in a PDF drawing from
+    # being interpreted as ``-<cell>``.
+    r"(?:^|[\s(])(?:(?:[=+](?:\$?[A-Z]{1,3}\$?\d+|\())|"
+    r"-(?:\$[A-Z]{1,3}\$?\d+|\())(?=$|[^A-Za-z0-9_]))"
 )
 _MOJIBAKE_MARKER = re.compile(r"(?:�|Ã.|Â.|â€|ðŸ)")
+
+# Formula-shaped text from Office/Spreadsheet owners is high-confidence noise;
+# the same glyphs in PDF/DOCX diagrams and engineering drawings are ordinary
+# identifiers.  Unknown callers retain the historical conservative gate.
+_FORMULA_SCHEMA_KINDS = frozenset(
+    {
+        "xlsx_document",
+        "xlsm_document",
+        "xls_document",
+        "ods_document",
+        "office_document",
+        "spreadsheet",
+        "spreadsheet_document",
+    }
+)
+_NARRATIVE_SECTION_KINDS = frozenset(
+    {
+        "pdf_page",
+        "docx_document",
+        "docx_body",
+        "document",
+        "audio_segment",
+        "video_frame",
+        "image_ocr",
+        "content",
+    }
+)
+
+
+def _formula_gate_applies(
+    section_kind: str,
+    *,
+    source_kind: str | None = None,
+    source_schema: str | None = None,
+) -> bool:
+    """Limit formula rejection to an explicit tabular/schema owner."""
+
+    normalized = (source_schema or section_kind).strip().casefold()
+    source = source_kind.strip().casefold() if isinstance(source_kind, str) else ""
+    if normalized in _FORMULA_SCHEMA_KINDS or normalized.startswith(
+        ("xlsx_", "xlsm_", "xls_", "ods_", "spreadsheet_")
+    ):
+        return True
+    if source in {"pdf", "docx", "text", "audio", "video", "image", "image_ocr"}:
+        return False
+    if source in {"xlsx", "xlsm", "xls", "ods", "office", "spreadsheet"}:
+        return True
+    if not normalized:
+        return True
+    if normalized in _NARRATIVE_SECTION_KINDS:
+        return False
+    # Unknown schemas remain conservative until their owner declares a
+    # narrative/tabular contract explicitly.
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +108,13 @@ class TextQualityAssessment:
     token_count: int
 
 
-def assess_semantic_text(text: str, *, section_kind: str = "") -> TextQualityAssessment:
+def assess_semantic_text(
+    text: str,
+    *,
+    section_kind: str = "",
+    source_kind: str | None = None,
+    source_schema: str | None = None,
+) -> TextQualityAssessment:
     """Reject only high-confidence machine noise; keep ambiguous human text."""
 
     value = text.strip()
@@ -78,14 +147,19 @@ def assess_semantic_text(text: str, *, section_kind: str = "") -> TextQualityAss
     ):
         return assessment(False, "encoded_binary_text")
 
-    cell_references = len(_CELL_REFERENCE.findall(value))
-    formula_markers = len(_FORMULA_MARKER.findall(value))
-    if cell_references >= 8 and (
-        formula_markers >= 2
-        or cell_references / max(1, len(tokens)) >= 0.20
-        or alphabetic_ratio < 0.42
+    if _formula_gate_applies(
+        section_kind,
+        source_kind=source_kind,
+        source_schema=source_schema,
     ):
-        return assessment(False, "spreadsheet_formula_dump")
+        cell_references = len(_CELL_REFERENCE.findall(value))
+        formula_markers = len(_FORMULA_MARKER.findall(value))
+        if cell_references >= 8 and (
+            formula_markers >= 2
+            or cell_references / max(1, len(tokens)) >= 0.20
+            or alphabetic_ratio < 0.42
+        ):
+            return assessment(False, "spreadsheet_formula_dump")
 
     # A repeated export can contain thousands of the same formula or field.
     # Require enough evidence before using this gate so lists and tables remain
@@ -104,6 +178,8 @@ def iter_semantic_text_chunks(
     config: TextChunkingConfig,
     *,
     token_counter: TextTokenCounter | None = None,
+    source_kind: str | None = None,
+    source_schema: str | None = None,
 ) -> Iterator[TextChunk]:
     """Yield quality-gated chunks and collapse exact repeats within one item."""
 
@@ -117,6 +193,8 @@ def iter_semantic_text_chunks(
         assessment = assess_semantic_text(
             chunk.text,
             section_kind=chunk.section_kind,
+            source_kind=source_kind,
+            source_schema=source_schema,
         )
         if not assessment.eligible:
             continue
@@ -153,11 +231,14 @@ def iter_admitted_semantic_text_chunks(
 
     if not assess_semantic_item(item, policy).visible:
         return
+    source_schema_value = item.provenance.get("source_schema")
     yield from iter_semantic_text_chunks(
         item.item_id,
         sections,
         config,
         token_counter=token_counter,
+        source_kind=item.source_kind,
+        source_schema=source_schema_value if isinstance(source_schema_value, str) else None,
     )
 
 

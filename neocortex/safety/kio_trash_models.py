@@ -17,6 +17,9 @@ from neocortex.deduplication import FileSnapshot
 
 
 KIO_CLAIM_SCHEMA = "neocortex.kio-claim/v1"
+KIO_OBJECT_FILE = "regular_file"
+KIO_OBJECT_EMPTY_DIRECTORY = "empty_directory"
+KIO_OBJECT_KINDS = frozenset({KIO_OBJECT_FILE, KIO_OBJECT_EMPTY_DIRECTORY})
 
 
 class KioTrashStatus(StrEnum):
@@ -50,10 +53,12 @@ class KioTrashClaim:
     claim_path: Path
     claim_directory: Path
     snapshot: FileSnapshot
+    object_kind: str = KIO_OBJECT_FILE
 
     def as_dict(self) -> dict[str, object]:
         return {
             "schema": KIO_CLAIM_SCHEMA,
+            "object_kind": self.object_kind,
             "source_path": os.fspath(self.source_path),
             "claim_path": os.fspath(self.claim_path),
             "claim_directory": os.fspath(self.claim_directory),
@@ -108,6 +113,7 @@ class KioTrashReceipt:
     guarantee: str = "reversible_path_bound"
     operation: str = "trash"
     schema_version: int = 1
+    object_kind: str = KIO_OBJECT_FILE
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +143,7 @@ class KioTrashBatchItem:
     source: str | os.PathLike[str]
     expected: FileSnapshot
     source_digest: str | None = None
+    object_kind: str = KIO_OBJECT_FILE
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +170,9 @@ class KioTrashBatchResult:
 
 __all__ = [
     "KIO_CLAIM_SCHEMA",
+    "KIO_OBJECT_EMPTY_DIRECTORY",
+    "KIO_OBJECT_FILE",
+    "KIO_OBJECT_KINDS",
     "KioTrashBatchItem",
     "KioTrashBatchResult",
     "KioTrashClaim",

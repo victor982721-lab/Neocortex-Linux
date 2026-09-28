@@ -33,3 +33,12 @@ def fenced_mutation(source: str, target: str, grant: object, fence: object) -> N
 
 def private_memory_database() -> sqlite3.Connection:
     return sqlite3.connect(":memory:")
+
+
+def _semantic_owner_lease(path, timeout):
+    from neocortex.persistence.sqlite_paths import existing_sqlite_uri
+    from neocortex.persistence.sqlite_writer_snapshot import SQLiteProgressConnection
+    return sqlite3.connect(
+        existing_sqlite_uri(path), uri=True, timeout=timeout,
+        factory=SQLiteProgressConnection,
+    )
