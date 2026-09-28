@@ -234,7 +234,7 @@ def _group_index(operation: str, phase: str) -> int:
     if operation in {"dedup", "zip-intake", "email-intake", "email-zip-intake"} or (
         operation == "framework"
         and phase in {
-            "content-types", "duplicates", "zip-intake-reconciliation",
+            "content-types", "duplicates", "zip-intake-reconciliation", "email-intake",
             "email-intake-reconciliation", "email-zip-intake-reconciliation",
         }
     ):
@@ -275,6 +275,7 @@ def _task_label(operation: str, phase: str, metrics: dict[str, int | str] | None
             "complete": "Etapa previa",
             "zip-effects": "Efectos ZIP",
             "zip-intake-reconciliation": "Conciliar inventario",
+            "email-intake": "Adjuntos de correo",
             "email-intake-reconciliation": "Conciliar adjuntos EML",
             "email-zip-intake-reconciliation": "Conciliar ZIP de EML",
         }.get(phase, phase.replace("-", " ").capitalize())

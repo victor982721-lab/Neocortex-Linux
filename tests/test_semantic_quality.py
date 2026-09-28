@@ -71,7 +71,7 @@ def test_quality_gate_keeps_human_text_and_collapses_item_local_repeats() -> Non
 
     assert len(chunks) == 1
     assert chunks[0].text == text
-    assert SEMANTIC_TEXT_QUALITY_POLICY == "semantic-text-quality-v1"
+    assert SEMANTIC_TEXT_QUALITY_POLICY == "semantic-text-quality-v2"
 
 
 @pytest.mark.parametrize(

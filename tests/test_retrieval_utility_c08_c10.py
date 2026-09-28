@@ -40,6 +40,18 @@ def test_c08_electrical_tags_are_not_a_formula_dump_but_real_spreadsheet_noise_i
     )
 
 
+def test_c08_spreadsheet_formula_subtraction_remains_rejected_after_tag_boundary_fix() -> None:
+    formula_dump = (
+        "A1-B2 C3-D4 E5-F6 G7-H8 I9-J10 K11-L12 "
+        "=A1-B2 =C3-D4 =E5-F6"
+    )
+    assert assess_semantic_text(formula_dump, section_kind="xlsx_document").reason == (
+        "spreadsheet_formula_dump"
+    )
+    drawing = "-U9 -TC22 X1 C3 400 kV 225 MVA IAW1 IBW1"
+    assert assess_semantic_text(drawing, section_kind="pdf_page").eligible
+
+
 def test_c09_compound_identity_date_and_alias_must_share_a_coherent_span() -> None:
     query = "CENTRAL-HCN-05-001 lectura de presión del 6 de agosto de 2026"
     wrong_unit = (

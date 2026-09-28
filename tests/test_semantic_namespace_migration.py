@@ -54,6 +54,7 @@ EXPECTED_MODULES = frozenset(
         "semantic_lineage_repository",
         "semantic_models",
         "semantic_ontology",
+        "semantic_office_projection",
         "semantic_plan_errors",
         "semantic_plan_owners",
         "semantic_plan_results",

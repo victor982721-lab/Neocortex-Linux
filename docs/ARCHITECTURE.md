@@ -763,6 +763,15 @@ La proyección dense de CSV/TSV de navegación no es una cita de contenido:
 conserva unos pocos ejemplos y lo declara; el texto original permanece en FTS.
 Knowledge expone esa señal como descubrimiento advisory, nunca EvidenceRef.
 
+La vista densa XLSX separa valores/cached-values con hoja/celda del formato
+`XLSX_CELL` original. Los records y FTS del owner no cambian. Fórmulas sin
+resultado almacenado se cuentan como omisiones, sin evaluar ni inventar ceros;
+un item sin valores conserva una sección vacía y su provenance. La política
+`semantic-xlsx-cell-dense-v1` y calidad v2 identifican esta transformación.
+Knowledge descomprime y verifica el raw del owner, regenera la proyección y
+comprueba policy, provenance y span antes de devolver una cita; no aplica esos
+offsets directamente al JSON original.
+
 
 Knowledge v2 proyecta fuentes únicas y citas con localizadores, manteniendo
 recuperación, relaciones, evidencia y presentación como coberturas separadas.

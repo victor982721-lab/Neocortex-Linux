@@ -51,6 +51,7 @@ from .semantic_admission import (
     filter_text_source_records,
 )
 from .semantic_tabular_projection import metadata_table_section
+from .semantic_office_projection import project_xlsx_section
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteImmutableFence,
@@ -131,7 +132,7 @@ def _video_source_head(state_directory: Path) -> "SemanticSourceHead":
     )
 
 
-SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v4-tabular-navigation"
+SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v5-producer-aware-navigation"
 IMAGE_SOURCE_ADAPTER_VERSION = "semantic-image-source-v4-no-nudenet"
 SEMANTIC_TITLE_SECTION_KIND = "semantic_metadata_title"
 SEMANTIC_TITLE_POLICY = "semantic-content-aware-title-v3"
@@ -843,15 +844,17 @@ def _iter_office(
                 text_fingerprint_column="text_xxh3_128",
                 text_count_column="text_chars",
             )
-            yield TextSourceRecord(
-                item,
-                TextSection(
-                    section_kind=f"{source_kind}_document",
-                    section_id="body",
-                    text=_decode_text(row["text_zlib"], int(row["text_chars"])),
-                    provenance={"adapter": SOURCE_ADAPTER_VERSION},
-                ),
+            source_section = TextSection(
+                section_kind=f"{source_kind}_document",
+                section_id="body",
+                text=_decode_text(row["text_zlib"], int(row["text_chars"])),
+                provenance={"adapter": SOURCE_ADAPTER_VERSION},
             )
+            for section in (
+                project_xlsx_section(source_section, checkpoint=source_read_checkpoint)
+                if source_kind == "xlsx" else (source_section,)
+            ):
+                yield TextSourceRecord(item, section)
 
 
 def _iter_audio(

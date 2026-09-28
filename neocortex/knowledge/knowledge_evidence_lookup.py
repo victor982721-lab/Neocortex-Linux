@@ -6,12 +6,13 @@ the user's search and silently rebinding a citation alias.
 """
 
 from __future__ import annotations
-from neocortex.knowledge.knowledge_read_operation import read_rows
+from neocortex.knowledge.knowledge_read_operation import read_checkpoint, read_rows
 
 import json
 import hashlib
 import sqlite3
-from collections.abc import Mapping
+import zlib
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -22,12 +23,42 @@ from neocortex.knowledge.knowledge_snapshot import (
     _OWNER_VALIDATORS, _logical_observation, _owner_spec,
 )
 from neocortex.persistence.sqlite_immutable import preferred_sqlite_read_mode
-from neocortex.semantic.semantic_models import EmbeddingModality, ResolvedSearchHit, SearchHit
+from neocortex.semantic.semantic_chunking import normalize_embedding_text
+from neocortex.semantic.semantic_models import (
+    EmbeddingModality,
+    ResolvedSearchHit,
+    SearchHit,
+    TextSection,
+    fingerprint_text,
+)
+from neocortex.semantic.semantic_office_projection import (
+    XLSX_AUXILIARY_SECTION_KIND,
+    XLSX_DENSE_SECTION_KIND,
+    XLSX_PROJECTION_POLICY,
+    project_xlsx_section,
+)
 from neocortex.semantic.semantic_schema import SemanticReadContext, semantic_database, semantic_read_context
 from neocortex.semantic.semantic_search_repository import resolve_search_hits
-from neocortex.semantic.semantic_sources import TEXT_SOURCE_KINDS
+from neocortex.semantic.semantic_sources import SOURCE_ADAPTER_VERSION, TEXT_SOURCE_KINDS
 
 _SQLITE_MAX_INTEGER = (1 << 63) - 1
+_MAX_OFFICE_TEXT_BYTES = 32 * 1024 * 1024
+_MAX_OFFICE_TEXT_CHARS = 20_000_000
+_OFFICE_DECODE_BLOCK = 64 * 1024
+_XLSX_PROJECTION_PROVENANCE_KEYS = (
+    "policy_signature",
+    "projection",
+    "channel",
+    "source_section_kind",
+    "source_section_id",
+    "cell_records",
+    "projected_cells",
+    "omitted_formula_without_cached_value",
+    "auxiliary_records",
+    "malformed_cell_records",
+    "workbook_name_in_text",
+    "source_retained_in_owner",
+)
 
 
 class EvidenceLookupError(ValueError):
@@ -125,13 +156,168 @@ def _row_value(row: sqlite3.Row, name: str) -> object | None:
     return row[name] if _row_has(row, name) else None
 
 
+def _decode_office_text(
+    row: sqlite3.Row,
+    *,
+    checkpoint: Callable[[], None],
+) -> str:
+    """Decode one owner representation with a bounded, interruptible walk."""
+    expected_chars = row["text_chars"]
+    if (
+        isinstance(expected_chars, bool)
+        or not isinstance(expected_chars, int)
+        or expected_chars < 0
+        or expected_chars > _MAX_OFFICE_TEXT_CHARS
+    ):
+        raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+    payload = row["text_zlib"]
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+    compressed = memoryview(payload)
+    if compressed.nbytes > _MAX_OFFICE_TEXT_BYTES:
+        raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+    decompressor = zlib.decompressobj()
+    decoded = bytearray()
+    for offset in range(0, compressed.nbytes, _OFFICE_DECODE_BLOCK):
+        checkpoint()
+        remaining = _MAX_OFFICE_TEXT_BYTES + 1 - len(decoded)
+        if remaining <= 0:
+            raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+        try:
+            block = decompressor.decompress(
+                compressed[offset : offset + _OFFICE_DECODE_BLOCK], remaining,
+            )
+        except zlib.error as exc:
+            raise EvidenceLookupError("published_evidence_absent_or_ambiguous") from exc
+        decoded.extend(block)
+        if len(decoded) > _MAX_OFFICE_TEXT_BYTES or decompressor.unconsumed_tail:
+            raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+    checkpoint()
+    try:
+        tail = decompressor.flush(_MAX_OFFICE_TEXT_BYTES + 1 - len(decoded))
+    except (ValueError, zlib.error) as exc:
+        raise EvidenceLookupError("published_evidence_absent_or_ambiguous") from exc
+    decoded.extend(tail)
+    if (
+        len(decoded) > _MAX_OFFICE_TEXT_BYTES
+        or not decompressor.eof
+        or decompressor.unused_data
+    ):
+        raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+    checkpoint()
+    try:
+        text = bytes(decoded).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise EvidenceLookupError("published_evidence_absent_or_ambiguous") from exc
+    if len(text) != expected_chars:
+        raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+    checkpoint()
+    expected_fingerprint = row["text_xxh3_128"]
+    if not isinstance(expected_fingerprint, str) or (
+        fingerprint_text(text).xxh3_128 != expected_fingerprint
+    ):
+        raise EvidenceLookupError("owner_revision_changed")
+    return text
+
+
+def _validate_projection_provenance(
+    supplied: Mapping[str, object],
+    expected: Mapping[str, object],
+) -> None:
+    """Require the stored projection contract, not merely its section name."""
+    for name in _XLSX_PROJECTION_PROVENANCE_KEYS:
+        if name not in supplied or supplied[name] != expected.get(name):
+            raise EvidenceLookupError("evidence_locator_changed")
+    if supplied.get("policy_signature") != XLSX_PROJECTION_POLICY:
+        raise EvidenceLookupError("unsupported_evidence_lookup")
+    expected_adapter = expected.get("source_adapter")
+    if expected_adapter is not None and supplied.get("source_adapter") != expected_adapter:
+        raise EvidenceLookupError("evidence_locator_changed")
+
+
+def _validate_xlsx_projection_locator(
+    row: sqlite3.Row,
+    resolved: ResolvedSearchHit,
+    *,
+    checkpoint: Callable[[], None],
+) -> None:
+    """Replay the exact XLSX projection before accepting a semantic quote."""
+    if resolved.source_kind != "xlsx" or row["format"] != "xlsx":
+        raise EvidenceLookupError("unsupported_evidence_lookup")
+    if resolved.section_kind not in {
+        XLSX_DENSE_SECTION_KIND,
+        XLSX_AUXILIARY_SECTION_KIND,
+    }:
+        raise EvidenceLookupError("unsupported_evidence_lookup")
+    if resolved.section_id not in {"body:dense", "body:auxiliary"}:
+        raise EvidenceLookupError("evidence_locator_changed")
+    source = TextSection(
+        "xlsx_document",
+        "body",
+        _decode_office_text(row, checkpoint=checkpoint),
+        {"adapter": SOURCE_ADAPTER_VERSION},
+    )
+    matches = tuple(
+        section
+        for section in project_xlsx_section(source, checkpoint=checkpoint)
+        if section.section_kind == resolved.section_kind
+        and section.section_id == resolved.section_id
+    )
+    if len(matches) != 1:
+        # This also handles a legacy/no-cell body, a malformed/new projection
+        # policy, and the all-formulas-without-cache case without rebinding.
+        raise EvidenceLookupError("evidence_locator_changed")
+    section = matches[0]
+    provenance = resolved.section_provenance
+    if not isinstance(provenance, Mapping):
+        raise EvidenceLookupError("invalid_evidence_reference")
+    _validate_projection_provenance(provenance, section.provenance)
+    start_char, end_char, snippet = resolved.start_char, resolved.end_char, resolved.snippet
+    if (
+        isinstance(start_char, bool)
+        or not isinstance(start_char, int)
+        or isinstance(end_char, bool)
+        or not isinstance(end_char, int)
+        or start_char < 0
+        or end_char <= start_char
+        or end_char > len(section.text)
+        or not isinstance(snippet, str)
+    ):
+        raise EvidenceLookupError("evidence_range_unavailable")
+    if normalize_embedding_text(section.text[start_char:end_char]) != snippet:
+        raise EvidenceLookupError("evidence_locator_changed")
+
+
 def _validate_owner_locator(
-    connection: sqlite3.Connection, owner: str, row: sqlite3.Row, resolved: ResolvedSearchHit,
+    connection: sqlite3.Connection,
+    owner: str,
+    row: sqlite3.Row,
+    resolved: ResolvedSearchHit,
+    *,
+    checkpoint: Callable[[], None] = read_checkpoint,
+    replay_resolved: ResolvedSearchHit | None = None,
 ) -> None:
     """Require the same route-owned section, without reconstructing content."""
     if owner == "office":
+        if resolved.source_kind == "xlsx" and resolved.section_kind in {
+            XLSX_DENSE_SECTION_KIND,
+            XLSX_AUXILIARY_SECTION_KIND,
+        }:
+            _validate_xlsx_projection_locator(
+                row, replay_resolved or resolved, checkpoint=checkpoint,
+            )
+            return
         if (resolved.section_kind, resolved.section_id) != (f"{resolved.source_kind}_document", "body"):
             raise EvidenceLookupError("unsupported_evidence_lookup")
+        if resolved.source_kind == "xlsx":
+            source = TextSection(
+                "xlsx_document",
+                "body",
+                _decode_office_text(row, checkpoint=checkpoint),
+                {"adapter": SOURCE_ADAPTER_VERSION},
+            )
+            if len(project_xlsx_section(source, checkpoint=checkpoint)) != 1:
+                raise EvidenceLookupError("evidence_locator_changed")
     elif owner == "docx":
         if (resolved.section_kind, resolved.section_id) == ("docx_document", "body"):
             if connection.execute(
@@ -354,7 +540,7 @@ def _semantic_evidence(
     path: Path, source: Mapping[str, Any], citation: Mapping[str, Any],
     owner_row: sqlite3.Row, owner: str, source_kind: str, file_key: str, entity_id: str,
     locator: Mapping[str, Any],
-) -> tuple[ResolvedSearchHit, dict[str, Any], dict[str, object]]:
+) -> tuple[ResolvedSearchHit, dict[str, Any], dict[str, object], ResolvedSearchHit]:
     generation = citation.get("generation")
     if isinstance(generation, bool) or not isinstance(generation, int) or not 1 <= generation <= _SQLITE_MAX_INTEGER:
         raise EvidenceLookupError("invalid_evidence_reference")
@@ -405,8 +591,9 @@ def _semantic_evidence(
                        or actual != value for name, value in live_revision.items())
                 or resolved.source_revision.get("revision_id") != live_revision.get("revision_id")):
             raise EvidenceLookupError("owner_revision_changed")
+        replay_resolved = resolved
         resolved, extent = _semantic_fragment(resolved, locator, chunk_chars=int(member["text_chars"]))
-    return resolved, observation, extent
+    return resolved, observation, extent, replay_resolved
 
 
 def lookup_owner_evidence(
@@ -482,11 +669,13 @@ def lookup_owner_evidence(
             raise EvidenceLookupError("owner_publication_changed")
         if not lexical:
             row = _owner_record(connection, owner, source_kind, file_key)
-            resolved, semantic_observation, extent = _semantic_evidence(
+            resolved, semantic_observation, extent, replay_resolved = _semantic_evidence(
                 state_directory / "semantic.sqlite3", source, citation, row,
                 owner, source_kind, file_key, entity_id, locator,
             )
-            _validate_owner_locator(connection, owner, row, resolved)
+            _validate_owner_locator(
+                connection, owner, row, resolved, replay_resolved=replay_resolved,
+            )
             owners.append(semantic_observation)
         elif owner in {"text", "docx"}:
             rows = read_rows(connection.execute(

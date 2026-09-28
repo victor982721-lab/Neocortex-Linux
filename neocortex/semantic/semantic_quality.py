@@ -21,7 +21,7 @@ from .semantic_admission import (
 from .semantic_models import SemanticItem, TextChunk, TextSection
 
 
-SEMANTIC_TEXT_QUALITY_POLICY = "semantic-text-quality-v1"
+SEMANTIC_TEXT_QUALITY_POLICY = "semantic-text-quality-v2"
 MAX_TITLE_SAMPLE_CHARS = 32_768
 
 _TOKEN = re.compile(r"\S+", re.UNICODE)
@@ -31,7 +31,10 @@ _CELL_REFERENCE = re.compile(
     # A leading dash is a common electrical tag (``-U9``/``-TC22``), not a
     # spreadsheet cell operator.  Keep it out of the cell-reference count,
     # while still accepting real references separated by formula punctuation.
-    r"(?<![A-Za-z0-9_-])\$?[A-Z]{1,3}\$?\d{1,7}(?![A-Za-z0-9_-])"
+    r"(?:(?<![A-Za-z0-9_-])\$?[A-Z]{1,3}\$?\d{1,7}(?![A-Za-z0-9_-])|"
+    # In ``A1-B2`` the second reference is preceded by a formula operator;
+    # count it only when the operator itself follows an alphanumeric token.
+    r"(?<=[A-Za-z0-9])-\$?[A-Z]{1,3}\$?\d{1,7}(?![A-Za-z0-9_-]))"
 )
 _FORMULA_MARKER = re.compile(
     r"(?i)(?:\b(?:IF|SUM|SQRT|VLOOKUP|HLOOKUP|INDEX|MATCH|COUNTIF|SUMIF)\s*\(|"
@@ -39,7 +42,7 @@ _FORMULA_MARKER = re.compile(
     # both sides.  This prevents ``-U9`` and ``-TC22`` in a PDF drawing from
     # being interpreted as ``-<cell>``.
     r"(?:^|[\s(])(?:(?:[=+](?:\$?[A-Z]{1,3}\$?\d+|\())|"
-    r"-(?:\$[A-Z]{1,3}\$?\d+|\())(?=$|[^A-Za-z0-9_]))"
+    r"-(?:\$?[A-Z]{1,3}\$?\d+|\())(?=$|[^A-Za-z0-9_]))"
 )
 _MOJIBAKE_MARKER = re.compile(r"(?:�|Ã.|Â.|â€|ðŸ)")
 
@@ -69,6 +72,12 @@ _NARRATIVE_SECTION_KINDS = frozenset(
         "content",
     }
 )
+_PROJECTION_SECTION_KINDS = frozenset(
+    {
+        "xlsx_cell_projection",
+        "xlsx_projection_auxiliary",
+    }
+)
 
 
 def _formula_gate_applies(
@@ -79,6 +88,12 @@ def _formula_gate_applies(
 ) -> bool:
     """Limit formula rejection to an explicit tabular/schema owner."""
 
+    section = section_kind.strip().casefold()
+    # Cell locators are intentional evidence in the dense XLSX projection;
+    # they are not formula syntax.  The projection has already made the
+    # formula-without-cache decision and carries its coverage in provenance.
+    if section in _PROJECTION_SECTION_KINDS:
+        return False
     normalized = (source_schema or section_kind).strip().casefold()
     source = source_kind.strip().casefold() if isinstance(source_kind, str) else ""
     if normalized in _FORMULA_SCHEMA_KINDS or normalized.startswith(

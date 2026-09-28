@@ -176,3 +176,8 @@ def test_email_zip_progress_has_independent_label_and_inventory_group() -> None:
     assert _group_index("email-zip-intake", "process") == 1
     assert _group_index("framework", "email-zip-intake-reconciliation") == 1
     assert _task_label("framework", "email-zip-intake-reconciliation") == "Conciliar ZIP de EML"
+
+
+def test_framework_email_stage_is_not_rendered_as_closure() -> None:
+    assert _group_index("framework", "email-intake") == 1
+    assert _task_label("framework", "email-intake") == "Adjuntos de correo"

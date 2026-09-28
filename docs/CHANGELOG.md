@@ -21,6 +21,12 @@ fuera de `docs/`.
 - Recuperación conserva diagramas técnicos antes confundidos con fórmulas y
   exige evidencia coherente para identificadores, unidades y fechas. Knowledge
   separa navegación por nombre/metadatos de citas de contenido.
+- La reducción tabular reconoce también CSV/TSV que Identify conserva como
+  `text/plain`, usando la forma completa de sus filas, no sólo el MIME.
+  XLSX proyecta valores con hoja/celda sin repetir el JSON o el workbook en
+  cada celda; conserva ceros/booleanos, declara fórmulas sin resultado en caché
+  y conserva la representación original/FTS. Knowledge regenera la misma
+  proyección para validar sus citas y no interpreta offsets sobre el raw.
 - Exportes tabulares de navegación conservan texto/FTS íntegro, pero usan un
   resumen pequeño explícitamente advisory para embeddings. Semantic schema11
   comprime nuevos receipts de forma lossless sin alterar sus bytes públicos v1

@@ -340,7 +340,7 @@ def test_text_plan_is_deterministic_bounded_and_creates_no_state(
     assert "title-policy=semantic-content-aware-title-v3" in (
         first.workloads[0].processing_signature
     )
-    assert "quality-policy=semantic-text-quality-v1" in (first.workloads[0].processing_signature)
+    assert "quality-policy=semantic-text-quality-v2" in (first.workloads[0].processing_signature)
     assert first.input_bytes == (2 * len(text.encode())) + 2
     assert first.unique_input_bytes == len(text.encode()) + 2
     assert first.new_vector_blob_bytes_lower_bound == 3 * 768 * 2
@@ -613,7 +613,7 @@ def test_image_plan_processing_signatures_match_bounded_producer_contracts(
             f"neocortex-semantic-pipeline-v2|{IMAGE_SOURCE_ADAPTER_VERSION}|"
             f"image-ocr|{plan.text_chunking_signature}|"
             "tokenizer-contract=unresolved-v1|"
-            "quality-policy=semantic-text-quality-v1|enumeration=bounded-v1"
+            "quality-policy=semantic-text-quality-v2|enumeration=bounded-v1"
         ),
     }
     assert plan.estimate_kind == ("model_only_request_range_from_pre_tokenizer_content_projection")

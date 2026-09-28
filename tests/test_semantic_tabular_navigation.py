@@ -64,12 +64,13 @@ def test_checkpoint_interrupts_during_rows_instead_of_silently_falling_back() ->
         metadata_table_section(_metadata_csv(), "csv", checkpoint=checkpoint)
 
 
-def test_full_fts_and_original_survive_dense_projection_and_replay(tmp_path) -> None:
+@pytest.mark.parametrize("mime", ("text/csv", "text/plain"))
+def test_full_fts_and_original_survive_dense_projection_and_replay(tmp_path, mime) -> None:
     source = tmp_path / "files.csv"
     original = _metadata_csv()
     source.write_text(original)
     state = tmp_path / "text.sqlite3"
-    candidates = {"text/csv": (snapshot_path(source),)}
+    candidates = {mime: (snapshot_path(source),)}
     first = _route(state, candidates).run()
     assert first.extracted == 1
     records = tuple(iter_text_source_records(tmp_path, "text"))
@@ -81,3 +82,13 @@ def test_full_fts_and_original_survive_dense_projection_and_replay(tmp_path) -> 
     assert replay.cache_hits == 1 and replay.extracted == 0
     assert source.read_text() == original
     assert search_text_state(state, "00999")
+
+
+@pytest.mark.parametrize("kind", ("txt", "text", "plain"))
+def test_metadata_shape_is_recognized_under_conservative_plain_text_kind(kind) -> None:
+    projected = metadata_table_section(_metadata_csv(), kind, checkpoint=lambda: None)
+    assert projected is not None
+    assert projected.provenance["delimited_format_inferred"] is True
+    assert projected.provenance["declared_content_kind"] == kind
+    assert projected.provenance["source_rows"] == 1000
+    assert metadata_table_section("A narrative sentence with a path /fixture.\n" * 100, kind, checkpoint=lambda: None) is None

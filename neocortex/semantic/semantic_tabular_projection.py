@@ -12,12 +12,13 @@ import csv
 import io
 import itertools
 import re
+from dataclasses import replace
 from collections.abc import Callable
 
 from .semantic_models import TextSection
 
 
-TABULAR_METADATA_POLICY = "identifier-table-navigation-v1"
+TABULAR_METADATA_POLICY = "identifier-table-navigation-v2-content-shape"
 _PATH = re.compile(r"^(?:/|[A-Za-z]:[\\/]|file://)")
 _UUID = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:")
@@ -51,6 +52,22 @@ def metadata_table_section(
     complete row stream is checked before reducing it; a late narrative row
     prevents the transformation rather than silently discarding its content.
     """
+    if content_kind in {"txt", "text", "plain"}:
+        # Identify conservatively calls many real CSV/TSV files text/plain.
+        # Infer only through the same complete, strict row-shape proof; never
+        # trust a suffix or turn a narrative TXT into a reduced representation.
+        candidates = [
+            section for kind in ("csv", "tsv")
+            if (section := metadata_table_section(text, kind, checkpoint=checkpoint)) is not None
+        ]
+        if len(candidates) != 1:
+            return None
+        section = candidates[0]
+        return replace(section, provenance={
+            **section.provenance,
+            "declared_content_kind": content_kind,
+            "delimited_format_inferred": True,
+        })
     if content_kind not in {"csv", "tsv"}:
         return None
     checkpoint()
