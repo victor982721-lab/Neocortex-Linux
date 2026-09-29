@@ -6,6 +6,11 @@
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
+
+from .document_kind_destinations import (
+    COMPACT_KIND_DIRECTORIES as _COMPACT_KIND_DIRECTORIES,
+    REVIEW_ONLY_KINDS as _REVIEW_ONLY_KINDS,
+)
 import json
 import os
 import re
@@ -25,6 +30,12 @@ if TYPE_CHECKING:
     from neocortex.runtime.control.cancellation import CancellationToken
 
 from neocortex.platform.policy import sqlite_path_collation
+from neocortex.platform.logical_filename import LogicalFilename
+from .semantic_curation_gate import (
+    FastOrganizationCurationGate,
+    FastCurationPolicySource,
+    validate_current_fast_curation_decision,
+)
 
 from neocortex.progress import (
     ProgressCallback,
@@ -71,7 +82,13 @@ _LINUX_ORGANIZATION_BACKEND_AVAILABLE = os.name == "posix" and sys.platform == "
 
 @dataclass(frozen=True, slots=True)
 class OrganizationCorpusPolicy:
-    """Explicit opt-in for reversible plans outside the technical default."""
+    """Compatibility metadata for legacy policy buckets.
+
+    Abstentions are never routed to a physical ``General``, ``Sensible``,
+    ``No_tecnico`` or ``Revision_pendiente`` destination.  The residual owner
+    materializes them under ``Sin_clasificar/_MIME``; these fields remain in
+    plan provenance for callers that still persist the old policy shape.
+    """
 
     allow_general: bool = False
     allow_uncertain: bool = False
@@ -152,92 +169,6 @@ def _normalize_corpus_policy(
     values.pop("allow_reversible", None)
     values.pop("allow_review", None)
     return OrganizationCorpusPolicy(**values)
-_COMPACT_KIND_DIRECTORIES: dict[str, tuple[str, ...]] = {
-    "accion_correctiva_preventiva": ("Pruebas_y_calidad", "Calidad"),
-    "catalogo_equipo": ("Ingenieria_y_documentacion", "Manuales_catalogos_y_fichas"),
-    "certificado_calibracion": ("Pruebas_y_calidad", "Laboratorio_y_metrologia"),
-    "certificado_calidad": ("Pruebas_y_calidad", "Calidad"),
-    "comprobante_viaje": ("Gestion_y_administracion", "Administracion"),
-    "constancia_capacitacion": ("Capacitacion",),
-    "control_metrologico": ("Pruebas_y_calidad", "Laboratorio_y_metrologia"),
-    "correspondencia": ("Gestion_y_administracion", "Proyecto_y_correspondencia"),
-    "credencial_visitante": ("Seguridad_y_ambiente", "Seguridad"),
-    "curso_capacitacion": ("Capacitacion",),
-    "descripcion_tecnica_sistema": (
-        "Ingenieria_y_documentacion",
-        "Ingenieria_y_calculos",
-    ),
-    "documento_empresa": ("Ingenieria_y_documentacion", "Informes_y_referencias"),
-    "dossier_calidad": ("Pruebas_y_calidad", "Calidad"),
-    "especificacion_tecnica": ("Ingenieria_y_documentacion", "Ingenieria_y_calculos"),
-    "etiqueta_muestra_laboratorio": ("Pruebas_y_calidad", "Laboratorio_y_metrologia"),
-    "factura_comprobante": ("Gestion_y_administracion", "Comercial_y_contratos"),
-    "ficha_tecnica": ("Ingenieria_y_documentacion", "Manuales_catalogos_y_fichas"),
-    "formato_empresa": ("Gestion_y_administracion", "Formatos_y_registros"),
-    "formato_inspeccion": ("Pruebas_y_calidad", "Inspecciones"),
-    "hoja_asignacion_proyecto": (
-        "Gestion_y_administracion",
-        "Proyecto_y_correspondencia",
-    ),
-    "hoja_datos_seguridad": ("Seguridad_y_ambiente", "Seguridad"),
-    "informe_analisis": ("Ingenieria_y_documentacion", "Informes_y_referencias"),
-    "informe_auditoria": ("Pruebas_y_calidad", "Calidad"),
-    "informe_inspeccion": ("Pruebas_y_calidad", "Inspecciones"),
-    "informe_tecnico": ("Ingenieria_y_documentacion", "Informes_y_referencias"),
-    "instructivo_trabajo": (
-        "Operacion_y_mantenimiento",
-        "Procedimientos_e_instructivos",
-    ),
-    "lista_empaque_embarque": ("Logistica_y_embarques",),
-    "lista_materiales": ("Operacion_y_mantenimiento", "Planeacion_y_ordenes"),
-    "lista_verificacion": ("Pruebas_y_calidad", "Inspecciones"),
-    "manual_equipo": ("Ingenieria_y_documentacion", "Manuales_catalogos_y_fichas"),
-    "manual_sistema_gestion": ("Pruebas_y_calidad", "Calidad"),
-    "memoria_calculo": ("Ingenieria_y_documentacion", "Ingenieria_y_calculos"),
-    "minuta_acta": ("Gestion_y_administracion", "Proyecto_y_correspondencia"),
-    "orden_trabajo": ("Operacion_y_mantenimiento", "Planeacion_y_ordenes"),
-    "plan_tecnico": ("Operacion_y_mantenimiento", "Planeacion_y_ordenes"),
-    "plano_diagrama": ("Ingenieria_y_documentacion", "Planos_y_diagramas"),
-    "procedimiento": ("Operacion_y_mantenimiento", "Procedimientos_e_instructivos"),
-    "programa_cronograma": ("Operacion_y_mantenimiento", "Planeacion_y_ordenes"),
-    "programa_gestion_ambiental": ("Seguridad_y_ambiente", "Ambiente"),
-    "programa_seguridad_salud": ("Seguridad_y_ambiente", "Seguridad"),
-    "protocolo_pruebas": ("Pruebas_y_calidad", "Pruebas_y_resultados"),
-    "referencia_tecnica": ("Ingenieria_y_documentacion", "Informes_y_referencias"),
-    "registro_asistencia": ("Gestion_y_administracion", "Formatos_y_registros"),
-    "registro_auditores": ("Pruebas_y_calidad", "Calidad"),
-    "registro_bitacora": ("Operacion_y_mantenimiento", "Bitacoras_y_reportes"),
-    "registro_entrega_epp": ("Seguridad_y_ambiente", "Seguridad"),
-    "registro_fotografico": ("Operacion_y_mantenimiento", "Bitacoras_y_reportes"),
-    "registro_incidencias": ("Seguridad_y_ambiente", "Seguridad"),
-    "registro_mediciones": ("Pruebas_y_calidad", "Pruebas_y_resultados"),
-    "registro_tiempo_personal": ("Gestion_y_administracion", "Formatos_y_registros"),
-    "reporte_actividades": ("Operacion_y_mantenimiento", "Bitacoras_y_reportes"),
-    "reporte_anomalias": ("Operacion_y_mantenimiento", "Bitacoras_y_reportes"),
-    "reporte_entrega_embarque": ("Logistica_y_embarques",),
-    "reporte_fat_sat": ("Pruebas_y_calidad", "FAT_SAT"),
-    "reporte_laboratorio": ("Pruebas_y_calidad", "Laboratorio_y_metrologia"),
-    "reporte_no_conformidad": ("Pruebas_y_calidad", "Calidad"),
-    "reporte_resultados_pruebas": ("Pruebas_y_calidad", "Pruebas_y_resultados"),
-    "viaticos_gastos": ("Gestion_y_administracion", "Administracion"),
-    "compra_requisicion": ("Gestion_y_administracion", "Comercial_y_contratos"),
-    "contrato_legal": ("Gestion_y_administracion", "Comercial_y_contratos"),
-    "cotizacion_propuesta": ("Gestion_y_administracion", "Comercial_y_contratos"),
-    "licitacion": ("Gestion_y_administracion", "Comercial_y_contratos"),
-    "entrevista_grabada": ("Reuniones_y_entrevistas",),
-    "instruccion_verbal": ("Reuniones_y_entrevistas",),
-    "reunion_grabada": ("Reuniones_y_entrevistas",),
-}
-_REVIEW_ONLY_KINDS = frozenset(
-    {
-        "audio_transcrito",
-        "expediente_personal",
-        "instruccion_cuenta_bancaria",
-        "otro",
-        "registro_log",
-        "reporte_inventario_archivo",
-    }
-)
 
 _OOXML_DIRECTORY_MARKERS = (
     ("word/document.xml", "docx"),
@@ -303,6 +234,8 @@ def plan_document_organization(
     mutation_guard: CorpusMutationGuard | None = None,
     corpus_policy: OrganizationCorpusPolicy | Mapping[str, object] | None = None,
     organization_policy: OrganizationCorpusPolicy | Mapping[str, object] | None = None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
+    curation_policy_bundle: FastCurationPolicySource | None = None,
     cancellation: CancellationToken | None = None,
 ) -> OrganizationPlanSummary:
     """Persist proposed destinations; never create directories or move files."""
@@ -313,6 +246,13 @@ def plan_document_organization(
         raise ValueError("organization_input_scope_required")
     if corpus_policy is not None and organization_policy is not None:
         raise ValueError("organization corpus policy was supplied twice")
+    if fast_curation_policy_bundle is not None and curation_policy_bundle is not None:
+        raise ValueError("Fast Curation policy bundle was supplied twice")
+    resolved_curation_bundle = (
+        fast_curation_policy_bundle
+        if fast_curation_policy_bundle is not None
+        else curation_policy_bundle
+    )
     resolved_policy = _normalize_corpus_policy(
         corpus_policy if corpus_policy is not None else organization_policy
     )
@@ -420,6 +360,7 @@ def plan_document_organization(
                     mutation_guard=mutation_guard,
                     source_scope=source_scope,
                     corpus_policy=resolved_policy,
+                    fast_curation_policy_bundle=resolved_curation_bundle,
                 )
                 if status == "planned":
                     planned += 1
@@ -515,6 +456,7 @@ def _plan_catalog_document(
     mutation_guard: CorpusMutationGuard | None,
     source_scope: OrganizationInputScope,
     corpus_policy: OrganizationCorpusPolicy,
+    fast_curation_policy_bundle: FastCurationPolicySource | None,
 ) -> str:
     assessment = assess_organization_resource(row, source_scope)
     if not assessment.included:
@@ -530,6 +472,7 @@ def _plan_catalog_document(
             source_scope=source_scope,
             corpus_policy=corpus_policy,
             binding=assessment.binding,
+            fast_curation_policy_bundle=fast_curation_policy_bundle,
         )
     binding = assessment.binding
     if binding is None:  # pragma: no cover - included assessments carry a binding
@@ -560,6 +503,7 @@ def _plan_catalog_document(
             source_scope=source_scope,
             corpus_policy=corpus_policy,
             binding=binding,
+            fast_curation_policy_bundle=fast_curation_policy_bundle,
         )
     destination, status, reason = _proposed_destination(
         row,
@@ -567,13 +511,9 @@ def _plan_catalog_document(
         min_confidence=min_confidence,
         managed_source=managed_source,
         corpus_policy=corpus_policy,
+        connection=connection,
+        fast_curation_policy_bundle=fast_curation_policy_bundle,
     )
-    if (
-        status == "planned"
-        and str(row["catalog_status"]) != "classified"
-        and not reason.startswith("explicit_corpus_policy_reversible:")
-    ):
-        status, reason = "review", "source_classification_requires_review"
     if binding["representation_kind"] != "physical_file":
         destination = None
         status, reason = "review", "virtual_resource_requires_logical_organization"
@@ -609,6 +549,7 @@ def _plan_catalog_document(
         source_scope=source_scope,
         corpus_policy=corpus_policy,
         binding=binding,
+        fast_curation_policy_bundle=fast_curation_policy_bundle,
     )
 
 
@@ -652,7 +593,7 @@ def _resolve_initial_plan_destination(
     if protected_reason is not None:
         return None, "blocked", protected_reason
     if disambiguated:
-        reason = "classification_above_threshold_with_identity_disambiguation"
+        reason = "fast_curation_classified_with_identity_disambiguation"
     return resolved, status, reason
 
 
@@ -669,6 +610,7 @@ def _persist_catalog_plan(
     source_scope: OrganizationInputScope,
     corpus_policy: OrganizationCorpusPolicy,
     binding: Mapping[str, Any] | None = None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
 ) -> str:
     try:
         _insert_plan(
@@ -682,6 +624,7 @@ def _persist_catalog_plan(
             source_scope=source_scope,
             corpus_policy=corpus_policy,
             binding=binding,
+            fast_curation_policy_bundle=fast_curation_policy_bundle,
         )
         return status
     except sqlite3.IntegrityError:
@@ -706,6 +649,7 @@ def _persist_catalog_plan(
                     source_scope=source_scope,
                     corpus_policy=corpus_policy,
                     binding=binding,
+                    fast_curation_policy_bundle=fast_curation_policy_bundle,
                 )
                 return "blocked"
             _insert_plan(
@@ -715,10 +659,11 @@ def _persist_catalog_plan(
                 root,
                 resolved,
                 status,
-                "classification_above_threshold_with_identity_disambiguation",
+                "fast_curation_classified_with_identity_disambiguation",
                 source_scope=source_scope,
                 corpus_policy=corpus_policy,
                 binding=binding,
+                fast_curation_policy_bundle=fast_curation_policy_bundle,
             )
             return status
         _insert_plan(
@@ -732,6 +677,7 @@ def _persist_catalog_plan(
             source_scope=source_scope,
             corpus_policy=corpus_policy,
             binding=binding,
+            fast_curation_policy_bundle=fast_curation_policy_bundle,
         )
         return "blocked"
 
@@ -751,81 +697,6 @@ def _protected_content_reason(
     return None
 
 
-_SENSITIVE_ORGANIZATION_KINDS = frozenset(
-    {
-        "expediente_personal",
-        "instruccion_cuenta_bancaria",
-        "credencial_visitante",
-        "registro_entrega_epp",
-    }
-)
-_NONTECHNICAL_ORGANIZATION_KINDS = frozenset(
-    {
-        "audio_transcrito",
-        "registro_log",
-        "reporte_inventario_archivo",
-        "codigo",
-    }
-)
-
-
-def _classification_payload(row: sqlite3.Row) -> dict[str, object]:
-    try:
-        payload = json.loads(str(row["classification_json"]))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _organization_policy_category(row: sqlite3.Row, *, reason: str | None = None) -> str | None:
-    """Map an advisory row to an explicit opt-in policy bucket."""
-
-    kind = str(row["primary_kind"] or "")
-    payload = _classification_payload(row)
-    taxonomy_status = str(payload.get("taxonomy_status") or "")
-    if kind == "otro" and taxonomy_status not in {"outside_taxonomy"}:
-        # ``otro`` with insufficient identification is the one true unknown
-        # bucket.  It must not be made actionable merely by enabling a broad
-        # reversible policy.
-        return None
-    if kind in _SENSITIVE_ORGANIZATION_KINDS:
-        return "sensitive"
-    if kind in _NONTECHNICAL_ORGANIZATION_KINDS or taxonomy_status == "outside_taxonomy":
-        return "nontechnical"
-    if (
-        str(row["catalog_status"]) != "classified"
-        or str(row["uncertainty"]) == "alta"
-        or reason in {
-            "classification_confidence_below_threshold",
-            "insufficient_document_identification",
-            "outside_organization_taxonomy",
-        }
-    ):
-        return "uncertain"
-    return "general"
-
-
-def _policy_destination(
-    row: sqlite3.Row,
-    root: Path,
-    category: str,
-) -> Path:
-    kind = str(row["primary_kind"] or "")
-    kind_segment = "Sin_clasificar" if kind == "otro" else _safe_segment(kind)
-    directories = {
-        "general": ("General", kind_segment),
-        "uncertain": ("Revision_pendiente", kind_segment),
-        "sensitive": ("Sensible", kind_segment),
-        "nontechnical": ("No_tecnico", kind_segment),
-    }
-    parts = directories.get(category)
-    if parts is None:  # pragma: no cover - caller validates category
-        raise ValueError(f"unsupported organization policy category: {category}")
-    destination = root.joinpath(*parts, Path(str(row["path"])).name)
-    _validate_destination(root, destination)
-    return destination
-
-
 def _proposed_destination(
     row: sqlite3.Row,
     root: Path,
@@ -833,47 +704,51 @@ def _proposed_destination(
     min_confidence: float,
     managed_source: bool,
     corpus_policy: OrganizationCorpusPolicy | None = None,
+    connection: sqlite3.Connection | None = None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
 ) -> tuple[Path | None, str, str]:
-    """Choose one compact semantic destination without redundant dimensions."""
+    """Choose a physical destination only for calibrated high-confidence evidence.
 
-    resolved_policy = corpus_policy or OrganizationCorpusPolicy()
+    ``review``/unknown/out-of-taxonomy rows intentionally return no physical
+    destination.  The residual materializer owns ``Sin_clasificar/_MIME``;
+    keeping that decision here prevents legacy policy buckets from becoming a
+    second physical organization contract.
+    """
 
     def review(reason: str) -> tuple[Path | None, str, str]:
-        category = _organization_policy_category(row, reason=reason)
-        if category is not None and resolved_policy.allows(category):
-            return (
-                _policy_destination(row, root, category),
-                "planned",
-                f"explicit_corpus_policy_reversible:{category}:{reason}",
-            )
-        if not managed_source:
-            return None, "review", reason
-        destination = root.joinpath(
-            "Revision_pendiente",
-            _safe_segment(str(row["source_kind"]).upper()),
-            Path(str(row["path"])).name,
-        )
-        _validate_destination(root, destination)
-        return destination, "planned", f"managed_reclassification:{reason}"
+        return None, "review", reason
 
     if str(row["catalog_status"]) == "error":
         return review("classification_error")
+    if connection is None:
+        return review("fast_curation_current_decision_unavailable")
+    gate = validate_current_fast_curation_decision(
+        connection,
+        source_kind=str(row["source_kind"]),
+        file_key=str(row["file_key"]),
+        policy_bundle=fast_curation_policy_bundle,
+        expected_binding=parse_resource_binding(row["resource_binding_json"]),
+        expected_path=str(row["path"]),
+        expected_identity=(
+            row["volume_id"],
+            row["file_id"],
+            row["size"],
+            row["mtime_ns"],
+            row["birthtime_ns"],
+        ),
+    )
+    if not gate.eligible:
+        return review(gate.reason)
     try:
         classification = json.loads(str(row["classification_json"]))
     except (TypeError, ValueError):
         classification = {}
-    taxonomy_status = (
-        classification.get("taxonomy_status") if isinstance(classification, dict) else None
-    )
-    if taxonomy_status == "outside_taxonomy":
-        return review("outside_organization_taxonomy")
-    if taxonomy_status == "insufficient_identification":
-        return review("insufficient_document_identification")
-    confidence = float(row["confidence"])
-    if confidence < min_confidence:
-        return review("classification_confidence_below_threshold")
-
-    kind = str(row["primary_kind"])
+    if not isinstance(classification, dict):
+        classification = {}
+    # Catalog taxonomy fields are auxiliary context only.  The current Fast
+    # Curation document-kind label owns the physical directory decision.
+    assert gate.document_kind is not None
+    kind = gate.document_kind
     authority = str(row["primary_authority"] or "")
     organization = str(row["primary_organization"] or "")
     client = str(row["primary_client"] or "")
@@ -924,9 +799,10 @@ def _proposed_destination(
 
     destination = root.joinpath(*parts, filename)
     _validate_destination(root, destination)
-    if str(row["catalog_status"]) != "classified":
-        return destination, "review", "source_classification_requires_review"
-    return destination, "planned", "classification_above_threshold"
+    # The high-precision gate above is the only path to a physical semantic
+    # destination.  Retain a stable reason for provenance without inventing a
+    # second numeric threshold.
+    return destination, "planned", "fast_curation_classified_current"
 
 
 def _client_destination_parts(
@@ -990,8 +866,9 @@ def _identity_disambiguated_destination(
     row: sqlite3.Row,
     collision_index: int,
 ) -> Path:
-    extension = requested.suffix
-    stem = requested.name[: -len(extension)] if extension else requested.name
+    logical = LogicalFilename.parse(requested)
+    extension = logical.extension
+    stem = logical.stem
     identity = "_".join(
         (
             _safe_segment(str(row["source_kind"])).replace(" ", "_"),
@@ -1157,6 +1034,7 @@ def _insert_plan(
     source_scope: OrganizationInputScope,
     corpus_policy: OrganizationCorpusPolicy,
     binding: Mapping[str, Any] | None = None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
 ) -> None:
     if binding is None:
         binding = parse_resource_binding(row["resource_binding_json"])
@@ -1174,7 +1052,7 @@ def _insert_plan(
         if virtual
         else (
             "eligible"
-            if status == "planned" and row["catalog_status"] == "classified"
+            if status == "planned"
             else "blocked"
         )
     )
@@ -1205,8 +1083,6 @@ def _insert_plan(
         and representation_metadata.get("independently_organizable") is False
     ):
         blockers.append("document_component_not_independently_organizable")
-    if str(row["catalog_status"]) != "classified":
-        blockers.append("source_classification_requires_review")
     if eligibility == "blocked":
         blockers.append(reason)
     # A logical location is classification evidence, not a writable file path.
@@ -1218,15 +1094,55 @@ def _insert_plan(
             min_confidence=0.0,
             managed_source=False,
             corpus_policy=corpus_policy,
+            connection=connection,
+            fast_curation_policy_bundle=fast_curation_policy_bundle,
         )
         logical_destination = None if proposed is None else str(proposed)
+    try:
+        fast_gate = validate_current_fast_curation_decision(
+            connection,
+            source_kind=str(row["source_kind"]),
+            file_key=str(row["file_key"]),
+            policy_bundle=fast_curation_policy_bundle,
+            expected_binding=binding,
+            expected_path=str(row["path"]),
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        fast_gate = FastOrganizationCurationGate(
+            False, f"fast_curation_gate_error:{type(exc).__name__}"
+        )
+    decision = fast_gate.decision
+    fast_decision_evidence: dict[str, object] = {
+        "gate_status": fast_gate.reason,
+        "eligible": fast_gate.eligible,
+        "document_kind": fast_gate.document_kind,
+    }
+    if decision is not None:
+        fast_decision_evidence.update(
+            {
+                "source_kind": decision.source_kind,
+                "file_key": decision.file_key,
+                "input_signature": decision.input_signature,
+                "representation_version": decision.representation_version,
+                "model_signature": decision.model_signature,
+                "ontology_version": decision.ontology_version,
+                "prototype_version": decision.prototype_version,
+                "policy_version": decision.policy_version,
+                "calibration_version": decision.calibration_version,
+                "decision": decision.decision,
+                "top1_label": decision.top1_label,
+                "top1_score": decision.top1_score,
+                "top2_label": decision.top2_label,
+                "top2_score": decision.top2_score,
+                "margin": decision.margin,
+                "source_binding": dict(decision.source_binding),
+            }
+        )
     evidence = json.dumps(
         {
             "primary_kind": row["primary_kind"],
             "classification_status": row["catalog_status"],
-            "classification_score_kind": classification.get(
-                "confidence_kind", "uncalibrated_heuristic"
-            ),
+            "classification_score_kind": classification.get("confidence_kind", "catalog_auxiliary"),
             "taxonomy_status": classification.get("taxonomy_status", "unverified"),
             "suggested_logical_location": logical_destination,
             "primary_subtype": row["primary_subtype"],
@@ -1243,7 +1159,13 @@ def _insert_plan(
             "equipment": json.loads(row["equipment_json"]),
             "activities": json.loads(row["activities_json"]),
             "uncertainty": row["uncertainty"],
+            "fast_curation_decision": fast_decision_evidence,
             "corpus_policy": corpus_policy.to_dict(),
+            "organization_decision_owner": "fast_curation_current_decision",
+            "organization_decision_status": (
+                "accepted" if status in {"planned", "already_organized"} else "abstained"
+            ),
+            "organization_decision_reason": reason,
             "reversible": corpus_policy.reversible,
             "organization_backend": (
                 "posix-link-unlink-no-replace-v1" if executable else None
@@ -1364,7 +1286,8 @@ _SEMANTIC_RENAME_KINDS = frozenset(
 
 def _proposed_filename(row: sqlite3.Row) -> str:
     source = Path(str(row["path"]))
-    original_stem = source.stem
+    logical = LogicalFilename.parse(source)
+    original_stem = logical.stem
     try:
         classification = json.loads(str(row["classification_json"]))
     except (TypeError, ValueError):
@@ -1379,10 +1302,10 @@ def _proposed_filename(row: sqlite3.Row) -> str:
         original_stem
     ):
         return source.name
-    safe_stem = _safe_filename_stem(suggested, extension=source.suffix)
+    safe_stem = _safe_filename_stem(suggested, extension=logical.extension)
     if os.path.normcase(safe_stem) == os.path.normcase(original_stem):
         return source.name
-    return f"{safe_stem}{source.suffix}"
+    return f"{safe_stem}{logical.extension}"
 
 
 def _filename_needs_semantic_rename(stem: str) -> bool:

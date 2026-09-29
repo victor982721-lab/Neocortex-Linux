@@ -48,6 +48,11 @@ from neocortex.safety.kio_trash import (
     trash_receipt_paths,
     validate_empty_directory_source,
 )
+from neocortex.safety.artifact_content_proof import (
+    ArtifactContentProof,
+    ArtifactContentProofError,
+    revalidate_artifact_content_proof,
+)
 from neocortex.workflow.actions.action_policy import validate_mutation_path
 from neocortex.workflow.actions.file_action_recovery import effect_receipt_json
 
@@ -230,6 +235,18 @@ def _validate_effect_physical(effect: object, root: Path) -> None:
     if not isinstance(source, FileSnapshot) or not isinstance(source_digest, str):
         raise MutationError("mutation source binding is missing")
     source = _validate_regular_unique(source, role="mutation source")
+    content_proof = getattr(effect, "content_proof", None)
+    if content_proof is not None:
+        try:
+            revalidate_artifact_content_proof(
+                content_proof,
+                source.path,
+                expected=source,
+            )
+        except ArtifactContentProofError as exc:
+            raise MutationSnapshotChanged(
+                "artifact content proof changed before the physical effect"
+            ) from exc
     if is_metadata_binding(source_digest):
         if metadata_binding(source) != source_digest:
             raise MutationSnapshotChanged("mutation source metadata binding changed")
@@ -571,6 +588,7 @@ class KioTrashBackend:
             return BackendOutcome("blocked", "kio_runner_not_injected")
         source = getattr(effect, "source", None)
         source_digest = getattr(effect, "source_digest", None)
+        content_proof = getattr(effect, "content_proof", None)
         if not isinstance(source, FileSnapshot) or not isinstance(source_digest, str):
             return BackendOutcome("blocked", "kio_source_binding_invalid")
 
@@ -596,6 +614,7 @@ class KioTrashBackend:
             source_digest=source_digest,
             root=Path(candidate.root),
             object_kind=object_kind,
+            content_proof=content_proof,
         )
         return self._backend_outcome(effect, result)
 
@@ -649,6 +668,7 @@ class KioTrashBackend:
         root: Path,
         source_digest: str,
         object_kind: str = KIO_OBJECT_FILE,
+        content_proof: ArtifactContentProof | Mapping[str, object] | None = None,
     ) -> BackendOutcome:
         """Apply one planned snapshot without manufacturing a new plan."""
 
@@ -660,12 +680,17 @@ class KioTrashBackend:
             keeper_digest=None,
             target_path=None,
             object_kind=object_kind,
+            content_proof=content_proof,
         )
         return self.apply(ApplyCandidate("framework", "", Path(root), effect))
 
     def apply_many_snapshots(
         self,
-        items: Sequence[tuple[FileSnapshot, str] | tuple[FileSnapshot, str, str]],
+        items: Sequence[
+            tuple[FileSnapshot, str]
+            | tuple[FileSnapshot, str, str]
+            | tuple[FileSnapshot, str, str, ArtifactContentProof | Mapping[str, object]]
+        ],
         *,
         root: Path,
     ) -> tuple[BackendOutcome, ...]:
@@ -684,7 +709,7 @@ class KioTrashBackend:
             if (
                 not isinstance(item, Sequence)
                 or isinstance(item, (str, bytes, bytearray))
-                or len(item) not in {2, 3}
+                or len(item) not in {2, 3, 4}
                 or not isinstance(item[0], FileSnapshot)
                 or not isinstance(item[1], str)
             ):
@@ -693,6 +718,7 @@ class KioTrashBackend:
                 )
             snapshot, source_digest = item[:2]
             object_kind = item[2] if len(item) == 3 else KIO_OBJECT_FILE
+            content_proof = item[3] if len(item) == 4 else None
             if object_kind not in {KIO_OBJECT_FILE, KIO_OBJECT_EMPTY_DIRECTORY}:
                 raise TypeError("unsupported KIO object kind")
             effect = SimpleNamespace(
@@ -703,6 +729,7 @@ class KioTrashBackend:
                 keeper_digest=None,
                 target_path=None,
                 object_kind=object_kind,
+                content_proof=content_proof,
             )
             try:
                 if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
@@ -713,6 +740,8 @@ class KioTrashBackend:
                 outcomes[index] = BackendOutcome(
                     "blocked", "kio_preflight_failed", str(exc)
                 )
+                if isinstance(content_proof, ArtifactContentProof) and content_proof.lease is not None:
+                    content_proof.lease.close()
                 continue
             valid_effects.append(effect)
             valid_items.append(
@@ -720,9 +749,24 @@ class KioTrashBackend:
             )
             valid_indexes.append(index)
         if not valid_items:
+            for effect in valid_effects:
+                proof = getattr(effect, "content_proof", None)
+                if isinstance(proof, ArtifactContentProof) and proof.lease is not None:
+                    proof.lease.close()
             return tuple(item for item in outcomes if item is not None)
 
-        batch_outcomes = self._service.move_many(valid_items, root=root)
+        proofs: dict[str, object] = {}
+        for effect in valid_effects:
+            values = vars(effect)
+            proof = values.get("content_proof")
+            source_value = values.get("source")
+            if proof is not None and isinstance(source_value, FileSnapshot):
+                proofs[os.fspath(source_value.path)] = proof
+        batch_outcomes = self._service.move_many(
+            valid_items,
+            root=root,
+            content_proofs=proofs or None,
+        )
         for index, effect, result in zip(
             valid_indexes, valid_effects, batch_outcomes, strict=True
         ):

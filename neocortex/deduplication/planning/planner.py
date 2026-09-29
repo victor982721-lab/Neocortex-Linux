@@ -54,6 +54,7 @@ class DedupPlanner:
         cancellation=None,
         max_workers: int | None = None,
         max_file_bytes: int | None = None,
+        admission_check: Callable[[FileSnapshot], bool] | None = None,
     ):
         self._index = index
         self._keeper_policy = keeper_policy or KeeperPolicy()
@@ -69,6 +70,7 @@ class DedupPlanner:
         self._cancellation = cancellation
         self._max_workers = max_workers
         self._max_file_bytes = validate_max_file_bytes(max_file_bytes)
+        self._admission_check = admission_check
         self._scan_device: str | None = None
 
     def _checkpoint(self) -> None:
@@ -247,6 +249,7 @@ class DedupPlanner:
             ),
             checkpoint=self._checkpoint,
             metadata_scope=self._metadata_scope,
+            admission_check=self._admission_check,
         ).run()
 
 

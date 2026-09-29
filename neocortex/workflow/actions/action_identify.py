@@ -9,6 +9,7 @@ from __future__ import annotations
 # mypy: disable-error-code=has-type
 
 import json
+import os
 import threading
 import time
 from dataclasses import replace
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from neocortex.deduplication import DedupPlan, FileChangedError, FileSnapshot, snapshot_path
 from neocortex.platform.content_types import DetectedType
+from neocortex.platform.logical_filename import LogicalFilename, collision_path, identity_token
 from neocortex.progress import ProgressEvent, emit_progress
 from neocortex.runtime.models import ActionSummary
 from neocortex.safety.corpus_access import CorpusMutationGuard, ProtectedAnalysisRootError
@@ -56,6 +58,29 @@ class IdentifyActionsMixin:
 
         def _with_size_limit(self, summary: ActionSummary) -> ActionSummary: ...
 
+    def _is_identify_preexcluded(self, snapshot: FileSnapshot) -> bool:
+        """Return whether a prior cheap artifact stage owns this path."""
+
+        excluded = getattr(self, "_artifact_excluded_paths", ())
+        try:
+            return snapshot.path in excluded or Path(snapshot.path) in excluded
+        except TypeError:
+            return False
+
+    def _reserve_identify_content(self, snapshots: tuple[FileSnapshot, ...]) -> None:
+        if self._reserve_work is None or not snapshots:
+            return
+        from neocortex.platform.identification_probe import STRUCTURED_PROBE_LIMIT
+
+        # Reserve the bounded escalation ceiling on the Framework owner
+        # thread before dispatching cache misses. This is a reservation, not a
+        # claim of observed bytes; cache hits perform no read and reserve none.
+        self._reserve_snapshot_work(
+            "content-prefix", snapshots, items=0,
+            bytes_override=sum(min(max(0, item.size), STRUCTURED_PROBE_LIMIT)
+                               for item in snapshots),
+        )
+
     def _content_type_total(self) -> int:
         """Count non-empty snapshots admitted by this run's size ceiling.
 
@@ -64,6 +89,18 @@ class IdentifyActionsMixin:
         not stat, open, hash, or inspect any source payload.
         """
 
+        # Delta/fixed-point callers install an owner-side selector and a
+        # precomputed denominator.  Do not reopen the inventory here: the
+        # selector is deliberately the only source for that bounded phase.
+        selected_count = getattr(self, "_action_snapshot_count", None)
+        if selected_count is not None:
+            try:
+                return max(0, int(selected_count))
+            except (TypeError, ValueError, OverflowError):
+                # A malformed optional hook must not turn a read-only direct
+                # action caller into an unbounded scan; fall back to the
+                # canonical inventory owner below.
+                pass
         if self._max_file_bytes is None:
             return self._index.file_count(self._scan_id) - self._index.file_count_by_size(
                 self._scan_id, 0
@@ -71,19 +108,27 @@ class IdentifyActionsMixin:
         total = 0
         after_path = ""
         while True:
-            page = self._index.snapshots_page(
-                self._scan_id,
-                after_path=after_path,
-                limit=TRASH_BATCH_SIZE,
-            )
+            page_reader = getattr(self, "_action_snapshots_page", None)
+            if callable(page_reader):
+                page = page_reader(after_path=after_path, limit=TRASH_BATCH_SIZE)
+            else:
+                page = self._index.snapshots_page(
+                    self._scan_id,
+                    after_path=after_path,
+                    limit=TRASH_BATCH_SIZE,
+                )
             if not page:
                 return total
             after_path = page[-1].path
             for snapshot in page:
-                if snapshot.size > 0 and self._size_is_admitted(snapshot):
+                if (
+                    snapshot.size > 0
+                    and self._size_is_admitted(snapshot)
+                    and not self._is_identify_preexcluded(snapshot)
+                ):
                     total += 1
 
-    def identify_and_normalize(self) -> ActionSummary:
+    def identify_and_normalize(self, *, preserve_identified: bool = False) -> ActionSummary:
         """Run bounded Identify/Normalize before any duplicate planning.
 
         The phase intentionally does not publish route candidates.  It only
@@ -92,9 +137,14 @@ class IdentifyActionsMixin:
         Policy/redlist and Dedupe are subsequent phases in the orchestrator.
         """
 
-        self._identified_types.clear()
-        self._identified_detector_version = self._detector_version()
-        self._identify_summary = None
+        detector_version = self._detector_version()
+        if (
+            not preserve_identified
+            or self._identified_detector_version != detector_version
+        ):
+            self._identified_types.clear()
+            self._identify_summary = None
+        self._identified_detector_version = detector_version
         self._validate_apply_root()
         previous_suppress = self._redlist_suppress_late_mutation
         previous_no_hash = self._normalize_without_full_hash
@@ -103,7 +153,11 @@ class IdentifyActionsMixin:
         try:
             summary = self._validate_extensions(
                 None,
-                self._with_size_limit(ActionSummary(apply_actions=self._apply)),
+                self._with_size_limit(
+                    self._identify_summary
+                    if preserve_identified and self._identify_summary is not None
+                    else ActionSummary(apply_actions=self._apply)
+                ),
                 publish_routes=False,
                 prune_cache=False,
             )
@@ -214,27 +268,18 @@ class IdentifyActionsMixin:
         observation_samples_lock = threading.Lock()
         after_path = ""
         while True:
-            page = self._index.snapshots_page(
-                self._scan_id,
-                after_path=after_path,
-                limit=TRASH_BATCH_SIZE,
-            )
+            page_reader = getattr(self, "_action_snapshots_page", None)
+            if callable(page_reader):
+                page = page_reader(after_path=after_path, limit=TRASH_BATCH_SIZE)
+            else:
+                page = self._index.snapshots_page(
+                    self._scan_id,
+                    after_path=after_path,
+                    limit=TRASH_BATCH_SIZE,
+                )
             if not page:
                 break
             after_path = page[-1].path
-            if self._reserve_work is not None and not reuse_identified:
-                admitted_prefix_bytes = 0
-                for snapshot in page:
-                    if self._size_is_admitted(snapshot):
-                        admitted_prefix_bytes += min(
-                            CONTENT_PREFIX_BYTES, max(0, int(snapshot.size))
-                        )
-                self._reserve_snapshot_work(
-                    "content-prefix",
-                    page,
-                    items=0,
-                    bytes_override=admitted_prefix_bytes,
-                )
             if reuse_identified:
                 # The integrated route pass normally consumes the in-memory
                 # Identify decisions.  Keep its changed/new-file fallback
@@ -266,6 +311,18 @@ class IdentifyActionsMixin:
             for planned in page:
                 self._checkpoint()
                 if planned.size == 0:
+                    # Empty regular survivors still need a durable, identity-
+                    # bound UNKNOWN decision for the final MIME materializer.
+                    # Metadata proves emptiness: do not open a payload or
+                    # invent a route/MIME merely from its extension.
+                    summary, empty_admitted = self._validate_content_type_candidate(
+                        planned, summary, count_files_checked=False,
+                    )
+                    if empty_admitted:
+                        self._remember_identified_type(planned, None)
+                        cache_updates.append((planned, None))
+                        if len(cache_updates) >= 1000:
+                            flush_cache_updates()
                     continue
                 summary, is_admitted = self._validate_content_type_candidate(
                     planned,
@@ -304,6 +361,7 @@ class IdentifyActionsMixin:
                     pending.append((index, planned))
 
             if pending:
+                self._reserve_identify_content(tuple(snapshot for _position, snapshot in pending))
                 # The shared coordinator is optional for direct action
                 # callers, but the integrated runner binds one resource scope
                 # for the complete run.  Registering this short-lived phase
@@ -706,6 +764,21 @@ class IdentifyActionsMixin:
             if record_size_skip:
                 summary = self._record_size_skip(summary, planned)
             return summary, False
+        # Cheap pre-clean may have proved this physical identity as an
+        # artifact without applying a mutation (preview, blocked effect, or
+        # recovery continuation).  Keep it out of Identify and all downstream
+        # routes without reopening its payload.
+        if self._is_identify_preexcluded(planned):
+            return summary, False
+        # The orchestrator may install a fixed-point admission predicate for
+        # newly produced/blocked descendants.  It is intentionally consulted
+        # before redlist, cache lookup, stat refresh, or any detector work so a
+        # late physical child cannot enter routes merely because it is present
+        # in the inventory.  This is a pure owner-side hook; workers never see
+        # it and no SQLite access is performed here.
+        expensive_admission = getattr(self, "_expensive_admission", None)
+        if callable(expensive_admission) and not expensive_admission(planned):
+            return summary, False
         if self._redlist_is_excluded(planned.path):
             # A redlisted source that remains physically present because a
             # hard boundary or a pre-effect block refused Trash is still a
@@ -773,6 +846,7 @@ class IdentifyActionsMixin:
             summary,
             type_cache_misses=summary.type_cache_misses + 1,
         )
+        self._reserve_identify_content((planned,))
         try:
             detected = self._detector_function()(planned.path)
             refreshed = self._snapshot_path(planned.path)
@@ -815,7 +889,8 @@ class IdentifyActionsMixin:
             return summary, None
         if count_metrics:
             summary = replace(summary, types_detected=summary.types_detected + 1)
-        if detected.accepts(planned.path):
+        logical = LogicalFilename.parse(planned.path)
+        if detected.accepts(planned.path) and not logical.gnu_suffixes:
             if count_metrics:
                 summary = replace(
                     summary,
@@ -837,6 +912,7 @@ class IdentifyActionsMixin:
         if not normalize:
             return summary, (detected.mime, planned)
         summary = self._rename_mismatch(planned, detected, summary)
+        target = Path(self._normalized_paths.get(planned.path, str(target)))
         actual_path = (
             target if target.is_file() and not Path(planned.path).exists() else Path(planned.path)
         )
@@ -863,7 +939,7 @@ class IdentifyActionsMixin:
                 "policy_digest": policy_digest,
                 "redlist_entry": redlist_entry,
                 "match": "detected_canonical_extension_v1",
-                "original_suffix": Path(planned.path).suffix,
+                "original_suffix": LogicalFilename.parse(planned.path).logical_extension,
                 "detected_extension": detected.canonical_extension,
                 "detection_evidence": detected.evidence,
                 "snapshot": {
@@ -958,7 +1034,11 @@ class IdentifyActionsMixin:
             str(source),
             str(target),
             detected.mime,
-            detected.evidence,
+            json.dumps({
+                "detection_evidence": detected.evidence,
+                "detector_version": self._detector_version(),
+                "logical_filename": LogicalFilename.parse(source).normalized_basename,
+            }, sort_keys=True, separators=(",", ":")),
             self._apply,
         )
 
@@ -966,7 +1046,19 @@ class IdentifyActionsMixin:
         """Correct one detected extension through the canonical POSIX backend."""
 
         source = Path(planned.path)
-        target = _corrected_path(source, detected.canonical_extension)
+        logical = LogicalFilename.parse(source)
+        target = (
+            source.with_name(logical.normalized_basename)
+            if detected.accepts(source)
+            else _corrected_path(source, detected.canonical_extension)
+        )
+        if target != source and os.path.lexists(target):
+            token = identity_token(planned.volume_id, planned.file_id, planned.birthtime_ns)
+            requested = target
+            for attempt in range(1, 1001):
+                target = collision_path(requested, token, attempt=attempt)
+                if target == source or not os.path.lexists(target):
+                    break
         # Keep the policy view deterministic even in dry-run mode.  The
         # physical source remains untouched until ``--apply`` but Redlist must
         # evaluate the normalized successor rather than the stale suffix.

@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from neocortex.platform.logical_filename import LogicalFilename
 
-REDLIST_POLICY_SCHEMA = "neocortex.corpus-redlist/v2"
+REDLIST_POLICY_SCHEMA = "neocortex.corpus-redlist/v3"
 
 # Source of truth requested by Víctor.  Entries beginning with a dot are either
 # exact dot-file names or case-insensitive suffixes.  Keeping the literal list
@@ -320,7 +321,7 @@ def redlist_policy_payload() -> dict[str, object]:
 
     return {
         "schema": REDLIST_POLICY_SCHEMA,
-    "match": "basename_exact_or_final_suffix_casefold_v2",
+        "match": "logical_basename_or_extension_casefold_v3",
         "entries": list(REDLIST_ENTRIES),
     }
 
@@ -337,16 +338,17 @@ def redlist_match(path: str | Path) -> str | None:
 
     Matching is deterministic and case-insensitive.  A token matches either
     the complete basename (for dotfiles and unusual generated names) or the
-    final suffix returned by :attr:`Path.suffix`.  Intermediate dotted version
+    final logical extension, excluding collision decorators. Intermediate dotted version
     components (for example ``.1`` in ``0.1-report.xlsx``) are not extensions;
     otherwise short redlist tokens would incorrectly catch ordinary PDF,
     image, spreadsheet, and text files.  No file content or external classifier is
     consulted.
     """
 
-    name = Path(path).name
+    logical = LogicalFilename.parse(path)
+    name = logical.basename
     folded_name = name.casefold()
-    final_suffix = Path(name).suffix.casefold()
+    final_suffix = logical.logical_extension
     candidates = (folded_name, final_suffix) if final_suffix else (folded_name,)
     for candidate in candidates:
         if candidate in _REDLIST_CASEFOLDED:

@@ -21,7 +21,10 @@ from neocortex.persistence.framework_connection import connect_existing_framewor
 
 # region [02] Implementación
 
-DEFAULT_ORGANIZATION_DIRECTORY_NAME = "Consulta_Tecnica_Organizada"
+# The physical contract has one managed classified root.  Residuals are
+# materialized by the orchestration owner under the sibling ``Sin_clasificar``
+# tree; this module only owns the default classified destination.
+DEFAULT_ORGANIZATION_DIRECTORY_NAME = "Corpus_ordenado"
 ORGANIZATION_APPLY_BATCH_SIZE = 100
 ORGANIZATION_PROGRESS_INTERVAL = 10
 ORGANIZATION_FILENAME_LIMIT = 240

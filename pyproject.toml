@@ -181,3 +181,4 @@ include = [
 
 [tool.setuptools.package-data]
 "neocortex" = ["py.typed"]
+"neocortex.semantic" = ["data/curation_policy_bundle.json", "data/curation_prototypes.json"]

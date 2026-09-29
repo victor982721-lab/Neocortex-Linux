@@ -49,6 +49,8 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         document_taxonomy_path=args.document_taxonomy,
         organization_root=args.organization_root,
         organization_min_confidence=args.organization_min_confidence,
+        curation_model_cache=getattr(args, "semantic_model_cache", None),
+        curation_threads=getattr(args, "semantic_threads", None),
         global_memory_budget_bytes=(
             None
             if args.global_memory_budget_mb is None

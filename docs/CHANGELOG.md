@@ -4,6 +4,27 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-28 — Admisión física y Fast Curation
+
+- `--all` conserva ZIP Intake antes de Identify y añade admisión incremental
+  común a hijos ZIP/EML antes de Dedupe/rutas, sin muestras truncadas ni loops
+  globales de ZIP. Normalize bloqueado no se confunde con un movimiento aplicado.
+- Nombres lógicos separan GNU backups y decoradores de las extensiones;
+  colisiones deterministas no reemplazan originales. Identify escala parsers
+  estructurales bounded y distingue NDJSON; PE/ELF débiles no prueban ejecutables.
+- ArtifactPolicy usa pruebas estructurales/source-bound y el mismo KIO
+  receipt/recovery, preservando fuentes útiles/protegidas y paquetes mixtos.
+- Fast Curation comparte infraestructura de embeddings, extrae una sola vez,
+  usa representaciones documentales acotadas, caché y prototipos versionados.
+  Organization consume una única decisión calibrada o abstiene; la taxonomía
+  previa queda como evidencia auxiliar, no autoridad paralela de movimiento.
+- El layout final usa `Corpus_ordenado` y `Sin_clasificar/_MIME`. Se reutilizan
+  movimientos no-replace y sincronización por lotes para supervivientes sin
+  Catalog, conservando origen, decisiones y vectores equivalentes.
+- Retirement y verificación final evitan publicar éxito con owners CURRENT
+  obsoletos o efectos pendientes. Full Semantic se ejecuta sobre paths finales;
+  las métricas no confunden bytes en Papelera con espacio físico liberado.
+
 ## 2026-09-28 — Utilidad del corpus y efectos Linux verificables
 
 - Organización ejecuta movimientos POSIX no-replace sólo con ámbito, identidad

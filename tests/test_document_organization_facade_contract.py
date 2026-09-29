@@ -76,16 +76,20 @@ def test_document_organization_public_signatures_require_mutation_guard() -> Non
             "min_confidence: 'float' = 0.72, progress: 'ProgressCallback | None' "
             "= None, progress_operation: 'str' = 'framework', "
             "mutation_guard: 'CorpusMutationGuard | None' = None, "
-            "corpus_policy: 'OrganizationCorpusPolicy | Mapping[str, object] | None' = None, "
-            "organization_policy: 'OrganizationCorpusPolicy | Mapping[str, object] | None' = None, "
-            "cancellation: 'CancellationToken | None' = None) -> "
+                "corpus_policy: 'OrganizationCorpusPolicy | Mapping[str, object] | None' = None, "
+                "organization_policy: 'OrganizationCorpusPolicy | Mapping[str, object] | None' = None, "
+                "fast_curation_policy_bundle: 'FastCurationPolicySource | None' = None, "
+                "curation_policy_bundle: 'FastCurationPolicySource | None' = None, "
+                "cancellation: 'CancellationToken | None' = None) -> "
             "'OrganizationPlanSummary'"
         ),
         "apply_document_organization": (
             "(catalog_path: 'Path', organization_root: 'Path', *, "
             "mutation_guard: 'CorpusMutationGuard', max_actions: 'int' = 100, "
             "on_progress: 'OrganizationApplyProgressCallback | None' = None, "
-            "framework_lock_held: 'bool' = False, checkpoint: 'Callable[[], None] | None' = None) -> "
+            "framework_lock_held: 'bool' = False, checkpoint: 'Callable[[], None] | None' = None, "
+            "fast_curation_policy_bundle: 'FastCurationPolicySource | None' = None, "
+            "curation_policy_bundle: 'FastCurationPolicySource | None' = None) -> "
             "'OrganizationApplySummary'"
         ),
         "apply_all_document_organization": (
@@ -93,7 +97,10 @@ def test_document_organization_public_signatures_require_mutation_guard() -> Non
             "mutation_guard: 'CorpusMutationGuard', batch_size: 'int' = 100, "
             "progress: 'ProgressCallback | None' = None, progress_operation: 'str' "
             "= 'framework', framework_lock_held: 'bool' = False, "
-            "checkpoint: 'Callable[[], None] | None' = None) -> 'OrganizationApplySummary'"
+            "checkpoint: 'Callable[[], None] | None' = None, "
+            "fast_curation_policy_bundle: 'FastCurationPolicySource | None' = None, "
+            "curation_policy_bundle: 'FastCurationPolicySource | None' = None) -> "
+            "'OrganizationApplySummary'"
         ),
         "list_organization_plans": (
             "(catalog_path: 'Path', *, limit: 'int', status: 'str | None' = None) "

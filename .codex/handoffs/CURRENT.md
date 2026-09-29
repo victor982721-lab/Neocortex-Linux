@@ -1,5 +1,19 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-CORPUS-20260928.
+**Estado:** PAUSADO / CURRENT_REVIEW, checkpoint WIP en rama, sin integración
+a main ni instalación de esta entrega.
+**Rama:** `codex/curacion-corpus-wip-20260928`.
+**Detalle:** [Curación del corpus — handoff WIP](NEOCORTEX_CORPUS_CURATION_WIP_2026-09-28.md).
+
+El código y las pruebas en curso quedan conservados, no aceptados como release.
+Seguridad de claim/proof, E2E completo, calibración/costo y regresión final
+mantienen gates pendientes. No reanudar sin instrucción humana expresa.
+
+---
+
+# Handoff anterior — NeoCortex
+
 **Ronda:** NEO-UTILIDAD-LINUX-20260928.
 **Estado:** correcciones publicadas, release instalada/verificada y corpus real aceptado con límites explícitos.
 **Detalle:** [NEOCORTEX_CORPUS_UTILITY_2026-09-28.md](NEOCORTEX_CORPUS_UTILITY_2026-09-28.md).

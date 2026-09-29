@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from neocortex.documents.document_organization_application import apply_document
 from neocortex.foundation.file_identity import FileIdentity
 from neocortex.safety.corpus_access import CorpusAccessPolicy, CorpusMutationGuard
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
+from tests.organization_fast_fixture import seed_organization_fast_decisions
 from tests.test_linux_organization_application import _seed_docx
 
 
@@ -29,7 +31,7 @@ def _normal_mutation_guard(root: Path) -> CorpusMutationGuard:
 
 
 @pytest.fixture
-def organization_idempotency_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
+def organization_idempotency_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, object]:
     state = tmp_path / "state"
     state.mkdir()
     corpus = tmp_path / "corpus"
@@ -43,9 +45,15 @@ def organization_idempotency_fixture(tmp_path: Path) -> tuple[Path, Path, Path, 
 
     update_document_catalog(state)
     catalog = state / "document_catalog.sqlite3"
+    bundle = seed_organization_fast_decisions(catalog)
     destination_root = corpus / "organized"
     scope = capture_organization_input_scope(catalog, corpus)
-    summary = plan_document_organization(catalog, destination_root, source_scope=scope)
+    summary = plan_document_organization(
+        catalog,
+        destination_root,
+        source_scope=scope,
+        fast_curation_policy_bundle=bundle,
+    )
     assert (summary.planned, summary.executable) == (1, 1)
     with document_catalog_database(catalog, readonly=True) as connection:
         row = connection.execute(
@@ -58,13 +66,14 @@ def organization_idempotency_fixture(tmp_path: Path) -> tuple[Path, Path, Path, 
         source,
         destination_root,
         Path(str(row["destination_path"])),
+        bundle,
     )
 
 
 def test_replan_keeps_current_identity_destination_after_foreign_collision(
-    organization_idempotency_fixture: tuple[Path, Path, Path, Path, Path],
+    organization_idempotency_fixture: tuple[Path, Path, Path, Path, Path, object],
 ) -> None:
-    catalog, corpus, source, destination_root, requested = organization_idempotency_fixture
+    catalog, corpus, source, destination_root, requested, bundle = organization_idempotency_fixture
     requested.parent.mkdir(parents=True)
     requested.write_bytes(b"unrelated pre-existing destination")
 
@@ -73,14 +82,20 @@ def test_replan_keeps_current_identity_destination_after_foreign_collision(
         destination_root,
         mutation_guard=_normal_mutation_guard(corpus.parent),
         max_actions=1,
+        fast_curation_policy_bundle=bundle,
     )
     assert first.applied == 1
     assert not source.exists()
     with document_catalog_database(catalog, readonly=True) as connection:
         document = connection.execute("SELECT path FROM documents").fetchone()
+        curation = connection.execute(
+            "SELECT source_binding_json FROM curator_decisions"
+        ).fetchone()
     assert document is not None
+    assert curation is not None
     current = Path(str(document["path"]))
     assert current != requested
+    assert json.loads(str(curation["source_binding_json"]))["physical_anchor_path"] == str(current)
     assert current.read_bytes() == b"synthetic identity-qualified destination fixture"
     assert requested.read_bytes() == b"unrelated pre-existing destination"
     with document_catalog_database(catalog, readonly=True) as connection:
@@ -94,7 +109,12 @@ def test_replan_keeps_current_identity_destination_after_foreign_collision(
     assert (resolved_current, was_disambiguated) == (current, False)
 
     next_scope = capture_organization_input_scope(catalog, corpus)
-    replay_plan = plan_document_organization(catalog, destination_root, source_scope=next_scope)
+    replay_plan = plan_document_organization(
+        catalog,
+        destination_root,
+        source_scope=next_scope,
+        fast_curation_policy_bundle=bundle,
+    )
     assert (replay_plan.considered, replay_plan.planned, replay_plan.already_organized) == (
         1,
         0,
@@ -106,6 +126,7 @@ def test_replan_keeps_current_identity_destination_after_foreign_collision(
         destination_root,
         mutation_guard=_normal_mutation_guard(corpus.parent),
         max_actions=1,
+        fast_curation_policy_bundle=bundle,
     )
     assert (replay.selected, replay.applied, replay.remaining) == (0, 0, 0)
     assert current.exists()
@@ -215,10 +236,16 @@ def test_two_applied_moves_replan_to_zero_effects(tmp_path: Path) -> None:
             )
     for source in sources:
         _seed(catalog, source, kind="docx")
+    bundle = seed_organization_fast_decisions(catalog)
 
     destination_root = corpus / "organized"
     first_scope = capture_organization_input_scope(catalog, corpus)
-    first_plan = plan_document_organization(catalog, destination_root, source_scope=first_scope)
+    first_plan = plan_document_organization(
+        catalog,
+        destination_root,
+        source_scope=first_scope,
+        fast_curation_policy_bundle=bundle,
+    )
     assert (first_plan.planned, first_plan.executable) == (2, 2)
 
     first_apply = apply_document_organization(
@@ -226,12 +253,18 @@ def test_two_applied_moves_replan_to_zero_effects(tmp_path: Path) -> None:
         destination_root,
         mutation_guard=_normal_mutation_guard(tmp_path),
         max_actions=2,
+        fast_curation_policy_bundle=bundle,
     )
     assert (first_apply.applied, first_apply.cache_pending) == (2, 0)
     assert all(not source.exists() for source in sources)
 
     second_scope = capture_organization_input_scope(catalog, corpus)
-    second_plan = plan_document_organization(catalog, destination_root, source_scope=second_scope)
+    second_plan = plan_document_organization(
+        catalog,
+        destination_root,
+        source_scope=second_scope,
+        fast_curation_policy_bundle=bundle,
+    )
     assert (second_plan.considered, second_plan.planned, second_plan.already_organized) == (
         2,
         0,
@@ -242,6 +275,7 @@ def test_two_applied_moves_replan_to_zero_effects(tmp_path: Path) -> None:
         destination_root,
         mutation_guard=_normal_mutation_guard(tmp_path),
         max_actions=2,
+        fast_curation_policy_bundle=bundle,
     )
     assert (replay.selected, replay.applied, replay.remaining) == (0, 0, 0)
 

@@ -43,7 +43,8 @@ class PlanRepositoryMixin:
     def begin_planning_fingerprints(self) -> None:
         """Create disk-spillable temporary tables for one bounded planning run."""
 
-        self._connection.execute("PRAGMA temp_store=FILE")
+        if int(self._connection.execute("PRAGMA temp_store").fetchone()[0]) != 1:
+            self._connection.execute("PRAGMA temp_store=FILE")
         self._connection.execute("PRAGMA cache_size=-32768")
         self._connection.executescript(
             f"""

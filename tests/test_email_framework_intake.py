@@ -10,7 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from neocortex.deduplication import FileSnapshot
+from neocortex.deduplication import DedupIndex, FileSnapshot
+from neocortex.deduplication.inventory.curation_admission import CurationAdmission
 from neocortex.capabilities.formats.archive.intake import SourceIdentity
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.control.cancellation import CancellationRequested
@@ -18,7 +19,6 @@ from neocortex.progress import ProgressEvent
 from neocortex.runtime.models import FrameworkConfig
 from neocortex.runtime.orchestration.orchestrator_pipeline import (
     _BoundedZipProgress,
-    _select_new_zip_snapshots,
 )
 from neocortex.runtime.orchestration.run_manifest import RunManifest
 from neocortex.workflow.email_intake_orchestrator import run_email_intake_stage
@@ -134,37 +134,25 @@ def test_real_framework_config_enables_safe_content_equivalent_policy() -> None:
     assert FrameworkConfig().email_allow_content_equivalent_reuse is True
 
 
-def test_nested_zip_fixed_point_selects_only_new_identified_children(tmp_path: Path) -> None:
-    old = tmp_path / "old.zip"
-    fresh = tmp_path / "email-child.zip"
-    pdf = tmp_path / "email-child.pdf"
-    for path in (old, fresh, pdf):
-        path.write_bytes(b"synthetic")
-
-    def snap(path: Path) -> FileSnapshot:
-        observed = path.stat()
-        return FileSnapshot(
-            str(path), observed.st_dev, observed.st_ino, observed.st_size,
-            observed.st_mtime_ns, getattr(observed, "st_birthtime_ns", observed.st_ctime_ns),
-        )
-
-    old_snapshot, fresh_snapshot, pdf_snapshot = map(snap, (old, fresh, pdf))
-    detected = {
-        (fresh_snapshot.volume_id, fresh_snapshot.file_id, fresh_snapshot.size,
-         fresh_snapshot.mtime_ns, fresh_snapshot.birthtime_ns): SimpleNamespace(
-            mime="application/zip"
-        ),
-        (pdf_snapshot.volume_id, pdf_snapshot.file_id, pdf_snapshot.size,
-         pdf_snapshot.mtime_ns, pdf_snapshot.birthtime_ns): SimpleNamespace(
-            mime="application/pdf"
-        ),
-    }
-    selected = _select_new_zip_snapshots(
-        (old_snapshot, fresh_snapshot, pdf_snapshot),
-        (str(fresh), str(pdf)),
-        detected,
-    )
-    assert selected == (fresh_snapshot,)
+def test_producer_delta_selects_new_children_before_type_detection(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    root.mkdir()
+    old = root / "old.zip"
+    old.write_bytes(b"synthetic stabilized observation")
+    with DedupIndex(tmp_path / "dedup.sqlite3") as index:
+        first = index.scan(root)
+        with CurationAdmission(index, checkpoint=lambda: None) as admission:
+            admission.capture_delta(first.scan_id)
+            admission.settle(lambda _snapshot: (True, "fixture_curated"))
+            # New metadata, not a truncated presentation list or an Identify
+            # result, hands both new physical descendants to initial intake.
+            fresh = root / "email-child-wrong-extension.bin"
+            pdf = root / "email-child.pdf"
+            for path in (fresh, pdf):
+                path.write_bytes(b"synthetic child")
+            second = index.scan(root)
+            assert admission.capture_delta(second.scan_id) == 2
+            assert {Path(item.path) for item in admission.snapshots()} == {fresh, pdf}
 
 
 def _eml(*, attachment: bool) -> bytes:

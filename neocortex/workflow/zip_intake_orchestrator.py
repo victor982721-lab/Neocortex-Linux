@@ -12,7 +12,7 @@ workspace; the stage is loaded only for an initial ``--all`` run.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -48,7 +48,7 @@ class _KioTrashBackend(Protocol):
 class ZipIntakeAdmission:
     """Metadata-only admission view passed from Inventory to ZIP Intake."""
 
-    snapshots: tuple[FileSnapshot, ...]
+    snapshots: Iterable[FileSnapshot]
     total_files: int
     eligible_files: int
     size_skipped_files: int
@@ -98,6 +98,8 @@ class ZipIntakeStageResult:
 def build_zip_intake_admission(
     snapshots: Iterable[FileSnapshot],
     max_file_bytes: int | None,
+    *,
+    snapshot_factory: Callable[[], Iterable[FileSnapshot]] | None = None,
 ) -> ZipIntakeAdmission:
     """Filter Inventory metadata without opening or stat'ing corpus paths.
 
@@ -119,19 +121,24 @@ def build_zip_intake_admission(
         # use exists/stat/open (or a fresh walk) to derive this presentation
         # counter: it must describe exactly the snapshot generation supplied
         # by the caller.
-        is_zip_suffix = Path(snapshot.path).name.casefold().endswith(".zip")
+        from neocortex.platform.logical_filename import LogicalFilename
+
+        is_zip_suffix = LogicalFilename.parse(snapshot.path).extension.casefold() == ".zip"
         if is_zip_suffix:
             zip_files_inventoried += 1
         if size_is_admitted(snapshot.size, limit):
             eligible_files += 1
-            admitted.append(snapshot)
+            if snapshot_factory is None:
+                admitted.append(snapshot)
             if is_zip_suffix:
                 zip_files_admitted += 1
         else:
             size_skipped_files += 1
             size_skipped_bytes += int(snapshot.size)
     return ZipIntakeAdmission(
-        tuple(admitted),
+        tuple(admitted) if snapshot_factory is None else (
+            snapshot for snapshot in snapshot_factory() if size_is_admitted(snapshot.size, limit)
+        ),
         total_files,
         eligible_files,
         size_skipped_files,
@@ -529,23 +536,33 @@ def run_zip_intake_stage(
             and source_payload.get("published") is True
             and source_payload.get("trashed") is True
         ):
+            raw_successors = source_payload.get("successor_paths", ())
+            successor_paths = (
+                [value for value in raw_successors if isinstance(value, str)][:32]
+                if isinstance(raw_successors, (tuple, list)) else []
+            )
+            consumption = {
+                "source_path": source_payload.get("source_path", snapshot.path),
+                "source_identity": source_payload.get("source_identity"),
+                "source_sha256": source_payload.get("source_sha256"),
+                "status": source_status, "published": True, "trashed": True,
+                "successor_paths": successor_paths,
+            }
+            # The aggregate below is a UI sample, not complete producer
+            # lineage. Persist each consumed source through the existing
+            # Framework stage journal so EML replay also works past source128.
+            publish = getattr(state, "publish_run_stage", None)
+            read_manifest = getattr(state, "read_run_manifest", None)
+            if callable(publish) and callable(read_manifest) and read_manifest(run_id) is not None:
+                publish(
+                    run_id, "zip-consumption", "completed",
+                    details={"schema": ZIP_INTAKE_SCHEMA, "source_outcomes": [consumption]},
+                    idempotency_key=(f"zip-consumption:{snapshot.volume_id:x}:{snapshot.file_id:x}:"
+                                     f"{snapshot.size:x}:{snapshot.mtime_ns:x}:"
+                                     f"{source_payload.get('source_sha256')}"),
+                )
             if len(source_outcomes) < 128:
-                raw_successors = source_payload.get("successor_paths", ())
-                successor_paths = (
-                    [value for value in raw_successors if isinstance(value, str)][:32]
-                    if isinstance(raw_successors, (tuple, list)) else []
-                )
-                source_outcomes.append(
-                    {
-                        "source_path": source_payload.get("source_path", snapshot.path),
-                        "source_identity": source_payload.get("source_identity"),
-                        "source_sha256": source_payload.get("source_sha256"),
-                        "status": source_status,
-                        "published": True,
-                        "trashed": True,
-                        "successor_paths": successor_paths,
-                    }
-                )
+                source_outcomes.append(consumption)
             else:
                 source_outcomes_truncated = True
         kind = _classification_kind(decision, source_payload)

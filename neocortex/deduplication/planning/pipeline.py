@@ -441,6 +441,7 @@ class PlanningSession:
         fingerprint_batch: FingerprintBatchProvider | None = None,
         checkpoint: Callable[[], None] | None = None,
         metadata_scope: Callable[[], AbstractContextManager[object]] | None = None,
+        admission_check: Callable[[FileSnapshot], bool] | None = None,
     ) -> None:
         self._index = index
         self._scan_id = scan_id
@@ -451,6 +452,7 @@ class PlanningSession:
         self._fingerprint_batch = fingerprint_batch
         self._checkpoint = checkpoint
         self._metadata_scope = metadata_scope
+        self._admission_check = admission_check
         self._capture_snapshot = capture_snapshot
         self._exact_matcher = exact_matcher
         self._keeper_policy = keeper_policy or KeeperPolicy()
@@ -582,6 +584,11 @@ class PlanningSession:
             if self._checkpoint is not None:
                 self._checkpoint()
             if not size_is_admitted(recorded.size, self._max_file_bytes):
+                continue
+            # Evaluate on the owner thread, before stat/capture/hash.  In the
+            # integrated pipeline only observations which crossed the cheap
+            # admission fixed point can enter the existing SHA-256 engine.
+            if self._admission_check is not None and not self._admission_check(recorded):
                 continue
             try:
                 snapshot = self._capture_snapshot(recorded.path)

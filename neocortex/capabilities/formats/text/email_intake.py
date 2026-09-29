@@ -27,8 +27,15 @@ from pathlib import Path
 from collections.abc import Callable, Mapping
 from typing import Iterator
 
+from neocortex.deduplication import FileSnapshot
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
 from neocortex.persistence.framework_state_types import RunBudgetExceeded
 from neocortex.runtime.control.cancellation import CancellationRequested
+from neocortex.safety.kio_trash import (
+    is_metadata_binding,
+    metadata_binding,
+    trash_receipt_paths,
+)
 
 
 EMAIL_ATTACHMENT_SCHEMA = "neocortex.email-attachments/v1"
@@ -55,7 +62,12 @@ class EmailAttachmentError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class EmailAttachmentResolution:
-    """Trusted resolver result; content-equivalent reuse is opt-in."""
+    """Trusted resolver result; special consumed kinds carry owner receipts.
+
+    ``consumed_archive`` is the legacy ZIP lifecycle fact.  ``consumed_trash``
+    is reserved for a Framework ``file_actions`` receipt whose original
+    identity and applied Trash effect were validated by its owner.
+    """
 
     path: str | os.PathLike[str] | None
     reuse_kind: str = "identity"
@@ -882,6 +894,171 @@ def _attachment_lineage_fingerprint(item: EmailAttachment) -> tuple[object, ...]
     )
 
 
+def _consumed_trash_snapshot(
+    provenance: Mapping[str, object],
+    *,
+    expected: EmailAttachment,
+) -> tuple[FileSnapshot, dict[str, object], Mapping[str, object]]:
+    """Validate a Framework-owned Trash receipt without reopening Trash.
+
+    The action owner validates the physical Trash object before recording its
+    ``applied`` row.  Replay only needs the durable, source-bound receipt and
+    its exact identity; reopening a later Trash path would turn a historical
+    fact into a new filesystem dependency and could produce a false recovery.
+    """
+
+    if (
+        provenance.get("status") != "applied"
+        or provenance.get("published") is not True
+        or provenance.get("trashed") is not True
+        or provenance.get("source_sha256") != expected.sha256
+    ):
+        raise EmailAttachmentError("recovery_required", "consumed_trash_receipt_mismatch")
+    action_type = provenance.get("action_type")
+    if action_type not in {"trash_artifact", "trash_duplicate", "trash_redlist", "trash_empty_file"}:
+        raise EmailAttachmentError("recovery_required", "consumed_trash_action_type_invalid")
+    if action_type == "trash_empty_file" and expected.size != 0:
+        raise EmailAttachmentError("recovery_required", "consumed_trash_identity_mismatch")
+    authority = provenance.get("authority")
+    if authority is not None and authority != "framework.file_actions":
+        raise EmailAttachmentError("recovery_required", "consumed_trash_authority_invalid")
+    source_identity = provenance.get("source_identity")
+    if not isinstance(source_identity, Mapping):
+        raise EmailAttachmentError("recovery_required", "consumed_trash_identity_missing")
+    identity_fields = (
+        "path",
+        "device",
+        "inode",
+        "size",
+        "mtime_ns",
+        "birthtime_ns",
+        "nlink",
+    )
+    if (
+        any(field not in source_identity for field in identity_fields)
+        or not isinstance(source_identity.get("path"), str)
+        or not Path(str(source_identity["path"])).is_absolute()
+        or "\x00" in str(source_identity["path"])
+        or source_identity.get("nlink") != 1
+        or any(
+            type(source_identity.get(field)) is not int
+            or int(source_identity[field]) < (-1 if field == "birthtime_ns" else 0)
+            for field in identity_fields[1:]
+        )
+    ):
+        raise EmailAttachmentError("recovery_required", "consumed_trash_identity_invalid")
+    if (
+        expected.child_device is None
+        or expected.child_inode is None
+        or expected.child_mtime_ns is None
+        or source_identity.get("device") != expected.child_device
+        or source_identity.get("inode") != expected.child_inode
+        or source_identity.get("size") != expected.size
+        or source_identity.get("mtime_ns") != expected.child_mtime_ns
+    ):
+        raise EmailAttachmentError("recovery_required", "consumed_trash_identity_mismatch")
+
+    source_path = str(source_identity["path"])
+    snapshot = _trash_replay_snapshot(
+        source_path,
+        device=int(source_identity["device"]),
+        inode=int(source_identity["inode"]),
+        size=int(source_identity["size"]),
+        mtime_ns=int(source_identity["mtime_ns"]),
+        birthtime_ns=int(source_identity["birthtime_ns"]),
+    )
+    raw_receipt = provenance.get("receipt")
+    if raw_receipt is None:
+        raw_receipt = provenance.get("effect_receipt")
+    if raw_receipt is None:
+        raw_receipt = provenance.get("effect_receipt_json")
+    if isinstance(raw_receipt, str):
+        try:
+            receipt = json.loads(raw_receipt)
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise EmailAttachmentError(
+                "recovery_required", "consumed_trash_receipt_invalid"
+            ) from exc
+    else:
+        receipt = raw_receipt
+    if not isinstance(receipt, Mapping):
+        raise EmailAttachmentError("recovery_required", "consumed_trash_receipt_missing")
+    source_digest = receipt.get("source_digest")
+    if not isinstance(source_digest, str):
+        raise EmailAttachmentError("recovery_required", "consumed_trash_digest_missing")
+    if is_metadata_binding(source_digest):
+        if metadata_binding(snapshot) != source_digest:
+            raise EmailAttachmentError("recovery_required", "consumed_trash_digest_mismatch")
+    elif source_digest != f"{FULL_ALGORITHM}:{expected.sha256}":
+        raise EmailAttachmentError("recovery_required", "consumed_trash_digest_mismatch")
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("receipt_type") != "successful_return_and_observation"
+        or receipt.get("operation") != "trash"
+        or receipt.get("source_absent") is not True
+        or receipt.get("target_path") is not None
+        or receipt.get("source_path") != source_path
+        or provenance.get("source_digest", source_digest) != source_digest
+    ):
+        raise EmailAttachmentError("recovery_required", "consumed_trash_receipt_mismatch")
+    try:
+        trash_receipt_paths(receipt.get("trash"), snapshot, source_digest)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise EmailAttachmentError(
+            "recovery_required", "consumed_trash_receipt_invalid"
+        ) from exc
+
+    expected_identity = provenance.get("expected_identity")
+    if expected_identity is not None:
+        if not isinstance(expected_identity, Mapping):
+            raise EmailAttachmentError("recovery_required", "consumed_trash_expected_identity_invalid")
+        expected_source = expected_identity.get("source")
+        if not isinstance(expected_source, Mapping) or expected_identity.get("target_path") is not None:
+            raise EmailAttachmentError("recovery_required", "consumed_trash_expected_identity_invalid")
+        try:
+            expected_volume = int(str(expected_source["volume_id"]), 16)
+            expected_file = int(str(expected_source["file_id"]), 16)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EmailAttachmentError(
+                "recovery_required", "consumed_trash_expected_identity_invalid"
+            ) from exc
+        if (
+            expected_source.get("path") != source_path
+            or expected_volume != snapshot.volume_id
+            or expected_file != snapshot.file_id
+            or expected_source.get("size") != snapshot.size
+            or expected_source.get("mtime_ns") != snapshot.mtime_ns
+            or expected_source.get("birthtime_ns") != snapshot.birthtime_ns
+        ):
+            raise EmailAttachmentError("recovery_required", "consumed_trash_expected_identity_mismatch")
+    declared_root = provenance.get("root")
+    if declared_root is not None:
+        if not isinstance(declared_root, str) or not Path(declared_root).is_absolute():
+            raise EmailAttachmentError("recovery_required", "consumed_trash_root_invalid")
+        try:
+            if not Path(source_path).resolve(strict=False).is_relative_to(
+                Path(declared_root).resolve(strict=False)
+            ):
+                raise EmailAttachmentError("recovery_required", "consumed_trash_root_mismatch")
+        except OSError as exc:
+            raise EmailAttachmentError("recovery_required", "consumed_trash_root_invalid") from exc
+    return snapshot, dict(source_identity), receipt
+
+
+def _trash_replay_snapshot(
+    path: str,
+    *,
+    device: int,
+    inode: int,
+    size: int,
+    mtime_ns: int,
+    birthtime_ns: int,
+) -> FileSnapshot:
+    """Create the minimal immutable snapshot used by receipt validators."""
+
+    return FileSnapshot(path, device, inode, size, mtime_ns, birthtime_ns)
+
+
 def _resolve_relocated_children(
     existing: EmailAttachmentManifest,
     planned: EmailAttachmentManifest,
@@ -923,6 +1100,26 @@ def _resolve_relocated_children(
         else:
             reuse_kind = "identity"
             candidate = Path(candidate_value)
+        if reuse_kind == "consumed_trash":
+            provenance = candidate_value.provenance if isinstance(candidate_value, EmailAttachmentResolution) else None
+            if not isinstance(provenance, Mapping):
+                raise EmailAttachmentError("recovery_required", "consumed_trash_receipt_missing")
+            _consumed_trash_snapshot(provenance, expected=old)
+            resolved.append(
+                replace(
+                    fresh,
+                    child_path=old.child_path,
+                    status="consumed_trash",
+                    child_device=old.child_device,
+                    child_inode=old.child_inode,
+                    child_mtime_ns=old.child_mtime_ns,
+                    child_reuse_kind="consumed_trash",
+                    previous_child_device=old.child_device,
+                    previous_child_inode=old.child_inode,
+                    previous_child_mtime_ns=old.child_mtime_ns,
+                )
+            )
+            continue
         if reuse_kind == "consumed_archive":
             provenance = candidate_value.provenance if isinstance(candidate_value, EmailAttachmentResolution) else None
             if not isinstance(provenance, Mapping):
@@ -1063,7 +1260,7 @@ def _validate_replay_manifest(
         # children belong in this directory; old basenames are not authority.
         expected_names = {
             Path(item.child_path or "").name for item in resolved_children
-            if item.child_reuse_kind != "consumed_archive"
+            if item.child_reuse_kind not in {"consumed_archive", "consumed_trash"}
             and Path(item.child_path or "").parent == destination
         }
     # This directory is dedicated to one parent.  Ignore only the manifest;
@@ -1368,7 +1565,7 @@ def materialize_email_attachments(
                     resolved_children=rebound,
                 )
                 for child in rebound:
-                    if child.child_reuse_kind == "consumed_archive":
+                    if child.child_reuse_kind in {"consumed_archive", "consumed_trash"}:
                         continue
                     _verify_child(
                         Path(child.child_path or ""),

@@ -15,6 +15,7 @@ from neocortex.documents.document_organization_scope import capture_organization
 from neocortex.progress import ProgressEvent
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from tests.test_document_organization_scope import _catalog, _file, _seed
+from tests.organization_fast_fixture import seed_organization_fast_decisions
 
 
 def _members(catalog: Path, root: Path, count: int, *, payload_size: int = 0) -> None:
@@ -94,17 +95,22 @@ def test_organization_pages_preserve_selection_order_destinations_and_progress(t
         expected_paths = [row[0] for row in connection.execute("SELECT path FROM documents WHERE active=1 ORDER BY path,source_kind,file_key")]
     _seed(catalog, _file(tmp_path / "outside", "excluded.pdf"))
     _seed(catalog, _file(root, "unresolved.pdf"), binding_present=False)
+    bundle = seed_organization_fast_decisions(catalog)
     destination = tmp_path / "destination"
     events: list[ProgressEvent] = []
     summary = planning.plan_document_organization(
         catalog, destination, source_scope=capture_organization_input_scope(catalog, root),
         progress=events.append,
+        fast_curation_policy_bundle=bundle,
     )
     assert (summary.considered, summary.planned, summary.review_required) == (131, 2, 129)
     assert (summary.excluded_out_of_scope, summary.unresolved_scope, summary.excluded_components) == (1, 1, 0)
     plans = _plans(catalog)
     assert [plan["source_path"] for plan in plans] == expected_paths
     for plan in plans:
+        if plan["destination_path"] is None:
+            assert plan["status"] == "review"
+            continue
         target = Path(str(plan["destination_path"]))
         assert target.is_relative_to(destination)
         assert target.name == Path(str(plan["source_path"])).name

@@ -343,7 +343,9 @@ operación amplia, no el primer smoke: ejecuta ZIP Intake y selecciona las siete
 rutas de contenido registradas.
 El flujo `--all --apply` sigue `inventory → size admission → ZIP Intake
 → successor/reconciled inventory → identify → normalize → policy/redlist
-→ dedupe → routes → organize → semantic`. La redlist explícita se evalúa después
+→ ArtifactPolicy → delta admission fixpoint → dedupe → routes/Catalog →
+Fast Curation → organization/residual MIME → rebind/cleanup/verificación →
+Full Semantic → final verifier`. La redlist explícita se evalúa después
 de normalizar, sólo por metadata/ruta y de forma case-insensitive, antes de
 dedupe, hashing o extracción. Las coincidencias se envían a Papelera con
 la frontera KIO receipt-bound y una entrada de auditoría por token; fuera del
@@ -352,7 +354,7 @@ frontera física.
 
 La fuente de verdad de esa política vive en
 `neocortex.workflow.actions.redlist`: cada entrada se compara contra el
-basename exacto o el sufijo final de `Path.suffix` (los puntos intermedios de
+basename lógico o el sufijo de `LogicalFilename` (los puntos intermedios de
 versiones no cuentan), sin leer payload ni invocar clasificadores heurísticos.
 Los archivos sin extensión pasan por Identify; evidencia fuerte permite
 restaurar una extensión canónica y evidencia insuficiente conserva el nombre.
@@ -461,9 +463,13 @@ trates el spelling compacto como texto libre.
 
 ### Redlist y restauración de extensión
 
-La redlist es la única política de descarte temprano: sus entradas explícitas se
+La Hard Redlist conserva sus entradas explícitas; se
 comparan por metadata/ruta normalizada, de forma case-insensitive, antes de
-hashing y rutas.
+hashing y rutas. ArtifactPolicy la complementa sólo con estructura demostrable
+de artefactos regenerables/runtime: no usa Semantic como autoridad de Trash ni
+descarta una carpeta completa por su nombre. Su proof bounded incluye identidad,
+ctime y segmentos comprobados junto al efecto. Licencias, wheels, fixtures,
+estado personal incierto y paquetes documentales/mixtos se conservan.
 Un archivo redlisted cruza la frontera KIO sólo con `--apply`; sin esa bandera se
 publica como plan y no se modifica. Los archivos físicos fuera del root efectivo,
 los cambios de identidad y los destinos ambiguos se conservan fail-closed.
@@ -475,6 +481,11 @@ no se interpreta texto débil como formato y un destino existente no se reemplaz
 El rename seguro usa el backend POSIX no-replace, revalida identidad y registra
 receipt/recovery. ZIP Intake sólo publica archivos físicos verificados; el
 nombre de un miembro no modifica el contenedor ni crea un objetivo virtual.
+Los GNU backups `.~N~` no son extensiones. Normalize retira ese decorador y
+resuelve colisiones mediante un token estable antes de la extensión, sin
+sobrescribir ni añadir otro sufijo GNU. JSON/XML/HTML/CSV/TSV/JSONL candidatos
+pueden escalar de prefijo a una lectura estructural acotada; agotamiento de
+presupuesto o evidencia insuficiente producen abstención, no un tipo adivinado.
 
 Identify observa misses individualmente con una ventana `in_flight` bounded y
 consume completions conforme terminan. El caller conserva SQLite, caché,
@@ -496,8 +507,15 @@ autorizada.
 ### Organización y contenedores: qué conservar
 
 `--all --apply` permite organizar sucesores físicos elegibles y retirar
-vacíos verificados de forma reversible. Los documentos ambiguos conservan
-`review`; no se fuerza una categoría para lograr un contador de movimientos.
+vacíos verificados de forma reversible. Fast Curation consume derivados de las
+rutas, no reextrae los originales ni ejecuta Full Semantic para clasificar.
+El planner no carga modelos: exige un `CLASSIFIED` actual bajo el bundle
+calibrado, con binding y versiones vigentes. Sin modelo local o clasificación
+suficiente se abstiene, sin descarga automática ni fallback heurístico.
+Los supervivientes clasificados se mueven a `Corpus_ordenado`; las abstenciones
+físicas a `Sin_clasificar/_MIME/<major>/<subtype>` (desconocido:
+`application/octet-stream`). `review` puede ser metadata advisory, nunca una
+tercera zona física. Se preservan ambas raíces y `_MIME`, aun vacíos.
 Las colisiones nunca autorizan sobrescribir un archivo distinto. Después de
 un efecto incierto se debe resolver su receipt/recovery antes de repetirlo.
 
@@ -512,6 +530,10 @@ ha de conservar el original hasta demostrar integridad de todos los miembros.
 EML conserva el padre y publica adjuntos completos con manifest fuera del
 Corpus. El replay usa identidad y hashes para localizar hijos movidos o el
 keeper exacto tras deduplicación, sin reinflar el corpus por cada corrida.
+Todos los descendientes recién materializados vuelven al mismo gate barato;
+no se deriva cobertura de muestras UI y no se repite Identify sobre la
+población ya estabilizada. Antes del punto fijo no se permite un fallback
+global de SHA-256 para buscar adjuntos: se usan identidad y recibos válidos.
 Un ZIP adjunto que Intake publicó y retiró legítimamente se distingue como
 `consumed_archive`: el replay coteja el SHA recién leído del correo y la
 identidad del adjunto con un evento canónico de Framework. Cuenta como
@@ -521,6 +543,15 @@ un árbol vacío después de organizar sus hijos. Un manifest editable por sí
 solo no autoriza esa reutilización; sin evidencia durable compatible se informa
 `recovery_required`. La búsqueda histórica es acotada y cancelable; una
 retención que retire esa evidencia requiere recuperación explícita.
+
+Los receipts `consumed_trash` acreditan también adjuntos retirados por Redlist,
+ArtifactPolicy, duplicado o política de archivo vacío. No recrean el hijo ni
+presentan su antigua ruta como CURRENT. Retirement y cache sync concilian
+owners antes de publicar el índice final; si una publicación queda pendiente,
+no se encadenan nuevos movimientos para forzar la topología. El verificador
+terminal bloquea `complete` ante paths obsoletos, efectos sin recibo o trabajo
+barato pendiente. `CORPUS_SUMMARY` separa trabajo observado, abstenciones y
+bytes nominales retirados del corpus; Papelera no implica espacio de disco liberado.
 
 ## Reanudación
 

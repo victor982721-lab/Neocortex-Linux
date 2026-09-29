@@ -70,8 +70,11 @@ class DocumentCacheSyncResult:
 class DocumentMoveTransition:
     """One already-applied physical move to reconcile across current owners."""
 
-    source_kind: str
-    file_key: str
+    # A residual file can legitimately have no catalog owner.  ``None`` is an
+    # explicit absence of provenance, never a synthetic source kind/key.  The
+    # existing organization path continues to provide both fields.
+    source_kind: str | None
+    file_key: str | None
     old_path: str
     new_path: str
     volume_id: str
@@ -579,6 +582,8 @@ def synchronize_moved_documents(
     *,
     framework_lock_held: bool = False,
     work_check: Callable[[], None] | None = None,
+    existing_only: bool = False,
+    framework_connection: sqlite3.Connection | None = None,
 ) -> DocumentCacheSyncResult:
     """Rebind a bounded organization batch with one Inventory COW per head.
 
@@ -588,21 +593,43 @@ def synchronize_moved_documents(
     ``files`` rows once per moved document.
     """
 
+    if type(existing_only) is not bool:
+        raise TypeError("existing_only must be boolean")
+    if framework_connection is not None and not isinstance(framework_connection, sqlite3.Connection):
+        raise TypeError("framework_connection must be a sqlite3.Connection or None")
     moves = tuple(transitions)
     if not moves:
         return DocumentCacheSyncResult(True, 0, ())
     if any(not isinstance(item, DocumentMoveTransition) for item in moves):
         raise TypeError("document move transitions must be typed records")
-    if len({(item.source_kind, item.file_key) for item in moves}) != len(moves):
+    identity_keys = tuple(
+        (
+            "owner",
+            item.source_kind,
+            item.file_key,
+        )
+        if item.source_kind is not None and item.file_key is not None
+        else (
+            "unbound",
+            item.volume_id,
+            item.file_id,
+            item.old_path,
+        )
+        for item in moves
+    )
+    if len(set(identity_keys)) != len(moves):
         raise ValueError("document move transitions contain duplicate owner identities")
+    source_kinds = {
+        item.source_kind
+        for item in moves
+        if item.source_kind in {"pdf", "docx", "xlsx", "pptx", "odt", "text", "audio", "image", "video"}
+        and item.file_key is not None
+    }
     owners = tuple(
         sorted(
-            {
-                item.source_kind
-                for item in moves
-            }
+            source_kinds
             | {"semantic", "framework", "dedup"}
-            | ({"docx_pdf_counterparts"} if any(item.source_kind == "pdf" for item in moves) else set())
+            | ({"docx_pdf_counterparts"} if "pdf" in source_kinds else set())
         )
     )
     publication_key = publication_idempotency_key(
@@ -641,6 +668,8 @@ def synchronize_moved_documents(
                         state_directory,
                         transition,
                         verify_only=replay,
+                        existing_only=existing_only,
+                        framework_connection=framework_connection,
                     )
                 )
             results.append(
@@ -649,6 +678,7 @@ def synchronize_moved_documents(
                     moves,
                     verify_only=replay,
                     work_check=work_check,
+                    existing_only=existing_only,
                 )
             )
             complete = not any(item.status == "error" for item in results)
@@ -714,36 +744,55 @@ def _synchronize_transition_databases(
     transition: DocumentMoveTransition,
     *,
     verify_only: bool,
+    existing_only: bool = False,
+    framework_connection: sqlite3.Connection | None = None,
 ) -> list[CacheDatabaseSync]:
     now_ns = time.time_ns()
-    source_database = state_directory / (
-        f"{transition.source_kind}.sqlite3"
-        if transition.source_kind in {"pdf", "docx", "text", "audio", "image", "video"}
-        else "office.sqlite3"
-    )
-    def source_operation(connection: sqlite3.Connection) -> int:
-        synchronize = (
-            _sync_visual_source_cache if transition.source_kind in {"image", "video"}
-            else _sync_source_cache
+    results: list[CacheDatabaseSync] = []
+    supported_source_kinds = {
+        "pdf", "docx", "xlsx", "pptx", "odt", "text", "audio", "image", "video"
+    }
+    # Residuals may not have a catalog/source owner.  Do not manufacture a
+    # source kind or file key merely to make a cache call possible.  When an
+    # owner is known, ``existing_only`` narrows the operation to rows actually
+    # present in that owner; the normal organization path keeps its stricter
+    # required-row contract.
+    if (
+        transition.source_kind in supported_source_kinds
+        and transition.file_key is not None
+    ):
+        source_database = state_directory / (
+            f"{transition.source_kind}.sqlite3"
+            if transition.source_kind in {"pdf", "docx", "text", "audio", "image", "video"}
+            else "office.sqlite3"
         )
-        return synchronize(
-            connection,
-            source_kind=transition.source_kind,
-            file_key=transition.file_key,
-            old_path=transition.old_path,
-            new_path=transition.new_path,
-            now_ns=now_ns,
+
+        def source_operation(connection: sqlite3.Connection) -> int:
+            synchronize = (
+                _sync_visual_source_cache
+                if transition.source_kind in {"image", "video"}
+                else _sync_source_cache
+            )
+            return synchronize(
+                connection,
+                source_kind=str(transition.source_kind),
+                file_key=str(transition.file_key),
+                old_path=transition.old_path,
+                new_path=transition.new_path,
+                now_ns=now_ns,
+                required=not existing_only,
+            )
+
+        results.append(
+            _synchronize_database(
+                str(transition.source_kind),
+                source_database,
+                required=not existing_only,
+                verify_only=verify_only,
+                operation=source_operation,
+            )
         )
-    results = [
-        _synchronize_database(
-            transition.source_kind,
-            source_database,
-            required=True,
-            verify_only=verify_only,
-            operation=source_operation,
-        )
-    ]
-    if transition.source_kind == "pdf":
+    if transition.source_kind == "pdf" and transition.file_key is not None:
         results.append(
             _synchronize_database(
                 "docx_pdf_counterparts",
@@ -758,37 +807,50 @@ def _synchronize_transition_databases(
                 ),
             )
         )
-    results.append(
-        _synchronize_database(
-            "semantic",
-            state_directory / "semantic.sqlite3",
-            required=False,
-            verify_only=verify_only,
-            operation=lambda connection: _sync_semantic_cache(
-                connection,
-                source_kind=transition.source_kind,
-                file_key=transition.file_key,
-                old_path=transition.old_path,
-                new_path=transition.new_path,
-                now_ns=now_ns,
-            ),
+    if transition.source_kind is not None and transition.file_key is not None:
+        results.append(
+            _synchronize_database(
+                "semantic",
+                state_directory / "semantic.sqlite3",
+                required=False,
+                verify_only=verify_only,
+                operation=lambda connection: _sync_semantic_cache(
+                    connection,
+                    source_kind=str(transition.source_kind),
+                    file_key=str(transition.file_key),
+                    old_path=transition.old_path,
+                    new_path=transition.new_path,
+                    now_ns=now_ns,
+                ),
+            )
         )
-    )
-    results.append(
-        _synchronize_database(
-            "framework",
-            state_directory / "framework.sqlite3",
-            required=False,
-            verify_only=verify_only,
-            operation=lambda connection: _sync_framework_cache(
-                connection,
-                old_path=transition.old_path,
-                new_path=transition.new_path,
-                volume_id=transition.volume_id,
-                file_id=transition.file_id,
-            ),
+    def framework_operation(connection):
+        return _sync_framework_cache(
+            connection,
+            old_path=transition.old_path,
+            new_path=transition.new_path,
+            volume_id=transition.volume_id,
+            file_id=transition.file_id,
         )
-    )
+    if framework_connection is None:
+        results.append(
+            _synchronize_database(
+                "framework",
+                state_directory / "framework.sqlite3",
+                required=False,
+                verify_only=verify_only,
+                operation=framework_operation,
+            )
+        )
+    else:
+        results.append(
+            _synchronize_existing_connection(
+                "framework",
+                framework_connection,
+                verify_only=verify_only,
+                operation=framework_operation,
+            )
+        )
     return results
 
 
@@ -842,6 +904,54 @@ def _synchronize_database(
             connection.close()
 
 
+def _synchronize_existing_connection(
+    label: str,
+    connection: sqlite3.Connection,
+    *,
+    operation: Callable[[sqlite3.Connection], int],
+    verify_only: bool,
+) -> CacheDatabaseSync:
+    """Apply one owner-local transition through an already-open writer.
+
+    FrameworkState is the single writer for ``framework.sqlite3`` during an
+    initial run.  Opening a second connection here would violate that owner
+    contract, so residual materialization can lend the existing connection for
+    only the bounded path-rebind operation.  The caller retains ownership and
+    lifecycle of the connection.
+    """
+
+    savepoint: str | None = None
+    outer_transaction = connection.in_transaction
+    try:
+        if outer_transaction:
+            savepoint = f"residual_cache_sync_{id(connection):x}"
+            connection.execute(f"SAVEPOINT {savepoint}")
+        else:
+            connection.execute("BEGIN IMMEDIATE")
+        updated = operation(connection)
+        if verify_only and updated:
+            raise RuntimeError("completed cache synchronization no longer matches owner paths")
+        if outer_transaction:
+            if verify_only:
+                connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        elif verify_only:
+            connection.rollback()
+        else:
+            connection.commit()
+        return CacheDatabaseSync(label, "synced", updated_rows=updated)
+    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+        if outer_transaction and savepoint is not None:
+            try:
+                connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except sqlite3.Error:
+                pass
+        elif connection.in_transaction:
+            connection.rollback()
+        return CacheDatabaseSync(label, "error", detail=f"{type(exc).__name__}: {exc}")
+
+
 # endregion [02]
 
 
@@ -856,6 +966,7 @@ def _sync_source_cache(
     old_path: str,
     new_path: str,
     now_ns: int,
+    required: bool = True,
 ) -> int:
     _require_columns(connection, "documents", {"file_key", "path"})
     updated = _transition_keyed_path(
@@ -865,7 +976,7 @@ def _sync_source_cache(
         file_key,
         old_path,
         new_path,
-        required=True,
+        required=required,
         updated_ns=now_ns,
     )
     inventory_table = (
@@ -911,6 +1022,7 @@ def _sync_visual_source_cache(
     old_path: str,
     new_path: str,
     now_ns: int,
+    required: bool = True,
 ) -> int:
     """Rebind image/video owner projections without reprocessing content."""
 
@@ -923,7 +1035,7 @@ def _sync_visual_source_cache(
             file_key,
             old_path,
             new_path,
-            required=True,
+            required=required,
             updated_ns=now_ns,
         )
     if source_kind != "video":  # pragma: no cover - caller validates kinds
@@ -937,7 +1049,7 @@ def _sync_visual_source_cache(
         file_key,
         old_path,
         new_path,
-        required=True,
+        required=required,
         updated_ns=now_ns,
     )
     if _table_exists(connection, "video_inventory"):
@@ -1377,6 +1489,7 @@ def _synchronize_dedup_owner_batch(
     *,
     verify_only: bool,
     work_check: Callable[[], None] | None = None,
+    existing_only: bool = False,
 ) -> CacheDatabaseSync:
     """Reconcile all transitions with one COW successor per current head."""
 
@@ -1393,15 +1506,38 @@ def _synchronize_dedup_owner_batch(
                     raise RuntimeError(
                         f"dedup destination identity differs for {transition.file_key}"
                     )
-                current_scan = index.current_scan_for_path(
-                    transition.new_path,
+                current_scan = _dedup_transition_scan(
+                    index,
+                    transition,
+                    existing_only=existing_only,
                     work_check=work_check,
                 )
+                if current_scan is None:
+                    continue
                 existing = index._connection.execute(
                     f"""SELECT volume_id,file_id FROM files
                     WHERE scan_id=? AND path=? COLLATE {_PATH_COLLATION}""",
                     (current_scan, transition.new_path),
                 ).fetchone()
+                if existing_only and existing is None:
+                    source_row = index._connection.execute(
+                        f"""SELECT volume_id,file_id FROM files
+                        WHERE scan_id=? AND path=? COLLATE {_PATH_COLLATION}""",
+                        (current_scan, transition.old_path),
+                    ).fetchone()
+                    # An unbound survivor is not an invitation to create an
+                    # Inventory row.  Only reconcile a path already owned by
+                    # this database; missing owners remain missing.
+                    if source_row is None:
+                        continue
+                    source_identity = (
+                        int.from_bytes(bytes(source_row[0]), "little"),
+                        int.from_bytes(bytes(source_row[1]), "little"),
+                    )
+                    if source_identity != destination.identity:
+                        raise RuntimeError(
+                            f"dedup source row belongs to another identity: {transition.old_path}"
+                        )
                 if existing is not None:
                     existing_identity = (
                         int.from_bytes(bytes(existing[0]), "little"),
@@ -1440,6 +1576,71 @@ def _synchronize_dedup_owner_batch(
         return CacheDatabaseSync("dedup", "synced", updated_rows=updated)
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
         return CacheDatabaseSync("dedup", "error", detail=f"{type(exc).__name__}: {exc}")
+
+
+def _dedup_transition_scan(
+    index: DedupIndex,
+    transition: DocumentMoveTransition,
+    *,
+    existing_only: bool,
+    work_check: Callable[[], None] | None,
+) -> int | None:
+    """Select the current generation that actually owns the moved path.
+
+    ``current_scan_for_path`` only fences by scan root.  During a curation
+    tranche a later complete generation can still cover the same root while
+    lacking both the old and new path.  Selecting that generation would make
+    existing-only reconciliation silently skip the real owner and leave stale
+    source paths in the resolved head.  Prefer a generation containing either
+    identity/path, then fall back to the normal root lookup for legacy callers.
+    """
+
+    connection = index._connection
+    candidates: list[int] = []
+    for path in (transition.new_path, transition.old_path):
+        try:
+            candidate = index.current_scan_for_path(path, work_check=work_check)
+        except Exception:
+            continue
+        if candidate not in candidates:
+            candidates.append(candidate)
+    for candidate in candidates:
+        row = connection.execute(
+            f"""SELECT 1 FROM files WHERE scan_id=? AND path=?
+            COLLATE {_PATH_COLLATION} LIMIT 1""",
+            (candidate, transition.new_path),
+        ).fetchone()
+        if row is not None:
+            return candidate
+        row = connection.execute(
+            f"""SELECT 1 FROM files WHERE scan_id=? AND path=?
+            COLLATE {_PATH_COLLATION} LIMIT 1""",
+            (candidate, transition.old_path),
+        ).fetchone()
+        if row is not None:
+            return candidate
+    rows = connection.execute(
+        """SELECT scan_id FROM scans
+        WHERE status='complete' AND completed_ns IS NOT NULL AND errors=0
+        ORDER BY scan_id DESC"""
+    ).fetchall()
+    for ordinal, row in enumerate(rows):
+        if work_check is not None and ordinal % 128 == 0:
+            work_check()
+        candidate = index.current_scan_id(int(row[0]))
+        if candidate in candidates:
+            continue
+        for path in (transition.new_path, transition.old_path):
+            found = connection.execute(
+                f"""SELECT 1 FROM files WHERE scan_id=? AND path=?
+                COLLATE {_PATH_COLLATION} LIMIT 1""",
+                (candidate, path),
+            ).fetchone()
+            if found is not None:
+                return candidate
+    if existing_only:
+        return None
+    return index.current_scan_for_path(transition.new_path, work_check=work_check)
 
 
 # endregion [05]

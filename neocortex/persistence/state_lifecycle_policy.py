@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from neocortex.safety.state_lifecycle_contracts import TableLifecycleRole, TableLifecycleRule
 
-LIFECYCLE_POLICY_VERSION = 1
+LIFECYCLE_POLICY_VERSION = 2
 # Every table appears once. FTS shadows inherit an explicitly declared role.
 _DECLARATIONS: dict[str, dict[TableLifecycleRole, tuple[str, ...]]] = {
     'framework': {
@@ -24,10 +24,10 @@ _DECLARATIONS: dict[str, dict[TableLifecycleRole, tuple[str, ...]]] = {
         'derived': ('files', 'fingerprints'),
     },
     'catalog': {
-        'authoritative': ('catalog_generation_manifests', 'classification_corrections', 'classification_history', 'organization_plans'),
+        'authoritative': ('catalog_generation_manifests', 'classification_corrections', 'classification_history', 'organization_plans', 'curator_decisions'),
         'operational': ('catalog_generations', 'catalog_publications', 'catalog_runs'),
         'schema_metadata': ('metadata',),
-        'derived': ('catalog_generation_documents', 'documents'),
+        'derived': ('catalog_generation_documents', 'curator_embedding_cache', 'documents'),
     },
     'semantic': {
         'authoritative': ('semantic_derivation_outbox', 'semantic_evidence', 'semantic_work_receipts'),

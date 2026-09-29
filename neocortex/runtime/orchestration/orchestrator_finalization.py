@@ -528,14 +528,56 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
         outcome = scratch_maintenance.get("maintenance")
         if isinstance(outcome, dict):
             work.maintenance.update(outcome)
-        state.complete_initial_run(
-            run_id,
-            inventory.scan.scan_id,
-            journal_after,
-            inventory.reconciliation_records,
-            inventory.inventory_attempts,
-            inventory.inventory_mode,
-        )
+        if self.config.route.casefold() == "all" and not self.config.route_only:
+            from .corpus_metrics import corpus_metrics
+
+            applied_trash = state._connection.execute(
+                "SELECT action_type,COUNT(*),COALESCE(SUM(CASE WHEN json_valid(expected_identity_json) "
+                "THEN json_extract(expected_identity_json,'$.source.size') ELSE 0 END),0) "
+                "FROM file_actions WHERE run_id=? AND action_type IN ('trash_duplicate','trash_empty_file') "
+                "AND status='applied' GROUP BY action_type",
+                (run_id,),
+            ).fetchall()
+            applied_counts = {row[0]: (int(row[1]), int(row[2])) for row in applied_trash}
+            duplicate_count, duplicate_bytes = applied_counts.get("trash_duplicate", (0, 0))
+            empty_file_count, _ = applied_counts.get("trash_empty_file", (0, 0))
+            fast = work.route_results.get("fast_curation", {})
+            if isinstance(fast, Mapping):
+                fast = fast.get("metrics", fast)
+            metrics = corpus_metrics(
+                inventory_files=getattr(self, "_initial_inventory_files", inventory.scan.files_seen),
+                actions=work.actions, plan=work.dedup_plan,
+                admission=work.route_results.get("curation_admission", {}),
+                zip_intake=work.zip_intake, email_intake=work.route_results.get("email_intake", {}),
+                route_survivors=getattr(self, "_initial_route_survivors", 0),
+                organization_plan=work.organization_plan, organization_apply=work.organization_apply,
+                residual=work.route_results.get("residual_mime", {}),
+                verification=work.route_results.get("corpus_verification", {}),
+                fast_curation=fast if isinstance(fast, Mapping) else {},
+                duplicate_bytes_removed=duplicate_bytes,
+                duplicates_removed=duplicate_count, empty_files_removed=empty_file_count,
+                wall_time_ns=max(0, time.perf_counter_ns() - getattr(self, "_initial_work_started_ns", time.perf_counter_ns())),
+            )
+            work.route_results["corpus_metrics"] = metrics
+            state.record_event(run_id, "info", "corpus-summary", "Trabajo observado de curación", metrics)
+        integrated_apply = self.config.apply_actions and self.config.route.casefold() == "all" and not self.config.route_only
+        final_verification = work.route_results.get("corpus_verification", {})
+        verified = isinstance(final_verification, Mapping) and final_verification.get("passed") is True
+        if integrated_apply and (not verified or work.route_failures):
+            # A terminal process is not a completed curation contract. Keep
+            # the partial evidence/recovery obligations and use the existing
+            # failed lifecycle state instead of claiming successful --all.
+            work.route_failures.setdefault("corpus-finalization", "verification_or_capability_incomplete")
+            state.fail_initial_run(run_id)
+        else:
+            state.complete_initial_run(
+                run_id,
+                inventory.scan.scan_id,
+                journal_after,
+                inventory.reconciliation_records,
+                inventory.inventory_attempts,
+                inventory.inventory_mode,
+            )
         state.record_event(
             run_id,
             "warning" if work.route_failures else "info",
@@ -745,6 +787,23 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
         """
 
         runner = self._lifecycle_stage_runner
+        integrated_apply = self.config.apply_actions and self.config.route.casefold() == "all" and not self.config.route_only
+        verification = work.route_results.get("corpus_verification", {})
+        if integrated_apply and (
+            not isinstance(verification, Mapping) or verification.get("passed") is not True
+            or work.route_failures.get("curation-admission")
+            or work.route_failures.get("residual_mime")
+            or work.route_failures.get("document_retirement")
+        ):
+            with self._framework_state() as state:
+                state.publish_run_stage(
+                    run_id, "semantic", "skipped",
+                    details={"reason": "final_physical_layout_not_verified", "publication": "not_started"},
+                    idempotency_key="semantic:blocked-by-final-layout",
+                )
+                work.route_failures["semantic"] = "final_physical_layout_not_verified"
+                self._finalize_initial_run(state, run_id, boundary, work, journal_after)
+            return
         if runner is None:
             with self._framework_state() as state:
                 self._finalize_initial_run(
@@ -778,6 +837,22 @@ class InitialFinalizationMixin(_FrameworkOrchestratorOwner):
             stage_heartbeat.stop()
         try:
             with self._framework_state() as state:
+                if integrated_apply:
+                    from .corpus_verification_sources import verify_current_corpus
+
+                    verified = verify_current_corpus(
+                        self.config, root=boundary.access_policy.root, framework_state=state,
+                        run_id=run_id, scan_id=work.inventory.scan.scan_id,
+                        admission_result=work.route_results.get("curation_admission", {}),
+                        phase="after_semantic", checkpoint=self._cancellation.checkpoint,
+                    )
+                    work.route_results["corpus_verification"] = verified.to_dict()
+                    state.publish_run_stage(
+                        run_id, "corpus-final-verification", "completed" if verified.passed else "partial",
+                        details=verified.to_dict(), idempotency_key="corpus-final-verification:done",
+                    )
+                    if not verified.passed:
+                        work.route_failures["corpus_verification"] = "partial"
                 self._finalize_initial_run(
                     state,
                     run_id,

@@ -54,6 +54,10 @@ def _details(config: FrameworkConfig, root: Path) -> dict[str, object]:
         destination = default_organization_root(config.framework_database, analysis_root=root)
     else:
         destination = Path(os.path.abspath(destination.expanduser()))
+    if config.route.casefold() == "all" and not config.route_only:
+        required = root / "Corpus_ordenado"
+        if destination != required:
+            raise ValueError("--all organization root must be <corpus>/Corpus_ordenado")
     st = root.lstat()
     return {
         "schema": STAGE_SCHEMA, "root": str(root),
@@ -107,6 +111,12 @@ def run_organization_stages(
         plan_document_organization,
     )
     from neocortex.documents.document_organization_planning import OrganizationCorpusPolicy
+    from neocortex.semantic.fast_curation_policy_bundle import default_calibrated_policy
+
+    # The same packaged measured policy is consumed by Fast Curation and by
+    # the final verifier. Loading it is pure data validation, never model
+    # initialization or another classifier. Absence remains an abstention.
+    curation_bundle = default_calibrated_policy()
 
     stages = organization_stage_state(state, run_id)
     managed = bool(stages)
@@ -197,6 +207,7 @@ def run_organization_stages(
             "cancellation": cancellation,
             "progress": checked_progress, "mutation_guard": state.corpus_mutation_guard(run_id),
             "corpus_policy": OrganizationCorpusPolicy(allow_general=True, allow_uncertain=True, allow_sensitive=True, allow_nontechnical=True),
+            "fast_curation_policy_bundle": curation_bundle,
         }
         signature_target = getattr(plan_document_organization, "side_effect", None)
         if not callable(signature_target):
@@ -207,7 +218,7 @@ def run_organization_stages(
         except (TypeError, ValueError):
             parameters = {}
         if not any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
-            for optional in ("corpus_policy", "cancellation"):
+            for optional in ("corpus_policy", "cancellation", "fast_curation_policy_bundle"):
                 if optional not in parameters:
                     arguments.pop(optional, None)
         try:
@@ -246,6 +257,7 @@ def run_organization_stages(
             mutation_guard=state.corpus_mutation_guard(run_id),
             framework_lock_held=True,
             checkpoint=checkpoint_cancellation,
+            fast_curation_policy_bundle=curation_bundle,
         )
         # Only validated advisory proposals are terminal, effect-free
         # abstentions. Keep invalid, protected, stale and uncertain outcomes

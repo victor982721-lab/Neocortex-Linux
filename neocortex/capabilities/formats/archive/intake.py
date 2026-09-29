@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import tempfile
 import time
 import uuid
@@ -34,6 +35,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol, cast, runtime_checkable
+from neocortex.platform.logical_filename import LogicalFilename
 
 from neocortex.platform.zip_safety import (
     DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
@@ -43,6 +45,13 @@ from neocortex.platform.zip_safety import (
     inspect_zip_structure,
 )
 from neocortex.progress import ProgressEvent, ProgressMetric, emit_progress
+from .artifact_rules import classify_archive_members
+from neocortex.safety.artifact_content_proof import (
+    ArtifactContentProof,
+    ArtifactContentProofError,
+    capture_artifact_content_proof,
+    revalidate_artifact_content_proof,
+)
 
 # Keep classification marker reads bounded.  Classification is not a second
 # complete extraction: only package marker members are read.  Generic ZIPs are
@@ -714,6 +723,7 @@ class ZipDecision:
     # budget for a low-expansion archive.  Retain it with the decision so the
     # apply path uses exactly the budget that was classified and verified.
     admitted_limits: ZipIntakeLimits | None = field(default=None, repr=False, compare=False)
+    content_proof: ArtifactContentProof | None = field(default=None, repr=False, compare=False)
 
     def matches(self, path: Path, identity: SourceIdentity | None = None) -> bool:
         """Return whether this decision is safe to reuse for ``path``."""
@@ -1530,6 +1540,189 @@ def _known_odf_mimes() -> set[str]:
         }
 
 
+_ARCHIVE_ARTIFACT_MEMBER_LIMIT = 32
+_ARCHIVE_ARTIFACT_MEMBER_PROBE_BYTES = 4096
+_ARCHIVE_PE_MACHINES = frozenset({0x014C, 0x8664, 0xAA64, 0x01C4, 0x5032, 0x5064})
+_ARCHIVE_ELF_MACHINES = frozenset({0x0003, 0x003E, 0x0028, 0x00B7, 0x00F3, 0x0008})
+
+
+def _archive_member_signature(payload: bytes) -> str | None:
+    """Return a strong bounded PE/ELF member signature, never by suffix."""
+
+    if payload.startswith(b"\x7fELF") and len(payload) >= 20:
+        elf_class, data_encoding, version = payload[4], payload[5], payload[6]
+        if elf_class in {1, 2} and data_encoding in {1, 2} and version == 1:
+            endian = "<" if data_encoding == 1 else ">"
+            machine = struct.unpack_from(endian + "H", payload, 18)[0]
+            if machine in _ARCHIVE_ELF_MACHINES:
+                return "elf"
+    if payload.startswith(b"MZ") and len(payload) >= 64:
+        pe_offset = struct.unpack_from("<I", payload, 0x3C)[0]
+        if 64 <= pe_offset <= len(payload) - 24 and payload[pe_offset : pe_offset + 4] == b"PE\0\0":
+            machine, sections, _timestamp, _sym_ptr, _sym_count, optional_size, characteristics = struct.unpack_from(
+                "<HHIIIHH", payload, pe_offset + 4
+            )
+            optional_offset = pe_offset + 24
+            optional_magic = (
+                struct.unpack_from("<H", payload, optional_offset)[0]
+                if optional_offset + 2 <= len(payload)
+                else 0
+            )
+            if (
+                machine in _ARCHIVE_PE_MACHINES
+                and 1 <= sections <= 96
+                and 2 <= optional_size <= 0x1000
+                and optional_magic in {0x10B, 0x20B}
+                and characteristics & (0x0002 | 0x2000)
+            ):
+                return "pe"
+    return None
+
+
+def _archive_artifact_hold(
+    path: Path,
+    *,
+    archive: zipfile.ZipFile,
+    members: tuple[_Member, ...],
+    by_name: Mapping[str, zipfile.ZipInfo],
+    deadline: _Deadline,
+    progress: _ZipProgress | None,
+) -> tuple[str, tuple[str, ...], dict[str, str]] | None:
+    """Return a hold classification for a bounded runtime-only archive."""
+
+    normalized = tuple(member.relative_name for member in members)
+    signatures: dict[str, str] = {}
+    candidates = tuple(
+        name
+        for name in normalized
+        if name.casefold().endswith((".so", ".dll", ".exe", ".dylib", ".wasm"))
+        or (
+            any(
+                name.casefold() == root or name.casefold().startswith(root + "/")
+                for root in ("bin", "lib", "runtime", "sdk", "jre", "toolchains")
+            )
+            and "." not in name.rsplit("/", 1)[-1]
+        )
+    )[:_ARCHIVE_ARTIFACT_MEMBER_LIMIT]
+    for name in candidates:
+        deadline.check()
+        info = by_name.get(name)
+        if info is None:
+            continue
+        marker = _read_marker(
+            archive,
+            info,
+            limit=_ARCHIVE_ARTIFACT_MEMBER_PROBE_BYTES,
+            deadline=deadline,
+            progress=progress,
+        )
+        signature = _archive_member_signature(marker)
+        if signature is not None:
+            signatures[name] = signature
+    if not signatures:
+        return None
+    decision = classify_archive_members(
+        path,
+        normalized,
+        member_signatures=signatures,
+    )
+    if decision.rule_id not in {
+        "artifact.archive.runtime-structure.v1",
+        "artifact.archive.software-package.v1",
+    }:
+        return None
+    evidence = (
+        f"artifact_policy:{decision.rule_id}",
+        f"strong_members:{len(signatures)}",
+        "artifact_policy_effect:deferred_to_source_proof_stage",
+    )
+    return decision.rule_id, evidence, signatures
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveArtifactObservation:
+    """Bounded, current-source central-directory evidence for ArtifactPolicy."""
+
+    members: tuple[str, ...]
+    member_signatures: Mapping[str, str]
+    container_kind: str | None = None
+
+
+def observe_archive_artifact_structure(
+    source: str | os.PathLike[str],
+    *,
+    max_members: int = 4096,
+    max_member_probe_bytes: int = 4096,
+    timeout_seconds: float = 2.0,
+    cancellation: object | None = None,
+) -> ArchiveArtifactObservation:
+    """Read bounded current ZIP structure without extraction or hashing."""
+
+    if type(max_members) is not int or not 1 <= max_members <= 20_000:
+        raise ValueError("max_members must be between 1 and 20000")
+    if type(max_member_probe_bytes) is not int or not 256 <= max_member_probe_bytes <= 64 * 1024:
+        raise ValueError("max_member_probe_bytes is outside its bound")
+    path = Path(source)
+    identity = SourceIdentity.capture(path)
+    deadline = _Deadline(time.monotonic() + float(timeout_seconds), cancellation)
+    structure = inspect_zip_structure(
+        path,
+        max_members=max_members,
+        max_central_directory_bytes=DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
+    )
+    if structure.members > max_members:
+        raise ZipIntakeError("budget", "artifact_member_limit")
+    with zipfile.ZipFile(path, "r") as archive:
+        infos = archive.infolist()
+        if len(infos) != structure.members or len(infos) > max_members:
+            raise ZipIntakeError("source_changed", "artifact_member_count_changed")
+        names: list[str] = []
+        by_name: dict[str, zipfile.ZipInfo] = {}
+        for info in infos:
+            deadline.check()
+            valid, normalized = _safe_member_name(info.filename)
+            if not valid or normalized in by_name:
+                raise ZipIntakeError("unsafe", "artifact_member_name_invalid")
+            names.append(normalized)
+            by_name[normalized] = info
+        signatures: dict[str, str] = {}
+        candidates = tuple(
+            name
+            for name in names
+            if name.casefold().endswith((".so", ".dll", ".exe", ".dylib", ".wasm"))
+            or (
+                any(
+                    name.casefold() == root or name.casefold().startswith(root + "/")
+                    for root in ("bin", "lib", "runtime", "sdk", "jre", "toolchains")
+                )
+                and "." not in name.rsplit("/", 1)[-1]
+            )
+        )[:_ARCHIVE_ARTIFACT_MEMBER_LIMIT]
+        for name in candidates:
+            deadline.check()
+            marker = _read_marker(
+                archive,
+                by_name[name],
+                limit=max_member_probe_bytes,
+                deadline=deadline,
+                progress=None,
+            )
+            signature = _archive_member_signature(marker)
+            if signature is not None:
+                signatures[name] = signature
+        lowered = {name.casefold() for name in names}
+        container_kind = None
+        if "androidmanifest.xml" in lowered and "classes.dex" in lowered:
+            container_kind = "apk"
+        elif "meta-inf/manifest.mf" in lowered and any(
+            name.casefold().endswith(".class") for name in names
+        ):
+            container_kind = "jar"
+    if not identity.matches(path):
+        raise ZipIntakeError("source_changed", "artifact_source_changed")
+    return ArchiveArtifactObservation(tuple(names), signatures, container_kind)
+
+
 def _decide_zip(
     path: Path,
     *,
@@ -1542,6 +1735,21 @@ def _decide_zip(
 
     try:
         deadline.check()
+        try:
+            # Bind the source before central-directory and marker reads.  The
+            # hold path below revalidates these same bounded segments/ctime;
+            # it is evidence for retention/admission, never Trash authority.
+            source_proof = capture_artifact_content_proof(
+                path,
+                family="archive.structure",
+            )
+            deadline.check()
+        except (ArtifactContentProofError, OSError) as exc:
+            raise ZipIntakeError(
+                "blocked",
+                "artifact_content_proof_unavailable",
+                str(exc),
+            ) from exc
         structure = inspect_zip_structure(
             path,
             max_members=limits.max_members,
@@ -1729,6 +1937,43 @@ def _decide_zip(
                         structure=structure,
                     )
                     return ZipDecision(identity, classification, preflight, admitted_limits)
+            hold = _archive_artifact_hold(
+                path,
+                archive=archive,
+                members=members,
+                by_name=by_name,
+                deadline=deadline,
+                progress=progress,
+            )
+            if hold is not None:
+                _rule_id, hold_evidence, _signatures = hold
+                if not identity.matches(path):
+                    raise ZipIntakeError("source_changed", "source_changed_after_classification")
+                try:
+                    revalidate_artifact_content_proof(source_proof, path)
+                except ArtifactContentProofError as exc:
+                    raise ZipIntakeError(
+                        "source_changed",
+                        "artifact_content_proof_changed",
+                        str(exc),
+                    ) from exc
+                classification = ZipIntakeClassification(
+                    "atomic_package",
+                    "validated",
+                    "artifact_runtime_hold",
+                    hold_evidence,
+                    member_count,
+                    total,
+                    detail="artifact policy hold; no generic extraction",
+                    structure=structure,
+                )
+                return ZipDecision(
+                    identity,
+                    classification,
+                    preflight,
+                    admitted_limits,
+                    source_proof,
+                )
             # A project is intentionally *generic*: its directory layout is
             # data to expand, not a virtual unit to preserve.
             project_markers = {
@@ -1869,7 +2114,7 @@ def decide_zip_candidate(
     """
 
     path = Path(source)
-    if path.suffix.casefold() != ".zip":
+    if LogicalFilename.parse(path).logical_extension != ".zip":
         try:
             with path.open("rb") as stream:
                 if stream.read(4) not in {b"PK\x03\x04", b"PK\x05\x06", b"PK\x06\x06"}:
@@ -1906,9 +2151,10 @@ def classify_zip(
 
 
 def _default_destination(source: Path) -> Path:
-    if source.suffix.casefold() == ".zip":
-        return source.with_name(source.name[:-4])
-    return source.with_name(source.name + ".extracted")
+    logical = LogicalFilename.parse(source)
+    if logical.logical_extension == ".zip":
+        return source.with_name(logical.stem + logical.collision_decorator)
+    return source.with_name(logical.normalized_basename + ".extracted")
 
 
 def _resolve_generic_destination_collision(
@@ -2072,7 +2318,7 @@ def _stream_member(
 
 
 def _is_zip_candidate(path: Path) -> bool:
-    if path.suffix.casefold() == ".zip":
+    if LogicalFilename.parse(path).logical_extension == ".zip":
         return True
     try:
         with path.open("rb") as stream:
@@ -2207,7 +2453,7 @@ def _extract_zip_tree(
             continue
         if depth >= limits.depth_limit:
             raise ZipIntakeError("budget", "nested_depth_budget")
-        nested_destination = child.with_name(child.name[:-4] if child.suffix.casefold() == ".zip" else child.name + ".extracted")
+        nested_destination = _default_destination(child)
         if os.path.lexists(nested_destination):
             raise ZipIntakeError("collision", "nested_destination_collision", os.fspath(nested_destination))
         _extract_zip_tree(
@@ -2872,6 +3118,7 @@ ArchiveIntakeLimits = ZipIntakeLimits
 __all__ = (
     "MAX_MARKER_BYTES",
     "MAX_XML_MARKER_BYTES",
+    "ArchiveArtifactObservation",
     "ArchiveIntakeLimits",
     "FilesystemPublishHook",
     "FilesystemStageFactory",
@@ -2893,6 +3140,7 @@ __all__ = (
     "decide_zip",
     "decide_zip_candidate",
     "intake_zip",
+    "observe_archive_artifact_structure",
     "plan_zip_intake",
     "run_zip_intake",
 )

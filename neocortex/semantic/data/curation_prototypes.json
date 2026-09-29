@@ -1,0 +1,734 @@
+{
+  "ontology_id": "neocortex.synthetic-fast-curation",
+  "ontology_version": "fixture-v1",
+  "prototype_manifest_sha256": "b834c82d126282926afb934b712ccc1644a680b3ceee294a23f6c4182b702cc7",
+  "prototype_set_fingerprint": "91fe4911163b0ce0c66437259109bdf3879638d2be9bfb682d931f095e379de2",
+  "prototype_version": "fixture-prototype-v1",
+  "prototypes": [
+    {
+      "aliases": [
+        "contract",
+        "contrato",
+        "entrega",
+        "garantía",
+        "procurement",
+        "proveedor",
+        "suministro",
+        "supplier",
+        "warranty"
+      ],
+      "concept_id": "contract",
+      "description": "Synthetic controlled document_kind concept: contract.",
+      "family": "document_kind",
+      "label": "contract",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Contrato de suministro de equipo eléctrico con alcance, entregables, garantías, penalizaciones y condiciones comerciales.",
+        "Procurement contract for electrical equipment specifying scope, delivery, warranty, penalties and commercial terms."
+      ],
+      "prototype_id": "document_kind:contract:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "procurement_contract"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "coordinación",
+        "design",
+        "diseño",
+        "especificación",
+        "fault level",
+        "memoria de cálculo",
+        "protecciones",
+        "relay settings"
+      ],
+      "concept_id": "design",
+      "description": "Synthetic controlled document_kind concept: design.",
+      "family": "document_kind",
+      "label": "design",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Memoria de cálculo para el diseño de protecciones y coordinación de un sistema eléctrico.",
+        "Electrical engineering design note for protection coordination, fault levels, settings and cable sizing."
+      ],
+      "prototype_id": "document_kind:design:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "engineering_design"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "action item",
+        "acuerdo",
+        "correo",
+        "email",
+        "fecha",
+        "meeting",
+        "responsable",
+        "reunión",
+        "schedule"
+      ],
+      "concept_id": "email",
+      "description": "Synthetic controlled document_kind concept: email.",
+      "family": "document_kind",
+      "label": "email",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Correo de coordinación del proyecto sobre fechas, responsables, envío de documentos y reunión de seguimiento.",
+        "Project coordination email discussing schedule, owners, document delivery and the next progress meeting."
+      ],
+      "prototype_id": "document_kind:email:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "project_correspondence"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "factura",
+        "impuestos",
+        "invoice",
+        "orden de compra",
+        "pago",
+        "purchase order",
+        "subtotal",
+        "tax",
+        "total"
+      ],
+      "concept_id": "invoice",
+      "description": "Synthetic controlled document_kind concept: invoice.",
+      "family": "document_kind",
+      "label": "invoice",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Factura sintética por servicios de pruebas eléctricas, con subtotal, impuestos, orden de compra y condiciones de pago.",
+        "Administrative invoice for testing services; it includes amount, tax, purchase order, supplier and payment terms."
+      ],
+      "prototype_id": "document_kind:invoice:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "service_invoice"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "alarma",
+        "inspección",
+        "inspection",
+        "lubricación",
+        "maintenance",
+        "mantenimiento",
+        "manual",
+        "spare parts"
+      ],
+      "concept_id": "manual",
+      "description": "Synthetic controlled document_kind concept: manual.",
+      "family": "document_kind",
+      "label": "manual",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Manual de mantenimiento preventivo de transformadores: inspección, lubricación, alarmas y periodicidad de servicio.",
+        "Maintenance manual for transformer auxiliaries, inspection intervals, alarms, spare parts and safe service steps."
+      ],
+      "prototype_id": "document_kind:manual:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "maintenance_manual"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "EPP",
+        "bloqueo",
+        "emergency",
+        "etiquetado",
+        "grounding",
+        "lockout",
+        "puesta a tierra",
+        "safety",
+        "seguridad"
+      ],
+      "concept_id": "procedure",
+      "description": "Synthetic controlled document_kind concept: procedure.",
+      "family": "document_kind",
+      "label": "procedure",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Procedimiento de seguridad eléctrica para bloqueo, etiquetado, puesta a tierra temporal y autorización de trabajo.",
+        "Electrical safety procedure for lockout tagout, temporary grounding, access control and work authorization."
+      ],
+      "prototype_id": "document_kind:procedure:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "safety_procedure"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "TTR",
+        "arranque",
+        "commissioning",
+        "electrical test",
+        "energización",
+        "entrega",
+        "handover",
+        "insulation resistance",
+        "inyección secundaria",
+        "pendientes",
+        "pruebas",
+        "puesta en servicio",
+        "punch list",
+        "relación de transformación",
+        "resistencia de aislamiento",
+        "startup"
+      ],
+      "concept_id": "report",
+      "description": "Synthetic controlled document_kind concept: report.",
+      "family": "document_kind",
+      "label": "report",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Informe de pruebas eléctricas de transformadores: resistencia de aislamiento, relación de transformación y resistencia de devanados.",
+        "Electrical test report for a power transformer with insulation resistance, turns ratio and winding resistance measurements.",
+        "Informe de puesta en servicio de una subestación: secuencia de energización, pendientes, alarmas y aceptación operativa.",
+        "Commissioning report for a substation startup with energization sequence, punch list, alarms and operational handover."
+      ],
+      "prototype_id": "document_kind:report:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "electrical_testing",
+          "commissioning_report"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "EPP",
+        "bloqueo",
+        "emergency",
+        "etiquetado",
+        "grounding",
+        "lockout",
+        "puesta a tierra",
+        "safety",
+        "seguridad"
+      ],
+      "concept_id": "electrical_safety",
+      "description": "Synthetic controlled topic concept: electrical safety.",
+      "family": "topic",
+      "label": "electrical safety",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Procedimiento de seguridad eléctrica para bloqueo, etiquetado, puesta a tierra temporal y autorización de trabajo.",
+        "Electrical safety procedure for lockout tagout, temporary grounding, access control and work authorization."
+      ],
+      "prototype_id": "topic:electrical_safety:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "safety_procedure"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "coordinación",
+        "design",
+        "diseño",
+        "especificación",
+        "fault level",
+        "memoria de cálculo",
+        "protecciones",
+        "relay settings"
+      ],
+      "concept_id": "electrical_systems",
+      "description": "Synthetic controlled topic concept: electrical systems.",
+      "family": "topic",
+      "label": "electrical systems",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Memoria de cálculo para el diseño de protecciones y coordinación de un sistema eléctrico.",
+        "Electrical engineering design note for protection coordination, fault levels, settings and cable sizing."
+      ],
+      "prototype_id": "topic:electrical_systems:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "engineering_design"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "contract",
+        "contrato",
+        "entrega",
+        "garantía",
+        "procurement",
+        "proveedor",
+        "suministro",
+        "supplier",
+        "warranty"
+      ],
+      "concept_id": "procurement",
+      "description": "Synthetic controlled topic concept: procurement.",
+      "family": "topic",
+      "label": "procurement",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Contrato de suministro de equipo eléctrico con alcance, entregables, garantías, penalizaciones y condiciones comerciales.",
+        "Procurement contract for electrical equipment specifying scope, delivery, warranty, penalties and commercial terms."
+      ],
+      "prototype_id": "topic:procurement:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "procurement_contract"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "action item",
+        "acuerdo",
+        "correo",
+        "email",
+        "fecha",
+        "meeting",
+        "responsable",
+        "reunión",
+        "schedule"
+      ],
+      "concept_id": "project_coordination",
+      "description": "Synthetic controlled topic concept: project coordination.",
+      "family": "topic",
+      "label": "project coordination",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Correo de coordinación del proyecto sobre fechas, responsables, envío de documentos y reunión de seguimiento.",
+        "Project coordination email discussing schedule, owners, document delivery and the next progress meeting."
+      ],
+      "prototype_id": "topic:project_coordination:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "project_correspondence"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "factura",
+        "impuestos",
+        "invoice",
+        "orden de compra",
+        "pago",
+        "purchase order",
+        "subtotal",
+        "tax",
+        "total"
+      ],
+      "concept_id": "services_and_billing",
+      "description": "Synthetic controlled topic concept: services and billing.",
+      "family": "topic",
+      "label": "services and billing",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Factura sintética por servicios de pruebas eléctricas, con subtotal, impuestos, orden de compra y condiciones de pago.",
+        "Administrative invoice for testing services; it includes amount, tax, purchase order, supplier and payment terms."
+      ],
+      "prototype_id": "topic:services_and_billing:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "service_invoice"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "arranque",
+        "commissioning",
+        "energización",
+        "entrega",
+        "handover",
+        "pendientes",
+        "puesta en servicio",
+        "punch list",
+        "startup"
+      ],
+      "concept_id": "substation_startup",
+      "description": "Synthetic controlled topic concept: substation startup.",
+      "family": "topic",
+      "label": "substation startup",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Informe de puesta en servicio de una subestación: secuencia de energización, pendientes, alarmas y aceptación operativa.",
+        "Commissioning report for a substation startup with energization sequence, punch list, alarms and operational handover."
+      ],
+      "prototype_id": "topic:substation_startup:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "commissioning_report"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "alarma",
+        "inspección",
+        "inspection",
+        "lubricación",
+        "maintenance",
+        "mantenimiento",
+        "manual",
+        "spare parts"
+      ],
+      "concept_id": "transformers_and_equipment",
+      "description": "Synthetic controlled topic concept: transformers and equipment.",
+      "family": "topic",
+      "label": "transformers and equipment",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Manual de mantenimiento preventivo de transformadores: inspección, lubricación, alarmas y periodicidad de servicio.",
+        "Maintenance manual for transformer auxiliaries, inspection intervals, alarms, spare parts and safe service steps."
+      ],
+      "prototype_id": "topic:transformers_and_equipment:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "maintenance_manual"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "TTR",
+        "commissioning",
+        "electrical test",
+        "insulation resistance",
+        "inyección secundaria",
+        "pruebas",
+        "relación de transformación",
+        "resistencia de aislamiento"
+      ],
+      "concept_id": "transformers_and_protection",
+      "description": "Synthetic controlled topic concept: transformers and protection.",
+      "family": "topic",
+      "label": "transformers and protection",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Informe de pruebas eléctricas de transformadores: resistencia de aislamiento, relación de transformación y resistencia de devanados.",
+        "Electrical test report for a power transformer with insulation resistance, turns ratio and winding resistance measurements."
+      ],
+      "prototype_id": "topic:transformers_and_protection:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "electrical_testing"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "factura",
+        "impuestos",
+        "invoice",
+        "orden de compra",
+        "pago",
+        "purchase order",
+        "subtotal",
+        "tax",
+        "total"
+      ],
+      "concept_id": "administration",
+      "description": "Synthetic controlled activity concept: administration.",
+      "family": "activity",
+      "label": "administration",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Factura sintética por servicios de pruebas eléctricas, con subtotal, impuestos, orden de compra y condiciones de pago.",
+        "Administrative invoice for testing services; it includes amount, tax, purchase order, supplier and payment terms."
+      ],
+      "prototype_id": "activity:administration:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "service_invoice"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "arranque",
+        "commissioning",
+        "energización",
+        "entrega",
+        "handover",
+        "pendientes",
+        "puesta en servicio",
+        "punch list",
+        "startup"
+      ],
+      "concept_id": "commissioning",
+      "description": "Synthetic controlled activity concept: commissioning.",
+      "family": "activity",
+      "label": "commissioning",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Informe de puesta en servicio de una subestación: secuencia de energización, pendientes, alarmas y aceptación operativa.",
+        "Commissioning report for a substation startup with energization sequence, punch list, alarms and operational handover."
+      ],
+      "prototype_id": "activity:commissioning:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "commissioning_report"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "action item",
+        "acuerdo",
+        "correo",
+        "email",
+        "fecha",
+        "meeting",
+        "responsable",
+        "reunión",
+        "schedule"
+      ],
+      "concept_id": "coordination",
+      "description": "Synthetic controlled activity concept: coordination.",
+      "family": "activity",
+      "label": "coordination",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Correo de coordinación del proyecto sobre fechas, responsables, envío de documentos y reunión de seguimiento.",
+        "Project coordination email discussing schedule, owners, document delivery and the next progress meeting."
+      ],
+      "prototype_id": "activity:coordination:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "project_correspondence"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "coordinación",
+        "design",
+        "diseño",
+        "especificación",
+        "fault level",
+        "memoria de cálculo",
+        "protecciones",
+        "relay settings"
+      ],
+      "concept_id": "design",
+      "description": "Synthetic controlled activity concept: design.",
+      "family": "activity",
+      "label": "design",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Memoria de cálculo para el diseño de protecciones y coordinación de un sistema eléctrico.",
+        "Electrical engineering design note for protection coordination, fault levels, settings and cable sizing."
+      ],
+      "prototype_id": "activity:design:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "engineering_design"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "alarma",
+        "inspección",
+        "inspection",
+        "lubricación",
+        "maintenance",
+        "mantenimiento",
+        "manual",
+        "spare parts"
+      ],
+      "concept_id": "maintenance",
+      "description": "Synthetic controlled activity concept: maintenance.",
+      "family": "activity",
+      "label": "maintenance",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Manual de mantenimiento preventivo de transformadores: inspección, lubricación, alarmas y periodicidad de servicio.",
+        "Maintenance manual for transformer auxiliaries, inspection intervals, alarms, spare parts and safe service steps."
+      ],
+      "prototype_id": "activity:maintenance:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "maintenance_manual"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "contract",
+        "contrato",
+        "entrega",
+        "garantía",
+        "procurement",
+        "proveedor",
+        "suministro",
+        "supplier",
+        "warranty"
+      ],
+      "concept_id": "purchasing",
+      "description": "Synthetic controlled activity concept: purchasing.",
+      "family": "activity",
+      "label": "purchasing",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Contrato de suministro de equipo eléctrico con alcance, entregables, garantías, penalizaciones y condiciones comerciales.",
+        "Procurement contract for electrical equipment specifying scope, delivery, warranty, penalties and commercial terms."
+      ],
+      "prototype_id": "activity:purchasing:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "procurement_contract"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "EPP",
+        "bloqueo",
+        "emergency",
+        "etiquetado",
+        "grounding",
+        "lockout",
+        "puesta a tierra",
+        "safety",
+        "seguridad"
+      ],
+      "concept_id": "safety",
+      "description": "Synthetic controlled activity concept: safety.",
+      "family": "activity",
+      "label": "safety",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Procedimiento de seguridad eléctrica para bloqueo, etiquetado, puesta a tierra temporal y autorización de trabajo.",
+        "Electrical safety procedure for lockout tagout, temporary grounding, access control and work authorization."
+      ],
+      "prototype_id": "activity:safety:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "safety_procedure"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    },
+    {
+      "aliases": [
+        "TTR",
+        "commissioning",
+        "electrical test",
+        "insulation resistance",
+        "inyección secundaria",
+        "pruebas",
+        "relación de transformación",
+        "resistencia de aislamiento"
+      ],
+      "concept_id": "testing",
+      "description": "Synthetic controlled activity concept: testing.",
+      "family": "activity",
+      "label": "testing",
+      "ontology_id": "neocortex.synthetic-fast-curation",
+      "ontology_version": "fixture-v1",
+      "positive_examples": [
+        "Informe de pruebas eléctricas de transformadores: resistencia de aislamiento, relación de transformación y resistencia de devanados.",
+        "Electrical test report for a power transformer with insulation resistance, turns ratio and winding resistance measurements."
+      ],
+      "prototype_id": "activity:testing:fixture-v1",
+      "prototype_version": "fixture-prototype-v1",
+      "provenance": {
+        "combined_labels": [
+          "electrical_testing"
+        ],
+        "source": "explicit-synthetic-fixture"
+      }
+    }
+  ],
+  "provenance": {
+    "calibration_split": "validation",
+    "evaluation_split": "fresh_heldout",
+    "population_claim": "none; finite synthetic sample only",
+    "source_report": "fast-curation-benchmark-report-v2.json",
+    "source_report_sha256": "b8358f0a066f1cc119c5197a0af75cf624445d2fd71f40af0daa97edf1679db1"
+  },
+  "schema": "neocortex.fast-curation-prototypes/v1",
+  "source_fixture_sha256": "628658d29ea17da1eb6f69624e0ef4c3b8a59cb42d208d670f45eb21409358ea",
+  "source_scope": "neocortex.synthetic-fast-curation"
+}

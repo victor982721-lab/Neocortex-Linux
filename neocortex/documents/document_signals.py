@@ -10,7 +10,7 @@ from typing import Iterator
 
 # region [01] Stable path and text signals
 
-_MANAGED_ROOT_KEY = "consulta tecnica organizada"
+_MANAGED_ROOT_KEYS = frozenset({"consulta tecnica organizada", "corpus ordenado", "sin clasificar"})
 
 
 def fold_signal(value: str) -> str:
@@ -27,7 +27,7 @@ def is_framework_managed_path(path: str) -> bool:
     """Return whether a path is below the framework's organization root."""
 
     return any(
-        _path_segment_key(segment) == _MANAGED_ROOT_KEY
+        _path_segment_key(segment) in _MANAGED_ROOT_KEYS
         for segment in re.split(r"[\\/]", path)
     )
 

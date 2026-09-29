@@ -29,6 +29,7 @@ from neocortex.platform.content_types import DetectedType, detect_content_type
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.models import ActionSummary
 from tests.internal_paths_test_support import begin_signed_normal_run
+from tests.content_fixture_support import minimal_pe_image
 # endregion [01]
 
 # region [02] Implementación
@@ -1113,10 +1114,19 @@ class ActionTests(unittest.TestCase):
                 summary = FrameworkActions(index, state, run_id, scan.scan_id, apply=True).execute(
                     plan
                 )
-            self.assertEqual(summary.files_renamed, 0)
-            self.assertEqual(summary.rename_skips, 1)
-            self.assertTrue(source.exists())
+                replay = FrameworkActions(
+                    index, state, run_id, index.current_scan_id(scan.scan_id), apply=True,
+                ).identify_and_normalize()
+            self.assertEqual(summary.files_renamed, 1)
+            self.assertEqual(summary.rename_skips, 0)
+            self.assertFalse(source.exists())
             self.assertEqual(target.read_bytes(), b"\x89PNG\r\n\x1a\ntarget")
+            preserved = [path for path in corpus.iterdir() if path != target]
+            self.assertEqual(len(preserved), 1)
+            self.assertRegex(preserved[0].name, r"^photo__[0-9a-f]{12}\.png$")
+            self.assertEqual(preserved[0].read_bytes(), b"\x89PNG\r\n\x1a\nsource")
+            self.assertEqual(replay.files_renamed, 0)
+            self.assertEqual(replay.rename_candidates, 0)
 
     def test_linux_extension_restore_uses_no_replace_backend(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1174,7 +1184,7 @@ class ActionTests(unittest.TestCase):
             corpus = base / "corpus"
             corpus.mkdir()
             source = corpus / "binary"
-            source.write_bytes(b"MZ" + b"\0" * 100)
+            source.write_bytes(minimal_pe_image())
             with (
                 DedupIndex(base / "dedup.sqlite3") as index,
                 FrameworkState(_framework_database(base)) as state,

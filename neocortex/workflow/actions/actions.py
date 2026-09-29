@@ -194,13 +194,14 @@ def _is_legal_metadata_name(path: str | Path) -> bool:
 from neocortex.workflow.actions.action_identify import IdentifyActionsMixin  # noqa: E402
 from neocortex.workflow.actions.action_redlist_stage import RedlistActionsMixin  # noqa: E402
 from neocortex.workflow.actions.action_effects import EffectsActionsMixin  # noqa: E402
+from neocortex.workflow.actions.action_artifact_stage import ArtifactStageMixin  # noqa: E402
 from neocortex.workflow.actions.action_contracts import (  # noqa: E402
     RedlistPrepassError as _RedlistPrepassError,
 )
 
 RedlistPrepassError = _RedlistPrepassError
 
-class FrameworkActions(IdentifyActionsMixin, RedlistActionsMixin, EffectsActionsMixin):
+class FrameworkActions(IdentifyActionsMixin, RedlistActionsMixin, ArtifactStageMixin, EffectsActionsMixin):
     """Apply bounded action batches with durable before/after records."""
 
     @staticmethod
@@ -308,6 +309,19 @@ class FrameworkActions(IdentifyActionsMixin, RedlistActionsMixin, EffectsActions
             "examples": [],
         }
         self._redlist_batch_diagnostics: dict[str, object] = {}
+        self._action_snapshot_selector = None
+        self._action_snapshot_count: int | None = None
+        self._expensive_admission = None
+        self._curation_round = 0
+        self._structural_directories: frozenset[str] = frozenset()
+
+    def _action_snapshots_page(
+        self, *, after_path: str = "", limit: int = TRASH_BATCH_SIZE
+    ) -> tuple[FileSnapshot, ...]:
+        """Select a curation delta, or the ordinary inventory for direct callers."""
+        if self._action_snapshot_selector is not None:
+            return self._action_snapshot_selector(after_path=after_path, limit=limit)
+        return self._index.snapshots_page(self._scan_id, after_path=after_path, limit=limit)
 
     def _size_is_admitted(self, snapshot: FileSnapshot) -> bool:
         """Return the single global admission decision for one snapshot."""

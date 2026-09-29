@@ -2,15 +2,15 @@
 
 This stage is intentionally narrow: Identify supplies the message/rfc822
 decision, the Text owner parses/materializes bounded children, and one normal
-successor Inventory/Identify pass hands the new physical files to existing
-deduplication and routes.  It is not a second content-ingestion pipeline.
+successor Inventory hands only the new physical delta back to the shared
+curation admission gate. It is not a second content-ingestion pipeline.
 """
 
 from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -169,6 +169,8 @@ def _resolver_for_inventory(
     historical_consumed_lookup: Callable[[EmailAttachment], Mapping[str, object] | None],
     consumption_provenance: list[Mapping[str, object]],
     checkpoint: Callable[[], None],
+    historical_trash_lookup: Callable[[EmailAttachment], Mapping[str, object] | None] | None = None,
+    content_admission_check: Callable[[FileSnapshot], bool] | None = None,
 ) -> Callable[[EmailAttachment], str | os.PathLike[str] | EmailAttachmentResolution | None]:
     def resolve(item: EmailAttachment):
         checkpoint()
@@ -180,6 +182,14 @@ def _resolver_for_inventory(
             )
             if snapshot is not None and _inside_corpus(Path(snapshot.path), root):
                 return snapshot.path
+        if historical_trash_lookup is not None:
+            receipt = historical_trash_lookup(item)
+            if receipt is not None:
+                consumption_provenance.append({
+                    "run_id": receipt.get("run_id"), "action_id": receipt.get("action_id"),
+                    "action_type": receipt.get("action_type"), "source_sha256": item.sha256,
+                })
+                return EmailAttachmentResolution(None, reuse_kind="consumed_trash", provenance=receipt)
         receipt = historical_consumed_lookup(item)
         if receipt is not None:
             identity = receipt.get("source_identity")
@@ -203,6 +213,13 @@ def _resolver_for_inventory(
                 provenance=receipt,
             )
         if not allow_content_equivalent:
+            return None
+        # Integrated producers precede the SHA-256 fixed point. Identity and
+        # owner-validated consumption receipts above remain usable, but a
+        # missing child cannot authorize a corpus-wide full-hash fallback here.
+        # The normal duplicate planner will perform complete content equality
+        # only after every producer's new observations have been curated.
+        if content_admission_check is not None:
             return None
         matches: list[FileSnapshot] = []
         for snapshot in dedup_index.snapshots_by_size(
@@ -241,6 +258,8 @@ def run_email_intake_stage(
     apply: bool,
     cancellation: "CancellationToken",
     progress: ProgressCallback | None,
+    snapshots: Iterable[FileSnapshot] | None = None,
+    content_admission_check: Callable[[FileSnapshot], bool] | None = None,
 ) -> EmailIntakeStageResult:
     """Materialize only identified EML attachments under one bounded stage."""
 
@@ -295,6 +314,20 @@ def run_email_intake_stage(
         raise TypeError("email intake requires FrameworkState.record_event")
     manifest_root = state_directory / "email-intake"
     historical_reader = getattr(state, "read_historical_zip_consumption", None)
+    trash_reader = getattr(state, "read_historical_trash_consumption", None)
+
+    def historical_trash_lookup(item: EmailAttachment) -> Mapping[str, object] | None:
+        if not callable(trash_reader) or any(value is None for value in (
+            item.child_device, item.child_inode, item.child_mtime_ns,
+        )):
+            return None
+        values = trash_reader(
+            root, source_sha256=item.sha256,
+            child_identity={"device": item.child_device, "inode": item.child_inode,
+                            "size": item.size, "mtime_ns": item.child_mtime_ns},
+            checkpoint=checkpoint, sql_checkpoint=sql_checkpoint,
+        )
+        return next((value for value in values if isinstance(value, Mapping)), None)
 
     def historical_consumed_lookup(item: EmailAttachment) -> Mapping[str, object] | None:
         if not callable(historical_reader):
@@ -349,7 +382,7 @@ def run_email_intake_stage(
         ),
     )
     for index, snapshot in enumerate(
-        (value for value in dedup_index.snapshots(scan_id)
+        (value for value in (dedup_index.snapshots(scan_id) if snapshots is None else snapshots)
          if getattr(identified_types.get(_detection_key(value)), "mime", None) == "message/rfc822"
          and size_is_admitted(value.size, max_file_bytes)
          and _inside_corpus(Path(value.path), root)),
@@ -409,8 +442,12 @@ def run_email_intake_stage(
                 historical_consumed_lookup=historical_consumed_lookup,
                 consumption_provenance=parent_consumption_provenance,
                 checkpoint=checkpoint,
+                historical_trash_lookup=historical_trash_lookup,
+                content_admission_check=content_admission_check,
             )
-            replay_resolver = resolver if (not destination.exists() or callable(historical_reader)) else None
+            replay_resolver = resolver if (
+                not destination.exists() or callable(historical_reader) or callable(trash_reader)
+            ) else None
             result = materialize_email_attachments(
                 source,
                 destination,
@@ -434,18 +471,22 @@ def run_email_intake_stage(
                     )
                     filesystem_changed = True
                     reconciliation_required = True
+                    # Presentation sample only. The admission owner derives
+                    # the complete delta from successor Inventory, never from
+                    # this bounded list (an EML may publish >256 attachments).
                     created_paths.extend(
                         item.child_path
                         for item in result.attachments
                         if item.status == "materialized" and item.child_path is not None
                     )
+                    del created_paths[256:]
                 elif result.status == "replayed":
                     replayed_count += sum(
-                        item.child_reuse_kind != "consumed_archive"
+                        item.child_reuse_kind not in {"consumed_archive", "consumed_trash"}
                         for item in result.attachments
                     )
                 consumed = sum(
-                    item.child_reuse_kind == "consumed_archive"
+                    item.child_reuse_kind in {"consumed_archive", "consumed_trash"}
                     for item in result.attachments
                 )
                 if consumed:
@@ -481,6 +522,11 @@ def run_email_intake_stage(
                 "consumed_archive_receipt_mismatch",
                 "consumed_archive_identity_missing",
                 "consumed_archive_identity_mismatch",
+                "consumed_trash_receipt_missing",
+                "consumed_trash_authority_invalid",
+                "consumed_trash_identity_missing",
+                "consumed_trash_identity_invalid",
+                "consumed_trash_identity_mismatch",
             }:
                 recovery_required = True
                 reconciliation_required = True
@@ -491,24 +537,26 @@ def run_email_intake_stage(
                 "destination_parent_changed",
             }:
                 reconciliation_required = True
-            errors.append(
-                {
-                    "parent": str(source),
-                    "status": exc.status,
-                    "reason": exc.reason,
-                    "detail": exc.detail,
-                }
-            )
+            if len(errors) < 32:
+                errors.append(
+                    {
+                        "parent": str(source),
+                        "status": exc.status,
+                        "reason": exc.reason,
+                        "detail": exc.detail,
+                    }
+                )
         except (OSError, ValueError, UnicodeError) as exc:
             failed += 1
-            errors.append(
-                {
-                    "parent": str(source),
-                    "status": "failed",
-                    "reason": "email_intake_parent_error",
-                    "detail": f"{type(exc).__name__}: {exc}",
-                }
-            )
+            if len(errors) < 32:
+                errors.append(
+                    {
+                        "parent": str(source),
+                        "status": "failed",
+                        "reason": "email_intake_parent_error",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
         emit_progress(
             progress,
             ProgressEvent(

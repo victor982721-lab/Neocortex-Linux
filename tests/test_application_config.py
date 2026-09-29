@@ -60,6 +60,9 @@ def test_application_config_preserves_the_product_dataclass() -> None:
         "email_allow_content_equivalent_reuse",
         "run_time_budget_seconds",
         "retry_recoverable_errors",
+        "curation_model_cache",
+        "curation_threads",
+        "curation_batch_size",
     }
     field_names = {item.name for item in application_fields}
     assert {
@@ -455,7 +458,7 @@ def test_orchestrator_consumes_the_domain_projection() -> None:
 
     projection.assert_called_once_with(config)
     coordinator.assert_called_once_with(
-        ("inventory", "dedup", "first", "second", "catalog", "semantic", "knowledge", "preparation"),
+        ("inventory", "dedup", "first", "second", "catalog", "fast-curation", "semantic", "knowledge", "preparation"),
         projected,
         cancellation=orchestrator._cancellation,
         checkpoint=orchestrator._check_resource_deadline,

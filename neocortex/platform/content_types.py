@@ -13,6 +13,8 @@ strong enough evidence.  Guessing from an extension would defeat validation.
 from __future__ import annotations
 
 import re
+import codecs
+import os
 import struct
 import csv
 import json
@@ -22,11 +24,14 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from collections.abc import Callable
 from xml.etree import ElementTree
 
 from neocortex.deduplication.io import absolute_display_path, native_io_path
 
 from .zip_safety import ZipStructureError, inspect_zip_structure
+from .logical_filename import LogicalFilename
+from .identification_probe import probe_checkpoint, structured_candidate, structured_probe
 # endregion [01]
 
 # region [02] Implementación
@@ -36,7 +41,7 @@ HEADER_LIMIT = 64 * 1024
 ZIP_MEMBER_LIMIT = 4096
 ZIP_STRUCTURE_MEMBER_LIMIT = 10_000
 ZIP_MIMETYPE_LIMIT = 256
-DETECTOR_VERSION = "content-types-v5"
+DETECTOR_VERSION = "content-types-v7"
 
 # Media parsers below intentionally operate on the already bounded prefix read
 # by ``detect_content_type``.  These limits keep malformed container metadata
@@ -123,7 +128,7 @@ class DetectedType:
     evidence: str
 
     def accepts(self, path: str | Path) -> bool:
-        return Path(path).suffix.casefold() in self.accepted_extensions
+        return LogicalFilename.parse(path).logical_extension in self.accepted_extensions
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +171,7 @@ class FileTypeDecision:
         if self.status != "known":
             return False
         candidate = self.path if path is None else path
-        return Path(candidate).suffix.casefold() in self.accepted_extensions
+        return LogicalFilename.parse(candidate).logical_extension in self.accepted_extensions
 
 
 def _type(mime: str, canonical: str, accepted: tuple[str, ...], evidence: str) -> DetectedType:
@@ -650,24 +655,127 @@ def _detect_ebml_video(header: bytes) -> DetectedType | None:
     return None
 
 
-def _detect_pe(path: str | Path, header: bytes) -> DetectedType:
-    canonical = ".exe"
-    accepted = (".exe", ".dll", ".sys", ".scr", ".cpl", ".ocx")
-    evidence = "magic:dos-executable"
-    if len(header) >= 64:
-        pe_offset = struct.unpack_from("<I", header, 0x3C)[0]
-        try:
-            with open(path, "rb", buffering=0) as stream:
-                stream.seek(pe_offset)
-                pe_header = stream.read(24)
-            if pe_header[:4] == b"PE\0\0" and len(pe_header) >= 24:
-                characteristics = struct.unpack_from("<H", pe_header, 22)[0]
-                if characteristics & 0x2000:
-                    canonical = ".dll"
-                evidence = "magic:pe"
-        except OSError:
-            pass
-    return _type("application/vnd.microsoft.portable-executable", canonical, accepted, evidence)
+_PE_MACHINES = frozenset({
+    0x014C,  # i386
+    0x0162,  # MIPS R3000
+    0x0166,  # MIPS little-endian
+    0x01C0,  # ARM
+    0x01C4,  # ARMv7
+    0x0200,  # Intel Itanium
+    0x5032,  # RISC-V 32
+    0x5064,  # RISC-V 64
+    0xAA64,  # ARM64
+    0x8664,  # x86-64
+})
+_ELF_MACHINES = frozenset({
+    0x0003,  # x86
+    0x003E,  # x86-64
+    0x0028,  # ARM
+    0x00B7,  # AArch64
+    0x0014,  # PowerPC
+    0x0015,  # PowerPC64
+    0x00F3,  # RISC-V
+    0x0008,  # MIPS
+})
+
+
+def _detect_pe(path: str | Path, header: bytes) -> DetectedType | None:
+    """Require a structurally valid PE/COFF header, not just ``MZ``.
+
+    ``MZ`` is a two-byte DOS marker and is common in adversarial or arbitrary
+    binary fixtures.  Treating it as a destructive executable signal would
+    let ``MZ`` + zero padding enter the executable cleanup policy.  The PE
+    signature, a supported machine, section count, optional-header magic and
+    executable/DLL characteristics are the minimum bounded proof used here.
+    """
+
+    if len(header) < 64 or not header.startswith(b"MZ"):
+        return None
+    pe_offset = struct.unpack_from("<I", header, 0x3C)[0]
+    if pe_offset < 64 or pe_offset > 8 * 1024 * 1024:
+        return None
+    try:
+        file_size = os.stat(path).st_size
+        if pe_offset + 26 > file_size:
+            return None
+        with open(path, "rb", buffering=0) as stream:
+            stream.seek(pe_offset)
+            pe_header = stream.read(24)
+            if len(pe_header) < 24 or pe_header[:4] != b"PE\0\0":
+                return None
+            machine, section_count, _timestamp, _sym_ptr, _sym_count, optional_size, characteristics = struct.unpack_from(
+                "<HHIIIHH", pe_header, 4
+            )
+            if (
+                machine not in _PE_MACHINES
+                or not 1 <= section_count <= 96
+                or not 2 <= optional_size <= 0x1000
+                or not (characteristics & (0x0002 | 0x2000))
+                or pe_offset + 24 + optional_size > file_size
+            ):
+                return None
+            optional_header = stream.read(min(optional_size, 2))
+    except OSError:
+        return None
+    if len(optional_header) != 2 or optional_header not in {b"\x0b\x01", b"\x0b\x02"}:
+        # Optional-header magic is little-endian 0x10b (PE32) or 0x20b
+        # (PE32+).  Keep this check local and bounded; no section table or
+        # payload parsing is required for Identify.
+        return None
+    canonical = ".dll" if characteristics & 0x2000 else ".exe"
+    return _type(
+        "application/vnd.microsoft.portable-executable",
+        canonical,
+        (".exe", ".dll", ".sys", ".scr", ".cpl", ".ocx"),
+        "magic:pe",
+    )
+
+
+def _detect_elf(path: str | Path, header: bytes) -> DetectedType | None:
+    """Require a coherent ELF identification/header tuple before routing."""
+
+    if len(header) < 16 or not header.startswith(b"\x7fELF"):
+        return None
+    elf_class, data_encoding, version = header[4], header[5], header[6]
+    if elf_class not in {1, 2} or data_encoding not in {1, 2} or version != 1:
+        return None
+    endian = "<" if data_encoding == 1 else ">"
+    header_size = 52 if elf_class == 1 else 64
+    if len(header) < header_size:
+        return None
+    try:
+        if elf_class == 1:
+            e_type, machine, e_version = struct.unpack_from(endian + "HHI", header, 16)
+            e_phoff, e_shoff = struct.unpack_from(endian + "II", header, 28)
+            e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum = struct.unpack_from(
+                endian + "HHHHH", header, 40
+            )
+        else:
+            e_type, machine, e_version = struct.unpack_from(endian + "HHI", header, 16)
+            e_phoff, e_shoff = struct.unpack_from(endian + "QQ", header, 32)
+            e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum = struct.unpack_from(
+                endian + "HHHHH", header, 52
+            )
+    except struct.error:
+        return None
+    if (
+        e_type not in {1, 2, 3, 4}
+        or machine not in _ELF_MACHINES
+        or e_version != 1
+        or e_ehsize != header_size
+        or (e_phnum and e_phentsize != (32 if elf_class == 1 else 56))
+        or (e_shnum and e_shentsize != (40 if elf_class == 1 else 64))
+    ):
+        return None
+    try:
+        file_size = os.stat(path).st_size
+    except OSError:
+        return None
+    if e_phnum and (e_phoff > file_size or e_phoff + e_phnum * e_phentsize > file_size):
+        return None
+    if e_shnum and (e_shoff > file_size or e_shoff + e_shnum * e_shentsize > file_size):
+        return None
+    return _type("application/x-elf", ".elf", (".elf", ".so"), "magic:elf")
 
 
 def _detect_document_or_image(header: bytes) -> DetectedType | None:
@@ -781,13 +889,13 @@ def _detect_database_or_executable(
     if header.startswith(b"MZ"):
         return _detect_pe(path, header)
     if header.startswith(b"\x7fELF"):
-        return _type("application/x-elf", ".elf", (".elf", ".so"), "magic:elf")
+        return _detect_elf(path, header)
     if header.startswith(b"\x4c\x00\x00\x00\x01\x14\x02\x00"):
         return _type("application/x-ms-shortcut", ".lnk", (".lnk",), "magic:lnk")
     return None
 
 
-def _text_decoding(header: bytes) -> tuple[str, str] | None:
+def _text_decoding(header: bytes, *, complete: bool = True) -> tuple[str, str] | None:
     encodings = (
         ("utf-32",)
         if header.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"))
@@ -797,7 +905,7 @@ def _text_decoding(header: bytes) -> tuple[str, str] | None:
     )
     for encoding in encodings:
         try:
-            value = header.decode(encoding, "strict")
+            value = codecs.getincrementaldecoder(encoding)('strict').decode(header, final=complete)
         except UnicodeError:
             continue
         sample = value[:32_768]
@@ -841,7 +949,7 @@ def _detect_json(value: str, encoding: str, *, complete: bool) -> DetectedType |
 
     try:
         json.loads(stripped, parse_constant=reject_non_standard_constant)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         lines = [line.strip() for line in stripped.splitlines() if line.strip()]
         if len(lines) < 2:
             return None
@@ -852,18 +960,18 @@ def _detect_json(value: str, encoding: str, *, complete: bool) -> DetectedType |
         try:
             for line in lines:
                 json.loads(line, parse_constant=reject_non_standard_constant)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             return None
         return _type(
-            "application/json",
-            ".json",
-            (".json", ".jsonl"),
+            "application/x-ndjson",
+            ".jsonl",
+            (".jsonl", ".ndjson"),
             f"text:{encoding}:jsonl",
         )
     return _type(
         "application/json",
         ".json",
-        (".json", ".jsonl"),
+        (".json",),
         f"text:{encoding}:json",
     )
 
@@ -963,13 +1071,13 @@ def _detect_text(
     *,
     complete: bool = True,
 ) -> DetectedType | None:
-    suffix = Path(path).suffix.casefold()
-    decoded = _text_decoding(header)
+    suffix = LogicalFilename.parse(path).logical_extension
+    decoded = _text_decoding(header, complete=complete)
     if decoded is None:
         return None
     value, encoding = decoded
     stripped = value.lstrip("\ufeff \t\r\n")
-    if _detect_rfc822(header):
+    if _detect_rfc822(value.encode('utf-8')):
         return _type("message/rfc822", ".eml", (".eml",), "rfc5322:headers")
 
     # Structured text is parsed before the suffix is consulted.  A suffix may
@@ -1005,19 +1113,68 @@ def _detect_text(
     return _type("text/plain", ".txt", accepted, f"text:{encoding}:printable")
 
 
-def detect_content_type(path: str | Path) -> DetectedType | None:
+def _bounded_text_type(
+    native: str, header: bytes, size: int, checkpoint: Callable[[], None] | None,
+) -> DetectedType | None:
+    complete = size <= len(header)
+    decoded = _text_decoding(header, complete=complete)
+    if not complete and decoded is not None and structured_candidate(decoded[0]):
+        # Reopen only this ambiguous candidate; seek past the prefix rather
+        # than rereading it. The action owner brackets the entire observation
+        # with physical identity checks before it can authorize any rename.
+        with open(native, 'rb', buffering=0) as stream:
+            stream.seek(len(header))
+            with structured_probe(stream, header, size=size, checkpoint=checkpoint) as (payload, ended):
+                if not ended:
+                    return None  # explicit abstention at the hard cap, not false plain text
+                return _detect_text(native, payload, complete=True)
+    probe_checkpoint(checkpoint)
+    return _detect_text(native, header, complete=complete)
+
+
+def detect_content_type(
+    path: str | Path, *, checkpoint: Callable[[], None] | None = None,
+) -> DetectedType | None:
     """Detect a known type from bounded header/container evidence."""
 
     resolved = absolute_display_path(path)
     native = native_io_path(resolved)
+    probe_checkpoint(checkpoint)
     with open(native, "rb", buffering=0) as stream:
         header = stream.read(HEADER_LIMIT)
+        size = os.fstat(stream.fileno()).st_size
     if not header:
         return None
     detected = _detect_document_or_image(header)
     if detected is not None:
         return detected
-    detected_media = _detect_media(header, complete=len(header) < HEADER_LIMIT)
+    # A weak media/executable prefix must not win over a complete, structured
+    # text grammar.  This is the offline fallback for extension conflicts and
+    # unknown names: it is still bounded, only runs when the prefix decodes as
+    # text with a JSON/XML/HTML/table/RFC822 shape, and never treats printable
+    # prose as a destructive executable/archive signal.
+    structured_attempted = False
+    prefix_decoded = _text_decoding(header, complete=size <= len(header))
+    if prefix_decoded is not None:
+        prefix_value, _prefix_encoding = prefix_decoded
+        prefix_utf8 = prefix_value.encode("utf-8")
+        structured_attempted = _detect_rfc822(prefix_utf8) or structured_candidate(prefix_value)
+        if structured_attempted:
+            structured_type = _bounded_text_type(native, header, size, checkpoint)
+            if structured_type is not None:
+                return structured_type
+    # UTF-16 LE's BOM can also satisfy a four-byte MPEG frame heuristic.
+    # A fully parsed structured document is stronger evidence than that hint;
+    # retain the same captured text result rather than probing twice.
+    unicode_marked = header.startswith((b'\xff\xfe', b'\xfe\xff', b'\x00\x00\xfe\xff'))
+    unicode_type = (
+        _bounded_text_type(native, header, size, checkpoint)
+        if unicode_marked and not structured_attempted
+        else None
+    )
+    if unicode_type is not None:
+        return unicode_type
+    detected_media = _detect_media(header, complete=size <= len(header))
     if detected_media is not None:
         return detected_media
     archive = _detect_archive(native, header)
@@ -1026,7 +1183,14 @@ def detect_content_type(path: str | Path) -> DetectedType | None:
     database_or_executable = _detect_database_or_executable(native, header)
     if database_or_executable is not None:
         return database_or_executable
-    return _detect_text(native, header, complete=len(header) < HEADER_LIMIT)
+    if unicode_marked:
+        return unicode_type
+    if structured_attempted:
+        # The candidate was deliberately escalated but did not provide a
+        # complete grammar before the hard cap.  Do not downgrade it to
+        # text/plain or let an extension create a false positive.
+        return None
+    return _bounded_text_type(native, header, size, checkpoint)
 
 
 def _decision_confidence(detected: DetectedType | None) -> Literal["high", "medium", "low", "none"]:

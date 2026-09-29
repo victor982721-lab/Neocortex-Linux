@@ -279,7 +279,9 @@ una fuente al registry no amplía su ámbito ni habilita su `--apply`.
 
 La ruta integrada observa metadatos antes de decidir por archivo. Para `--all`
 ejecuta `inventory → size admission → ZIP Intake → successor/reconciled inventory
-→ identify → normalize → policy/redlist → dedupe → routes → organize → semantic`.
+→ Identify/Normalize → Redlist/ArtifactPolicy → delta admission fixpoint → dedupe
+→ routes/Catalog → Fast Curation → organization/residual MIME → rebind/cleanup
+→ verificación física → Full Semantic → verificación final`.
 La extensión observada no es fuente de verdad: Identify usa firmas, contenedores
 y parsers estructurales bounded; Normalize corrige sólo evidencia demostrable
 antes de cualquier hash completo. La redlist explícita se evalúa sobre la ruta
@@ -291,10 +293,22 @@ y entran al pipeline normal; no existe una identidad o salida virtual
 `container.zip!/member` que el pipeline deba conservar.
 
 Los archivos sin extensión pasan por Identify. Sólo una evidencia fuerte permite
-restaurar una extensión canónica; la incertidumbre, un
-destino existente o un drift conserva el original. Redlist y rename cruzan sus
+restaurar una extensión canónica. `LogicalFilename` separa la extensión de GNU
+backups/decoradores; una colisión produce un nombre estable derivado de identidad,
+nunca overwrite ni otro `.~N~`. Incertidumbre o drift conservan el original.
+Redlist y rename cruzan sus
 fronteras físicas únicamente con root, identidad, no-reemplazo, ledger y
 receipt/recovery válidos.
+
+La admisión es una proyección TEMP paginada del writer Inventory: sólo las
+observaciones físicas nuevas o modificadas vuelven al gate. EML y sus ZIP hijos
+comparten esta frontera; la recursión ZIP genérica permanece en Archive, no en
+un loop global. Listas UI truncadas nunca deciden cobertura. Un rename planeado
+o bloqueado no rebindea el delta como si hubiera ocurrido.
+ArtifactPolicy complementa la Redlist mediante estructura local demostrable,
+sin autoridad semántica destructiva. Un paquete runtime inequívoco se retiene
+sin expansión genérica y se revalida contra su fuente antes de Trash. Las
+licencias, wheels, fixtures y paquetes documentales/mixtos mantienen protección.
 
 Identify procesa el inventario por páginas: consulta `content_type_cache` en
 lotes acotados, envía sólo misses a observadores bounded y conserva SQLite,
@@ -439,8 +453,10 @@ del engine que permite publicar seeds atómicos en la caché de Identify.
 Framework: `pdf`, `docx`, `office`, `text`, `audio`, `video` e `image`. Con
 `--all --apply`, la ingestión integrada ejecuta
 `inventory → size admission → ZIP Intake → successor/reconciled inventory
-→ identify → normalize → policy/redlist → dedupe → routes → organize → semantic
-→ finalize`; cada efecto de Papelera ocurre sobre la ruta normalizada. La
+→ Identify/Normalize → Redlist/ArtifactPolicy → delta admission fixpoint → dedupe
+→ routes/Catalog → Fast Curation → organization/residual MIME → rebind/cleanup
+→ Full Semantic → final verifier`; cada efecto de Papelera por extensión ocurre
+sobre la decisión normalizada. La
 restauración de extensión usa evidencia bounded y rename seguro no-replace.
 
 Los artefactos 0.13 y post-0.13 anteriores conservan su evidencia histórica en
@@ -448,8 +464,8 @@ receipts separados; no se usan aquí para declarar aceptado o instalado el
 checkout de esta oleada. La validación de este cambio debe repetir los gates
 desde su SHA final.
 
-El lifecycle ordena las fronteras `preflight → inventory → catalog/dedup →
-routes → semantic → publication → finalize`. El manifest inmutable
+El lifecycle conserva un solo run y el callback Full Semantic fuera del writer
+Framework, después del layout verificado. El manifest inmutable
 `neocortex.run-manifest/v1` se publica antes de iniciar trabajo y liga la raíz,
 identidad física, snapshot de entradas, configuración efectiva, rutas,
 capacidad de replay y presupuesto. Cada transición de stage usa
@@ -612,6 +628,31 @@ se omite WAL ni se confunde esa carrera con un main ausente; tampoco se promete
 obtener un snapshot de un owner que cambia continuamente durante la copia.
 
 ### Catálogo, Semantic y Knowledge
+
+Fast Curation y Full Semantic comparten FastEmbed/ONNX, tokenización, firmas de
+modelo y normalización, no su propósito. `DocumentSemanticRepresentation` usa
+presupuestos separados de texto, metadata, headings y contexto original; el path
+no domina el vector de contenido. Consume los derivados de las rutas, sin volver
+a abrir PDF/DOCX/audio para extraer. Un vector documental por defecto y top-k por
+eje evitan el chunking exhaustivo para organización.
+
+Una sola política compara top1, top2, margen, calidad/evidencia y contradicciones.
+El bundle calibrado liga modelo, representación, ontología, conjunto exacto de
+prototipos, política y calibración; cosine no se presenta como probabilidad.
+La taxonomía previa aporta señales auxiliares, no otra autoridad de movimiento.
+Catalog v13 conserva decisiones y vectores de curación dentro del mismo owner;
+un cambio de ruta rebindea contexto actual, preserva origen y reutiliza el vector
+de contenido cuando su representación/modelo no cambiaron.
+
+Organization valida la decisión actual en planificación y junto al efecto.
+Sólo `CLASSIFIED` vigente tiene destino bajo `Corpus_ordenado`; la abstención
+física usa `Sin_clasificar/_MIME`. El materializador residual reutiliza el owner
+POSIX no-replace, receipts y sincronización por lotes, incluso para supervivientes
+sin fila Catalog, sin fabricar `source_kind`. Inventory cierra antes del COW de
+movimientos; los sources retirados mediante recibo invalidan sus proyecciones
+CURRENT antes de las rutas. El verificador comprueba topología, identidad,
+receipts, MIME y paths de owners; después de Semantic verifica heads publicados,
+no meras filas históricas activas. Un skip semántico exige el recibo de cero inputs.
 
 El recorrido del catálogo usa paginación por clave con predicados indexables y
 comparte su validación de esquema durante la iteración.

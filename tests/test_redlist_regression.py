@@ -11,6 +11,7 @@ from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.workflow.actions.actions import FrameworkActions, RedlistPrepassError
 from neocortex.workflow.actions.redlist import redlist_policy_digest
 from tests.internal_paths_test_support import begin_signed_normal_run
+from tests.content_fixture_support import minimal_pe_image
 
 
 def _framework_database(root: Path) -> Path:
@@ -185,7 +186,7 @@ def test_redlist_uses_normalized_policy_path_without_payload_hash(tmp_path: Path
     root.mkdir()
     state_root.mkdir()
     source = root / "extensionless"
-    source.write_bytes(b"MZ" + b"\0" * 100)
+    source.write_bytes(minimal_pe_image())
 
     def forbidden_hash(*_args, **_kwargs):
         raise AssertionError("Identify/Normalize must not calculate a full hash")

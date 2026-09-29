@@ -192,10 +192,10 @@ def test_restore_rejects_incompatible_lifecycle_declaration_before_effect(tmp_pa
     before = database.read_bytes()
     payload = json.loads(backup.manifest.read_text())
     entry = payload["entries"][0]
-    assert entry["lifecycle_policy_version"] == 1
+    assert entry["lifecycle_policy_version"] == 2
     assert isinstance(entry["authority_tables"], list)
     if mutation == "future_policy":
-        entry["lifecycle_policy_version"] = 2
+        entry["lifecycle_policy_version"] = 3
     else:
         entry["authority_tables"].append("forged_authority")
     backup.manifest.write_text(json.dumps(payload))

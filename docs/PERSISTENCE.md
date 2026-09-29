@@ -88,7 +88,16 @@ comparaciones de contratos: un cambio de DDL sigue siendo observable aunque
 conserve `schema_version`. Los textos mayores usan el parser acotado habitual.
 
 Framework posee workflow: runs, acciones, Review, decisiones y recovery. Catalog
-posee clasificaciones y planes documentales. Inventory posee observaciones,
+posee clasificaciones y planes documentales. Su schema v13 añade
+`curator_decisions` (decisiones de organización versionadas) y
+`curator_embedding_cache` (vectores derivables), sin otra base SQLite.
+La migración es aditiva. La clave de vector incluye representación, versión,
+modelo, rol, espacio y dimensiones; queries de prototipos no se etiquetan como
+passages documentales. Las decisiones conservan input signature, binding,
+top-k acotado y versiones/fingerprint exacto de prototipos y calibración.
+El rebind validado por receipt actualiza el path/binding actual sin perder el
+origen ni recalcular un embedding de contenido equivalente.
+Inventory posee observaciones,
 generaciones y evidencia de duplicados. Knowledge es una vista en memoria y no
 tiene `knowledge.sqlite3`.
 

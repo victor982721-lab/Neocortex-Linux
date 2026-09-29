@@ -9,6 +9,7 @@ effects.
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,8 @@ from neocortex.runtime.orchestration.route_registry import RouteAdapter
 from neocortex.runtime.orchestration.run_status import list_run_status
 from neocortex.safety.route_filters import CandidateSelection
 from tests.test_run_control import _source_run
+from tests.test_framework_actions import _fixture_trash_receipt
+from neocortex.workflow.mutations import BackendOutcome
 
 
 def _private_environment(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
@@ -67,16 +70,27 @@ def test_archive_apply_replay_uses_fixture_trash_and_single_materialization(
     seen_candidates: list[set[Path]] = []
 
     class FixtureTrash:
-        def apply_snapshot(self, snapshot, *, root, source_digest):
+        supports_empty_directories = True
+
+        def apply_snapshot(self, snapshot, *, root, source_digest, object_kind="regular_file", **kwargs):
             path = Path(snapshot.path)
-            assert path == source
+            assert path == source or object_kind == "empty_directory"
             assert source_digest and path.is_relative_to(root)
-            for materialized, payload in expected.items():
-                assert materialized.read_bytes() == payload
-            target = fixture_trash / path.name
-            path.replace(target)
+            if path == source:
+                for materialized, payload in expected.items():
+                    assert materialized.read_bytes() == payload
+            receipt = json.loads(_fixture_trash_receipt(
+                snapshot, source_digest, fixture_trash / str(len(effects)),
+            ))
+            receipt["object_kind"] = object_kind
+            receipt["trash"]["object_kind"] = object_kind
             effects.append(path)
-            return SimpleNamespace(status="applied", detail="fixture-trash", receipt_json="{}")
+            return BackendOutcome("applied", "fixture-trash", receipt_json=json.dumps(receipt))
+
+        def apply_many_snapshots(self, items, *, root):
+            return tuple(self.apply_snapshot(item[0], root=root, source_digest=item[1],
+                                            object_kind=item[2] if len(item) > 2 else "regular_file")
+                         for item in items)
 
     def consume(context):
         candidates = {
@@ -115,22 +129,28 @@ def test_archive_apply_replay_uses_fixture_trash_and_single_materialization(
 
     first_routes = cast(Mapping[str, Mapping[str, object]], first.route_results)
     second_routes = cast(Mapping[str, Mapping[str, object]], second.route_results)
+    assert not first.route_failures, first.route_failures
+    assert not second.route_failures, second.route_failures
     assert first_routes["text"]["processed"] == 2
     assert second_routes["text"]["processed"] == 2
-    assert seen_candidates == [set(expected), set(expected)]
-    assert effects == [source]
+    final_expected = {corpus / "Sin_clasificar/_MIME/text/plain" / path.name: payload
+                      for path, payload in expected.items()}
+    assert seen_candidates == [set(expected), set(final_expected)]
+    assert effects.count(source) == 1
     assert not source.exists()
-    assert (fixture_trash / source.name).read_bytes() == original
-    for materialized, payload in expected.items():
+    assert (fixture_trash / "0/files" / source.name).read_bytes() == original
+    for materialized, payload in final_expected.items():
         assert materialized.read_bytes() == payload
     # No second extraction may create a sibling materialization or overwrite a
     # preserved source backup.
     assert sorted(path.relative_to(corpus).as_posix() for path in corpus.rglob("*")) == [
-        "bundle",
-        "bundle/folder",
-        "bundle/folder/inner",
-        "bundle/folder/inner/document.txt",
-        "bundle/root.txt",
+        "Corpus_ordenado",
+        "Sin_clasificar",
+        "Sin_clasificar/_MIME",
+        "Sin_clasificar/_MIME/text",
+        "Sin_clasificar/_MIME/text/plain",
+        "Sin_clasificar/_MIME/text/plain/document.txt",
+        "Sin_clasificar/_MIME/text/plain/root.txt",
     ]
 
 

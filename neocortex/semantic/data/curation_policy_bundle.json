@@ -1,0 +1,52 @@
+{
+  "calibration": {
+    "allow_single_candidate": false,
+    "calibration_version": "benchmark-validation-jina-v2",
+    "confidence_floor": 0.0,
+    "escalation_enabled": false,
+    "escalation_justification": null,
+    "measured": true,
+    "min_evidence_count": 2,
+    "min_margin_by_family": {
+      "activity": 0.06578519940376282,
+      "document_kind": 0.0,
+      "topic": 0.032958537340164185
+    },
+    "min_score_by_family": {
+      "activity": 0.48806947469711304,
+      "document_kind": 0.0,
+      "topic": 0.47804102301597595
+    },
+    "min_text_chars": 1,
+    "min_views_agreement": 1.0,
+    "model_signature": "fastembed-0.8.0|explicit-l2-v1|reject-token-truncation-v1|jinaai/jina-embeddings-v2-base-es|float16",
+    "provenance": {
+      "records": 36,
+      "source": "validation_only"
+    },
+    "schema": "fast-curation-calibration/v1"
+  },
+  "calibration_version": "benchmark-validation-jina-v2",
+  "max_evidence": 5,
+  "model_signature": "fastembed-0.8.0|explicit-l2-v1|reject-token-truncation-v1|jinaai/jina-embeddings-v2-base-es|float16",
+  "ontology_version": "fixture-v1",
+  "policy_version": "fast-curation-policy-v1",
+  "prototype_scope": "neocortex.synthetic-fast-curation",
+  "prototype_set_fingerprint": "91fe4911163b0ce0c66437259109bdf3879638d2be9bfb682d931f095e379de2",
+  "prototype_version": "fixture-prototype-v1",
+  "provenance": {
+    "calibration_split": "validation_only",
+    "evaluation_split": "fresh_heldout",
+    "heldout_coverage": 0.15,
+    "heldout_precision": 1.0,
+    "measured_documents": 156,
+    "population_claim": "none; finite synthetic sample only",
+    "selection_note": "conservative Jina batch 32; finite synthetic evidence, not a population claim",
+    "source_report": "fast-curation-benchmark-report-v2.json",
+    "source_report_sha256": "b8358f0a066f1cc119c5197a0af75cf624445d2fd71f40af0daa97edf1679db1",
+    "target_precision": 0.99
+  },
+  "representation_version": "fast-curation-representation/v1",
+  "required_families": [],
+  "schema": "fast-curation-policy-bundle/v1"
+}

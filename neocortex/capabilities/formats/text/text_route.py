@@ -171,6 +171,7 @@ TEXT_ROUTE_MIMES = (
     "text/html",
     "application/xml",
     "application/json",
+    "application/x-ndjson",
     "message/rfc822",
 )
 _TEXT_CAPABILITY_POLICY = CapabilityPolicy(
@@ -509,6 +510,7 @@ def _extractor_selector(mime: str, path: str) -> tuple[str, str]:
         "text/tab-separated-values": "tsv",
         "text/markdown": "markdown",
         "application/json": "json",
+        "application/x-ndjson": "jsonl",
     }.get(mime, suffix or "text")
     return "strict_text_decode", content_kind
 
@@ -589,6 +591,7 @@ def _format_kind_for_mime(mime: str) -> str:
         "text/html": "html",
         "application/xml": "xml",
         "application/json": "json",
+        "application/x-ndjson": "jsonl",
         "message/rfc822": "email",
     }.get(mime.casefold(), mime.casefold())
 
@@ -1120,6 +1123,7 @@ def _extract_builtin(
         "text/html": "html",
         "application/xml": "xml",
         "application/json": "json",
+        "application/x-ndjson": "jsonl",
     }.get(mime, suffix.removeprefix(".") or "text")
     return _ExtractedText(
         text=text,

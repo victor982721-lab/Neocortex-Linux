@@ -50,7 +50,12 @@ from .document_catalog import document_catalog_database, initialize_document_cat
 from .document_organization_scope import OrganizationInputScope, assess_organization_resource
 from .document_resource_binding import (
     ResourceBindingError,
+    parse_resource_binding,
     rebind_resource_binding_path,
+)
+from .semantic_curation_gate import (
+    FastCurationPolicySource,
+    validate_current_fast_curation_decision,
 )
 from .document_organization_models import (
     ORGANIZATION_APPLY_BATCH_SIZE,
@@ -183,11 +188,20 @@ def apply_document_organization(
     on_progress: OrganizationApplyProgressCallback | None = None,
     framework_lock_held: bool = False,
     checkpoint: Callable[[], None] | None = None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
+    curation_policy_bundle: FastCurationPolicySource | None = None,
 ) -> OrganizationApplySummary:
     """Apply plans and mark them complete only after every cache is synchronized."""
 
     if type(framework_lock_held) is not bool:
         raise TypeError("framework_lock_held must be boolean")
+    if fast_curation_policy_bundle is not None and curation_policy_bundle is not None:
+        raise ValueError("Fast Curation policy bundle was supplied twice")
+    resolved_curation_bundle = (
+        fast_curation_policy_bundle
+        if fast_curation_policy_bundle is not None
+        else curation_policy_bundle
+    )
     root = _validated_organization_apply_request(
         catalog_path,
         organization_root,
@@ -215,6 +229,7 @@ def apply_document_organization(
                     on_progress,
                     True,
                     checkpoint,
+                    resolved_curation_bundle,
                 )
             except BaseException as exc:
                 _fail_organization_run(connection, run_id, exc)
@@ -268,6 +283,7 @@ def _execute_organization_apply_run(
     on_progress: OrganizationApplyProgressCallback | None,
     framework_lock_held: bool,
     checkpoint: Callable[[], None] | None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None,
 ) -> OrganizationApplySummary:
     protected_denials, root_stat = _prepare_selected_organization_plans(
         catalog_path,
@@ -275,6 +291,7 @@ def _execute_organization_apply_run(
         rows,
         mutation_guard,
         connection=connection,
+        fast_curation_policy_bundle=fast_curation_policy_bundle,
     )
     counters = _OrganizationApplyCounters()
     _apply_selected_organization_rows(
@@ -289,6 +306,7 @@ def _execute_organization_apply_run(
         on_progress,
         framework_lock_held,
         checkpoint,
+        fast_curation_policy_bundle,
     )
     summary = counters.summary(
         run_id=run_id,
@@ -306,8 +324,13 @@ def _prepare_selected_organization_plans(
     mutation_guard: CorpusMutationGuard,
     *,
     connection: sqlite3.Connection,
+    fast_curation_policy_bundle: FastCurationPolicySource | None,
 ) -> tuple[dict[str, str], os.stat_result | None]:
-    protected_denials = _organization_execution_denials(connection, rows)
+    protected_denials = _organization_execution_denials(
+        connection,
+        rows,
+        fast_curation_policy_bundle=fast_curation_policy_bundle,
+    )
     remaining_rows = [row for row in rows if str(row["plan_id"]) not in protected_denials]
     protected_denials.update(_protected_organization_plan_denials(remaining_rows, mutation_guard))
     admitted_rows = [row for row in rows if str(row["plan_id"]) not in protected_denials]
@@ -323,7 +346,10 @@ def _prepare_selected_organization_plans(
 
 
 def _organization_execution_denials(
-    connection: sqlite3.Connection, rows: list[sqlite3.Row]
+    connection: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+    *,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
 ) -> dict[str, str]:
     """Reject advisory/legacy proposals before any destination preparation."""
 
@@ -366,12 +392,33 @@ def _organization_execution_denials(
                 # descriptor for both source and destination.  Do not let a
                 # writable database flag widen that root.
                 denials[plan_id] = "organization_authorized_backend_unavailable"
-            else:
-                # The persisted bit is only a capability hint.  The actual
-                # permission boundary is consumed below by the live guard and
-                # descriptor-relative backend, which revalidates the source
-                # immediately before renameat2.
+            elif str(row["status"]) in {"applying", "moved_cache_pending"}:
+                # These rows already crossed or may have crossed the
+                # filesystem frontier.  Recovery validates the durable move
+                # receipt and rebinds the current curation decision below;
+                # applying the pre-effect gate here would compare an old plan
+                # path with the already-rebound current Catalog path.
                 continue
+            else:
+                try:
+                    current_gate = validate_current_fast_curation_decision(
+                        connection,
+                        source_kind=str(row["source_kind"]),
+                        file_key=str(row["file_key"]),
+                        policy_bundle=fast_curation_policy_bundle,
+                        expected_binding=parse_resource_binding(row["resource_binding_json"]),
+                        expected_path=str(row["source_path"]),
+                    )
+                except (OSError, TypeError, ValueError, KeyError) as exc:
+                    denials[plan_id] = f"fast_curation_effect_gate_error:{type(exc).__name__}"
+                else:
+                    if not current_gate.eligible:
+                        denials[plan_id] = current_gate.reason
+                    else:
+                        # The persisted bit is only a capability hint.  The
+                        # filesystem frontier repeats this gate immediately
+                        # before the no-replace syscall.
+                        continue
         except (OSError, ValueError, TypeError, KeyError) as exc:
             denials[plan_id] = f"organization_contract_invalid:{type(exc).__name__}"
     return denials
@@ -389,6 +436,7 @@ def _apply_selected_organization_rows(
     on_progress: OrganizationApplyProgressCallback | None,
     framework_lock_held: bool,
     checkpoint: Callable[[], None] | None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None,
 ) -> None:
     pending_rows: list[sqlite3.Row] = []
     for selected_index, row in enumerate(rows, start=1):
@@ -401,6 +449,7 @@ def _apply_selected_organization_rows(
             protected_denials,
             mutation_guard,
             synchronize_cache=False,
+            fast_curation_policy_bundle=fast_curation_policy_bundle,
         )
         counters.record(outcome)
         connection.commit()
@@ -484,6 +533,7 @@ def _apply_organization_row(
     mutation_guard: CorpusMutationGuard,
     *,
     synchronize_cache: bool = True,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
 ) -> _ApplyRowOutcome:
     plan_id = str(row["plan_id"])
     if plan_id in protected_denials:
@@ -502,6 +552,7 @@ def _apply_organization_row(
         root_stat,
         mutation_guard,
         synchronize_cache=synchronize_cache,
+        fast_curation_policy_bundle=fast_curation_policy_bundle,
     )
 
 
@@ -609,6 +660,7 @@ def _apply_selected_organization_plan(
     mutation_guard: CorpusMutationGuard,
     *,
     synchronize_cache: bool = True,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
 ) -> _ApplyRowOutcome:
     status = str(row["status"])
     detail = str(row["detail"] or "")
@@ -638,6 +690,7 @@ def _apply_selected_organization_plan(
                 root_stat,
                 mutation_guard,
                 connection=connection,
+                fast_curation_policy_bundle=fast_curation_policy_bundle,
             )
             status = filesystem.status
             detail = filesystem.detail
@@ -721,8 +774,12 @@ def _validate_pending_organization_move(
         )
         return None
     try:
-        _rebind_current_catalog_document(connection, row)
-    except (ResourceBindingError, RuntimeError) as exc:
+        _rebind_current_catalog_document(
+            connection,
+            row,
+            receipt_json=recovered.receipt_json,
+        )
+    except (ResourceBindingError, RuntimeError, ValueError) as exc:
         detail = f"catalog resource binding recovery required: {type(exc).__name__}: {exc}"
         connection.execute(
             """UPDATE organization_plans
@@ -849,6 +906,8 @@ def apply_all_document_organization(
     progress_operation: str = "framework",
     framework_lock_held: bool = False,
     checkpoint: Callable[[], None] | None = None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
+    curation_policy_bundle: FastCurationPolicySource | None = None,
 ) -> OrganizationApplySummary:
     """Consume every actionable plan in bounded, resumable apply batches."""
 
@@ -857,6 +916,13 @@ def apply_all_document_organization(
         raise TypeError("framework_lock_held must be boolean")
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
+    if fast_curation_policy_bundle is not None and curation_policy_bundle is not None:
+        raise ValueError("Fast Curation policy bundle was supplied twice")
+    resolved_curation_bundle = (
+        fast_curation_policy_bundle
+        if fast_curation_policy_bundle is not None
+        else curation_policy_bundle
+    )
     lock = (
         nullcontext()
         if framework_lock_held
@@ -871,6 +937,7 @@ def apply_all_document_organization(
             progress=progress,
             progress_operation=progress_operation,
             checkpoint=checkpoint,
+            fast_curation_policy_bundle=resolved_curation_bundle,
         )
 
 
@@ -883,6 +950,7 @@ def _apply_all_document_organization_locked(
     progress: ProgressCallback | None,
     progress_operation: str,
     checkpoint: Callable[[], None] | None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None,
 ) -> OrganizationApplySummary:
     """Run all organization batches while the caller owns framework.lock."""
 
@@ -933,6 +1001,7 @@ def _apply_all_document_organization_locked(
             on_progress=report_batch,
             framework_lock_held=True,
             checkpoint=checkpoint,
+            fast_curation_policy_bundle=fast_curation_policy_bundle,
         )
         batches += 1
         last_run_id = current.catalog_run_id
@@ -1128,8 +1197,8 @@ def _record_moved_path(
         expected=_planned_source_snapshot(row, Path(str(row["source_path"])))[0],
     )
     try:
-        _rebind_current_catalog_document(connection, row)
-    except (ResourceBindingError, RuntimeError) as exc:
+        _rebind_current_catalog_document(connection, row, receipt_json=receipt_json)
+    except (ResourceBindingError, RuntimeError, ValueError) as exc:
         # The filesystem boundary has already crossed.  Keep its receipt and
         # stop at explicit recovery rather than reporting success with a
         # stale current-owner locator or dropping evidence of the move.
@@ -1188,6 +1257,8 @@ def _record_moved_path(
 def _rebind_current_catalog_document(
     connection: sqlite3.Connection,
     row: sqlite3.Row,
+    *,
+    receipt_json: str,
 ) -> None:
     """Atomically rebind the mutable catalog owner after a physical move.
 
@@ -1278,6 +1349,75 @@ def _rebind_current_catalog_document(
             row["file_key"],
         ),
     )
+    # Keep the Catalog-owned Fast Curation decision bound to the same physical
+    # owner.  This is part of the same Catalog transaction as the current
+    # document rebind; the immutable origin context remains owned by curation.
+    curation_table = connection.execute(
+        """SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='curator_decisions' LIMIT 1"""
+    ).fetchone()
+    if curation_table is not None:
+        decision_row = connection.execute(
+            """SELECT 1 FROM curator_decisions
+            WHERE source_kind=? AND file_key=? LIMIT 1""",
+            (row["source_kind"], row["file_key"]),
+        ).fetchone()
+        if decision_row is not None:
+            from .curation_state import (
+                read_current_curation_decision,
+                rebind_curation_decision,
+            )
+
+            current_decision = read_current_curation_decision(
+                connection,
+                source_kind=str(row["source_kind"]),
+                file_key=str(row["file_key"]),
+            )
+            if current_decision is None:
+                raise RuntimeError("current Fast Curation decision disappeared during rebind")
+            decision_path = current_decision.source_binding.get("physical_anchor_path")
+            if decision_path == destination:
+                # Recovery may replay this helper after the first transaction
+                # already rebound the curation row.  The receipt and current
+                # binding remain the idempotent proof; do not demand source
+                # path a second time.
+                if dict(current_decision.source_binding) != rebound:
+                    raise RuntimeError(
+                        "current Fast Curation binding differs from Catalog rebind"
+                    )
+            elif decision_path == source:
+                curation_receipt = receipt_json
+                try:
+                    receipt_payload = json.loads(receipt_json)
+                    target_identity = receipt_payload["target_identity"]
+                    physical_identity = FileIdentity.decode(
+                        rebound["physical_identity"]["packed_key"],
+                        encoding=FileIdentityEncoding.PACKED_HEX_V1,
+                    )
+                    target_identity["volume_id"] = str(physical_identity.volume_id)
+                    target_identity["file_id"] = str(physical_identity.file_id)
+                    curation_receipt = json.dumps(
+                        receipt_payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                    raise RuntimeError(
+                        "organization receipt identity cannot be normalized for curation"
+                    ) from exc
+                rebind_curation_decision(
+                    connection,
+                    source_kind=str(row["source_kind"]),
+                    file_key=str(row["file_key"]),
+                    source_path=source,
+                    target_path=destination,
+                    receipt=curation_receipt,
+                    current_source_binding=rebound,
+                    updated_ns=time.time_ns(),
+                )
+            else:
+                raise RuntimeError("current Fast Curation decision is bound to an unexpected path")
 
 
 def _prepare_apply_root(
@@ -1415,6 +1555,7 @@ def _apply_one_plan(
     mutation_guard: CorpusMutationGuard,
     *,
     connection: sqlite3.Connection | None = None,
+    fast_curation_policy_bundle: FastCurationPolicySource | None = None,
 ) -> _OrganizationFilesystemOutcome:
     source = Path(str(row["source_path"]))
     destination_value = row["destination_path"]
@@ -1462,6 +1603,26 @@ def _apply_one_plan(
     )
     if recovered is not None:
         return recovered
+    if connection is None:
+        return _OrganizationFilesystemOutcome(
+            "blocked", "fast_curation_effect_gate_requires_catalog_connection"
+        )
+    try:
+        expected_binding = parse_resource_binding(row["resource_binding_json"])
+    except (TypeError, ValueError, KeyError):
+        return _OrganizationFilesystemOutcome(
+            "blocked", "organization_plan_resource_binding_invalid"
+        )
+    current_gate = validate_current_fast_curation_decision(
+        connection,
+        source_kind=str(row["source_kind"]),
+        file_key=str(row["file_key"]),
+        policy_bundle=fast_curation_policy_bundle,
+        expected_binding=expected_binding,
+        expected_path=str(source),
+    )
+    if not current_gate.eligible:
+        return _OrganizationFilesystemOutcome("blocked", current_gate.reason)
     current, source_error = _validated_organization_source(
         source,
         expected,

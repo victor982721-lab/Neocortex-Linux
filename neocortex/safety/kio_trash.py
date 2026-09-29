@@ -38,6 +38,14 @@ from neocortex.deduplication import (
 )
 from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.workflow.actions.action_policy import validate_mutation_path
+from .artifact_content_proof import (
+    ArtifactContentProof,
+    ArtifactContentProofError,
+    coerce_artifact_content_proof,
+    rebind_artifact_content_proof,
+    revalidate_artifact_content_proof,
+)
+from .artifact_read_lease import ArtifactReadLeaseError, acquire_artifact_read_lease
 from .kio_trash_models import (
     KIO_CLAIM_SCHEMA,
     KIO_OBJECT_EMPTY_DIRECTORY,
@@ -105,6 +113,63 @@ def _binding_matches_snapshot(snapshot: FileSnapshot, binding: str) -> bool:
     if is_metadata_binding(binding):
         return metadata_binding(snapshot) == binding
     return f"{FULL_ALGORITHM}:" + full_fingerprint(snapshot).hex() == binding
+
+
+def _verify_artifact_proof(
+    proof: object,
+    path: str | os.PathLike[str],
+    *,
+    expected: FileSnapshot | None = None,
+    allow_reacquire: bool = False,
+) -> ArtifactContentProof:
+    """Revalidate an optional bounded artifact proof at a KIO boundary."""
+
+    try:
+        checked = coerce_artifact_content_proof(proof)
+        if checked.lease is None:
+            if not allow_reacquire:
+                raise ArtifactContentProofError("artifact proof lacks a live read lease")
+            lease = acquire_artifact_read_lease(path)
+            checked = replace(checked, lease=lease)
+            try:
+                revalidate_artifact_content_proof(checked, path, expected=expected)
+            finally:
+                lease.close()
+            return replace(checked, lease=None)
+        revalidate_artifact_content_proof(checked, path, expected=expected)
+        return checked
+    except (ArtifactContentProofError, ArtifactReadLeaseError, OSError) as exc:
+        raise KioTrashUnavailable(
+            "kio_content_proof_changed",
+            f"bounded artifact content proof failed: {exc}",
+        ) from exc
+
+
+def _rebind_artifact_proof(
+    proof: object,
+    path: str | os.PathLike[str],
+    *,
+    expected: FileSnapshot | None = None,
+    allow_reacquire: bool = False,
+) -> ArtifactContentProof:
+    try:
+        checked = coerce_artifact_content_proof(proof)
+        if checked.lease is None:
+            if not allow_reacquire:
+                raise ArtifactContentProofError("artifact proof lacks a live read lease")
+            lease = acquire_artifact_read_lease(path)
+            checked = replace(checked, lease=lease)
+            try:
+                rebound = rebind_artifact_content_proof(checked, path, expected=expected)
+            finally:
+                lease.close()
+            return replace(rebound, lease=None)
+        return rebind_artifact_content_proof(checked, path, expected=expected)
+    except (ArtifactContentProofError, ArtifactReadLeaseError, OSError) as exc:
+        raise KioTrashUnavailable(
+            "kio_content_proof_changed",
+            f"bounded artifact content proof failed during rename: {exc}",
+        ) from exc
 
 
 KioRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -407,6 +472,7 @@ def _verify_curation_trash_evidence(
     source_digest: str,
     *,
     object_kind: str | None = None,
+    content_proof: ArtifactContentProof | None = None,
 ) -> FileSnapshot:
     """Reobserve the exact moved object and its source-bound restoration data."""
 
@@ -440,6 +506,20 @@ def _verify_curation_trash_evidence(
         raise ValueError("trash destination no longer identifies the original source")
     if not _binding_matches_snapshot(observed, source_digest):
         raise ValueError("trash destination digest changed")
+    if "content_proof" in evidence:
+        observed_proof = coerce_artifact_content_proof(evidence["content_proof"])
+        if content_proof is not None:
+            live_proof = coerce_artifact_content_proof(content_proof)
+            if observed_proof.as_dict() != live_proof.as_dict():
+                raise ValueError("trash content proof does not match the live proof")
+            _verify_artifact_proof(live_proof, trash_path, expected=observed)
+        else:
+            _verify_artifact_proof(
+                observed_proof,
+                trash_path,
+                expected=observed,
+                allow_reacquire=True,
+            )
     if resolved_kind == KIO_OBJECT_EMPTY_DIRECTORY:
         with os.scandir(trash_path) as entries:
             if next(entries, None) is not None:
@@ -810,6 +890,7 @@ def _claim_source(
     expected: FileSnapshot,
     *,
     object_kind: str = KIO_OBJECT_FILE,
+    content_proof: ArtifactContentProof | Mapping[str, object] | None = None,
 ) -> KioTrashClaim:
     """Create a private sibling claim and retain it on all uncertain paths."""
 
@@ -823,7 +904,7 @@ def _claim_source(
         )
         os.chmod(claim_directory, 0o700)
         claim_path = claim_directory / source.name
-        claim = KioTrashClaim(source, claim_path, claim_directory, expected, object_kind)
+        checked_proof: ArtifactContentProof | None = None
         if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
             with os.scandir(source) as entries:
                 if next(entries, None) is not None:
@@ -831,6 +912,16 @@ def _claim_source(
                         "kio_directory_not_empty",
                         "empty-directory source contains an entry",
                     )
+        elif content_proof is not None:
+            checked_proof = _verify_artifact_proof(content_proof, source, expected=expected)
+        claim = KioTrashClaim(
+            source,
+            claim_path,
+            claim_directory,
+            expected,
+            object_kind,
+            None if checked_proof is None else checked_proof.lease,
+        )
         if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
             _renameat2_noreplace(
                 source,
@@ -840,6 +931,13 @@ def _claim_source(
             )
         else:
             _renameat2_noreplace(source, claim_path, expected=expected)
+            if content_proof is not None:
+                claimed_expected = replace(expected, path=os.fspath(claim_path))
+                _rebind_artifact_proof(
+                    content_proof,
+                    claim_path,
+                    expected=claimed_expected,
+                )
         return claim
     except BaseException as error:
         if claim is not None:
@@ -872,6 +970,15 @@ def _claim_source(
 def _restore_claim(claim: KioTrashClaim) -> None:
     """Restore a claim with the same no-replace primitive, idempotently."""
 
+    if claim.lease is not None:
+        try:
+            claim.lease.check()
+        except Exception as exc:
+            raise KioTrashUnavailable(
+                "kio_claim_restore_lease_changed",
+                "artifact claim lease is no longer live; recovery evidence retained",
+            ) from exc
+
     if os.path.lexists(claim.source_path):
         current = snapshot_path(claim.source_path)
         if current != claim.snapshot:
@@ -886,6 +993,19 @@ def _restore_claim(claim: KioTrashClaim) -> None:
             )
     elif os.path.lexists(claim.claim_path):
         restore_expected = replace(claim.snapshot, path=str(claim.claim_path))
+        if claim.lease is not None:
+            try:
+                current_claim = snapshot_path(claim.claim_path)
+            except OSError as exc:
+                raise KioTrashUnavailable(
+                    "kio_claim_restore_lease_changed",
+                    "artifact claim disappeared before restore",
+                ) from exc
+            if current_claim != restore_expected:
+                raise KioTrashUnavailable(
+                    "kio_claim_restore_lease_changed",
+                    "artifact claim identity changed before restore",
+                )
         if claim.object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
             _renameat2_noreplace(
                 claim.claim_path,
@@ -904,6 +1024,20 @@ def _restore_claim(claim: KioTrashClaim) -> None:
             "kio_claim_restore_missing",
             "neither the original nor private KIO claim is present",
         )
+    if claim.lease is not None:
+        try:
+            claim.lease.check()
+            restored = snapshot_path(claim.source_path)
+        except Exception as exc:
+            raise KioTrashUnavailable(
+                "kio_claim_restore_lease_changed",
+                "artifact claim lease changed during restore",
+            ) from exc
+        if restored != claim.snapshot:
+            raise KioTrashUnavailable(
+                "kio_claim_restore_lease_changed",
+                "restored artifact identity changed before cleanup",
+            )
     try:
         os.rmdir(claim.claim_directory)
     except FileNotFoundError:
@@ -920,6 +1054,46 @@ def _restore_claim(claim: KioTrashClaim) -> None:
             "kio_claim_cleanup_failed",
             "private KIO claim directory removal could not be flushed",
         ) from exc
+
+
+def _restore_trash_object_with_content_proof(
+    trash_path: Path,
+    source: Path,
+    expected: FileSnapshot,
+    proof: object,
+    *,
+    object_kind: str,
+) -> None:
+    """Restore one proof-bound object while one live lease spans the rename."""
+
+    checked = coerce_artifact_content_proof(proof)
+    try:
+        lease = acquire_artifact_read_lease(trash_path)
+    except (ArtifactReadLeaseError, OSError) as exc:
+        raise KioTrashUnavailable(
+            "kio_restore_content_lease_unavailable",
+            "Trash object could not acquire a live read lease",
+        ) from exc
+    live = replace(checked, lease=lease)
+    try:
+        revalidate_artifact_content_proof(live, trash_path, expected=expected)
+        _renameat2_noreplace(
+            trash_path,
+            source,
+            expected=expected,
+            object_kind=object_kind,
+        )
+        lease.check()
+        restored = snapshot_path(source)
+        rebind_artifact_content_proof(live, source, expected=restored)
+        lease.check()
+    except ArtifactContentProofError as exc:
+        raise KioTrashUnavailable(
+            "kio_restore_content_proof_changed",
+            "proof-bound Trash bytes changed during restore",
+        ) from exc
+    finally:
+        lease.close()
 
 
 def discover_kio_client(*, which: ClientResolver = shutil.which) -> Path:
@@ -1636,6 +1810,10 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
             raise KioTrashUnavailable(
                 "kio_restore_destination_collision", "restore destination contains different bytes"
             )
+        if "content_proof" in evidence:
+            _rebind_artifact_proof(
+                evidence["content_proof"], source, expected=current, allow_reacquire=True
+            )
         if trash_exists or info_exists:
             raise KioTrashUnavailable(
                 "kio_restore_collision", "restored source and Trash evidence both exist"
@@ -1730,6 +1908,13 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
         raise KioTrashUnavailable(
             "kio_restore_content_changed", "Trash bytes differ from the receipt digest"
         )
+    if "content_proof" in evidence:
+        _verify_artifact_proof(
+            evidence["content_proof"],
+            trash_path,
+            expected=trash_snapshot,
+            allow_reacquire=True,
+        )
     if object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
         try:
             with os.scandir(trash_path) as entries:
@@ -1748,12 +1933,21 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
     if trash_snapshot.volume_id != os.stat(source.parent, follow_symlinks=False).st_dev:
         raise KioTrashUnavailable("kio_restore_exdev", "restore requires one filesystem")
     try:
-        _renameat2_noreplace(
-            trash_path,
-            source,
-            expected=trash_snapshot,
-            object_kind=object_kind,
-        )
+        if "content_proof" in evidence:
+            _restore_trash_object_with_content_proof(
+                trash_path,
+                source,
+                trash_snapshot,
+                evidence["content_proof"],
+                object_kind=object_kind,
+            )
+        else:
+            _renameat2_noreplace(
+                trash_path,
+                source,
+                expected=trash_snapshot,
+                object_kind=object_kind,
+            )
     except BaseException as exc:
         raise KioTrashUnavailable(
             "kio_restore_recovery_required",
@@ -1796,6 +1990,25 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
             "object_kind": object_kind,
             "idempotent": False,
         }
+    if "content_proof" in evidence:
+        try:
+            _rebind_artifact_proof(
+                evidence["content_proof"],
+                source,
+                expected=restored,
+                allow_reacquire=True,
+            )
+        except KioTrashUnavailable:
+            return {
+                "schema": KIO_RESTORE_SCHEMA,
+                "status": "recovery_required",
+                "source_path": str(source),
+                "trash_path": str(trash_path),
+                "info_path": str(info_path),
+                "digest": digest_value,
+                "object_kind": object_kind,
+                "idempotent": False,
+            }
     if info_claim_path is None or info_claim_directory is None:
         raise KioTrashUnavailable(
             "kio_restore_metadata_claim_missing",
@@ -2137,6 +2350,7 @@ class _KioTrashBatchWork:
     item: KioTrashBatchItem
     source: Path
     digest: str
+    content_proof: ArtifactContentProof | Mapping[str, object] | None = None
     kio_source: Path | None = None
     claim: KioTrashClaim | None = None
 
@@ -2375,6 +2589,19 @@ def _batch_set_recovery(
         )
 
 
+def _close_batch_content_leases(works: Sequence[_KioTrashBatchWork]) -> None:
+    closed: set[int] = set()
+    for work in works:
+        proof = work.content_proof
+        if not isinstance(proof, ArtifactContentProof) or proof.lease is None:
+            continue
+        marker = id(proof.lease)
+        if marker in closed:
+            continue
+        closed.add(marker)
+        proof.lease.close()
+
+
 def _batch_curation_evidence(
     work: _KioTrashBatchWork,
     verification: KioTrashVerification,
@@ -2415,11 +2642,23 @@ def _batch_curation_evidence(
         ) != os.path.normpath(os.fspath(work.source)):
             raise ValueError("KIO batch Trash metadata names a different source")
     evidence["object_kind"] = work.item.object_kind
+    if work.content_proof is not None:
+        trash_path = evidence.get("trash_path")
+        if not isinstance(trash_path, str):
+            raise ValueError("KIO Trash evidence lacks a proof-bound destination")
+        checked_proof = _rebind_artifact_proof(
+            work.content_proof,
+            trash_path,
+            expected=replace(work.item.expected, path=trash_path),
+        )
+        work.content_proof = checked_proof
+        evidence["content_proof"] = checked_proof.as_dict()
     _verify_curation_trash_evidence(
         evidence,
         work.item.expected,
         work.digest,
         object_kind=work.item.object_kind,
+        content_proof=work.content_proof if isinstance(work.content_proof, ArtifactContentProof) else None,
     )
     _fsync_directory(info_path.parent)
     return json.dumps(
@@ -2525,7 +2764,13 @@ def _default_kio_verifier_batch(
             relocated = replace(expected, path=os.fspath(trash_path))
             if not _binding_matches_snapshot(relocated, work.digest):
                 return
-        except (FileChangedError, OSError, ValueError):
+            if work.content_proof is not None:
+                work.content_proof = _rebind_artifact_proof(
+                    work.content_proof,
+                    trash_path,
+                    expected=relocated,
+                )
+        except (FileChangedError, KioTrashUnavailable, OSError, ValueError):
             return
         candidate = (root, trash_path, info_path)
         bucket = matches.setdefault(source_key, [])
@@ -2746,6 +2991,7 @@ def _prepare_batch_inputs(
     items: Sequence[KioTrashBatchItem | tuple[object, ...]],
     *,
     root: Path | None = None,
+    content_proofs: Mapping[str, object] | None = None,
 ) -> tuple[
     list[KioTrashBatchItem],
     list[KioTrashResult | None],
@@ -2759,6 +3005,10 @@ def _prepare_batch_inputs(
     if len(items) > MAX_KIO_BATCH_ITEMS:
         raise ValueError(f"KIO batch is limited to {MAX_KIO_BATCH_ITEMS} items")
     normalized = [_coerce_batch_item(item) for item in items]
+    normalized_proofs = {
+        os.path.normcase(os.fspath(_absolute_path(path, label="content proof source"))): proof
+        for path, proof in (content_proofs or {}).items()
+    }
     outcomes: list[KioTrashResult | None] = [None] * len(normalized)
     works: list[_KioTrashBatchWork] = []
     indexes: list[int] = []
@@ -2799,7 +3049,14 @@ def _prepare_batch_inputs(
                 )
             continue
         seen[key] = index
-        works.append(_KioTrashBatchWork(item, source, digest))
+        works.append(
+            _KioTrashBatchWork(
+                item,
+                source,
+                digest,
+                normalized_proofs.get(os.path.normcase(os.fspath(source))),
+            )
+        )
         indexes.append(index)
     if not works:
         return normalized, outcomes, works, indexes
@@ -2862,6 +3119,12 @@ def _prepare_batch_admission(
                     )
                 else:
                     _validate_source(work.source, work.item.expected)
+                    if work.content_proof is not None:
+                        _verify_artifact_proof(
+                            work.content_proof,
+                            work.source,
+                            expected=work.item.expected,
+                        )
             except KioTrashUnavailable as exc:
                 outcomes[index] = _batch_blocked(work.item, reason=exc.reason, detail=exc.detail)
             else:
@@ -2929,12 +3192,22 @@ def _prepare_batch_command(
                         work.source,
                         work.item.expected,
                         object_kind=work.item.object_kind,
+                        content_proof=work.content_proof,
                     )
                 except KioTrashClaimUnavailable as exc:
                     work.claim = exc.claim
                     work.kio_source = exc.claim.claim_path
                     raise
                 work.kio_source = work.claim.claim_path
+                if work.content_proof is not None:
+                    work.content_proof = _rebind_artifact_proof(
+                        work.content_proof,
+                        work.claim.claim_path,
+                        expected=replace(
+                            work.item.expected,
+                            path=os.fspath(work.claim.claim_path),
+                        ),
+                    )
             else:
                 work.kio_source = work.source
             if work.item.object_kind == KIO_OBJECT_EMPTY_DIRECTORY:
@@ -3011,6 +3284,26 @@ def _invoke_batch_process(
     try:
         try:
             client_descriptor = _open_kio_client(preflight.client, client_snapshot)
+        except KioTrashUnavailable as exc:
+            _batch_restore_and_block(
+                works,
+                indexes,
+                outcomes,
+                reason=exc.reason,
+                detail=exc.detail,
+                client=preflight.client,
+                command=command,
+            )
+            return _batch_result(outcomes, command)
+        try:
+            for work in works:
+                if work.content_proof is not None:
+                    claimed_source = work.kio_source or work.source
+                    _verify_artifact_proof(
+                        work.content_proof,
+                        claimed_source,
+                        expected=replace(work.item.expected, path=os.fspath(claimed_source)),
+                    )
         except KioTrashUnavailable as exc:
             _batch_restore_and_block(
                 works,
@@ -3111,6 +3404,7 @@ def move_many_to_trash(
     private_bus: bool = False,
     private_claim: bool = True,
     root: Path | None = None,
+    content_proofs: Mapping[str, object] | None = None,
 ) -> KioTrashBatchResult:
     """Move several files through one KIO invocation with item outcomes.
 
@@ -3125,10 +3419,15 @@ def move_many_to_trash(
     timeout = _validated_timeout(timeout_seconds)
     if not isinstance(private_bus, bool) or not isinstance(private_claim, bool):
         raise TypeError("private_bus and private_claim must be boolean")
-    normalized, outcomes, works, indexes = _prepare_batch_inputs(items, root=root)
+    normalized, outcomes, works, indexes = _prepare_batch_inputs(
+        items,
+        root=root,
+        content_proofs=content_proofs,
+    )
     if not normalized:
         return KioTrashBatchResult(())
     if not works:
+        _close_batch_content_leases(works)
         return _batch_result(outcomes)
 
     admission = _prepare_batch_admission(
@@ -3143,6 +3442,7 @@ def move_many_to_trash(
         root=root,
     )
     if admission is None:
+        _close_batch_content_leases(works)
         return _batch_result(outcomes)
     effective_environment = admission.environment
     preflight = admission.preflight
@@ -3301,6 +3601,8 @@ def move_many_to_trash(
                 command=command, returncode=returncode,
             )
         return _batch_result(outcomes, command, returncode, cancelled=cancelled)
+    finally:
+        _close_batch_content_leases(works)
 
 
 class KioTrashService:
@@ -3363,12 +3665,16 @@ class KioTrashService:
         source_digest: str,
         root: Path | None = None,
         object_kind: str = KIO_OBJECT_FILE,
+        content_proof: ArtifactContentProof | Mapping[str, object] | None = None,
     ) -> KioTrashResult:
         """Run one admitted source through the same lifecycle as a batch."""
 
         return self.move_many(
             (KioTrashBatchItem(snapshot.path, snapshot, source_digest, object_kind),),
             root=root,
+            content_proofs={os.fspath(snapshot.path): content_proof}
+            if content_proof is not None
+            else None,
         )[0]
 
     def move_many(
@@ -3376,6 +3682,7 @@ class KioTrashService:
         items: Sequence[KioTrashBatchItem],
         *,
         root: Path | None = None,
+        content_proofs: Mapping[str, object] | None = None,
     ) -> tuple[KioTrashResult, ...]:
         """Return one typed outcome per input, preserving order and receipts.
 
@@ -3409,6 +3716,7 @@ class KioTrashService:
                     environment=environment,
                     home_directory=home_directory,
                     root=root,
+                    content_proofs=content_proofs,
                 )
         except (OSError, RuntimeError, ValueError, TypeError, KeyboardInterrupt) as exc:
             if len(outcomes) == len(normalized):
@@ -3445,12 +3753,13 @@ class KioTrashService:
         environment: Mapping[str, str] | None,
         home_directory: Path | None,
         root: Path | None,
+        content_proofs: Mapping[str, object] | None,
     ) -> bool:
         if len(items) > MAX_KIO_BATCH_ITEMS:
             midpoint = len(items) // 2
             interrupted = self._move_batches(
                 items[:midpoint], outcomes, environment=environment, home_directory=home_directory,
-                root=root,
+                root=root, content_proofs=content_proofs,
             )
             if interrupted:
                 outcomes.extend(
@@ -3460,7 +3769,7 @@ class KioTrashService:
                 return True
             return self._move_batches(
                 items[midpoint:], outcomes, environment=environment, home_directory=home_directory,
-                root=root,
+                root=root, content_proofs=content_proofs,
             )
         try:
             batch = move_many_to_trash(
@@ -3474,6 +3783,7 @@ class KioTrashService:
                 private_bus=self._runner is None and self._private_bus,
                 private_claim=self._runner is None and self._private_claim,
                 root=root,
+                content_proofs=content_proofs,
             )
         except (OSError, RuntimeError, ValueError, TypeError, KeyboardInterrupt) as exc:
             interrupted = isinstance(exc, KeyboardInterrupt)
@@ -3523,7 +3833,7 @@ class KioTrashService:
             midpoint = len(items) // 2
             interrupted = self._move_batches(
                 items[:midpoint], outcomes, environment=environment, home_directory=home_directory,
-                root=root,
+                root=root, content_proofs=content_proofs,
             )
             if interrupted:
                 outcomes.extend(
@@ -3533,7 +3843,7 @@ class KioTrashService:
                 return True
             return self._move_batches(
                 items[midpoint:], outcomes, environment=environment, home_directory=home_directory,
-                root=root,
+                root=root, content_proofs=content_proofs,
             )
         outcomes.extend(checked)
         return batch.cancelled or any(

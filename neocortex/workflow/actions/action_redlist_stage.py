@@ -204,12 +204,14 @@ class RedlistActionsMixin:
             and callable(read_manifest)
             and read_manifest(self._run_id) is not None
         ):
+            round_id = getattr(self, "_curation_round", 0)
+            stage_name = "redlist" if round_id <= 1 else f"redlist-delta-{round_id}"
             publish_stage(
                 self._run_id,
-                "redlist",
+                stage_name,
                 status,
                 details=details,
-                idempotency_key=f"redlist:{policy_digest}:{status}",
+                idempotency_key=f"redlist:{policy_digest}:{getattr(self, '_curation_round', 0)}:{status}",
             )
             return
         # Direct action callers may use a pre-manifest fixture run.  Preserve
@@ -226,12 +228,15 @@ class RedlistActionsMixin:
             details,
         )
 
-    def apply_redlist_prepass(self, *, policy_digest: str) -> dict[str, object]:
+    def apply_redlist_prepass(
+        self, *, policy_digest: str, preserve_exclusions: bool = False
+    ) -> dict[str, object]:
         """Trash configured redlist matches before content planning.
 
-        The inventory has already captured metadata, but no content bytes have
-        been read.  This pass deliberately uses only the explicit basename or
-        final-suffix policy.  The only content binding used by the Trash
+        Identify/Normalize must already have settled the selected observations
+        in the integrated pipeline. This pass uses only their logical names;
+        an untrusted original extension is never a pre-Identify authority.
+        The only content binding used by the Trash
         safety adapter is the metadata-only source binding; it is not a
         content hash and exists solely to bind the physical effect to the
         preflighted inode/metadata snapshot.
@@ -245,7 +250,7 @@ class RedlistActionsMixin:
         matched = applied = failed = protected = 0
         blocked = failed_pre_effect = recovery_required = 0
         planned = skipped = 0
-        self._reset_redlist_diagnostics(clear_exclusions=True)
+        self._reset_redlist_diagnostics(clear_exclusions=not preserve_exclusions)
         self._redlist_prepass_active = True
         self._redlist_policy_active = True
         self._redlist_suppress_late_mutation = True
@@ -265,8 +270,7 @@ class RedlistActionsMixin:
         try:
             while True:
                 self._checkpoint()
-                page = self._index.snapshots_page(
-                    self._scan_id,
+                page = self._action_snapshots_page(
                     after_path=after_path,
                     limit=TRASH_BATCH_SIZE,
                 )

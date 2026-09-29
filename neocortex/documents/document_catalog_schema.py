@@ -22,7 +22,7 @@ from neocortex.persistence.sqlite_schema_contract import (
 # region [01] Canonical schema
 
 
-CATALOG_SCHEMA_VERSION = 12
+CATALOG_SCHEMA_VERSION = 13
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -458,7 +458,83 @@ _V12_LOOKUP_DDL = (
     """CREATE INDEX IF NOT EXISTS organization_plans_run_root_idx
         ON organization_plans(catalog_run_id,organization_root,plan_id)""",
 )
-_CURRENT_SCHEMA_DDL = (*_V11_SCHEMA_DDL, *_V12_LOOKUP_DDL)
+_V12_SCHEMA_DDL = (*_V11_SCHEMA_DDL, *_V12_LOOKUP_DDL)
+
+# Fast Curation is deliberately a Catalog-owned projection.  It does not
+# create a thirteenth SQLite owner and it does not alter the historical
+# document/generation rows.  Embeddings are content/representation keyed, so
+# a physical rename cannot evict an otherwise equivalent vector.  Decisions
+# are current per Catalog document identity and keep context provenance in a
+# separate JSON column rather than making a path authoritative.
+_V13_CURATION_DDL = (
+    """CREATE TABLE IF NOT EXISTS curator_embedding_cache(
+        representation_sha256 TEXT NOT NULL,
+        representation_version TEXT NOT NULL,
+        model_signature TEXT NOT NULL,
+        role TEXT NOT NULL,
+        vector_space TEXT NOT NULL,
+        dimensions INTEGER NOT NULL CHECK(dimensions > 0 AND dimensions <= 65536),
+        vector_dtype TEXT NOT NULL CHECK(vector_dtype='float32'),
+        normalized INTEGER NOT NULL CHECK(normalized=1),
+        vector_blob BLOB NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_ns INTEGER NOT NULL,
+        updated_ns INTEGER NOT NULL,
+        PRIMARY KEY(
+            representation_sha256,representation_version,model_signature,
+            role,vector_space,dimensions
+        ),
+        CHECK(length(vector_blob)=dimensions*4),
+        CHECK(length(metadata_json)<=65536)
+    ) WITHOUT ROWID""",
+    """CREATE INDEX IF NOT EXISTS curator_embedding_cache_model_idx
+        ON curator_embedding_cache(model_signature,role,vector_space,dimensions,
+                                    representation_sha256,representation_version)""",
+    """CREATE TABLE IF NOT EXISTS curator_decisions(
+        source_kind TEXT NOT NULL,
+        file_key TEXT NOT NULL,
+        source_binding_json TEXT NOT NULL,
+        input_signature TEXT NOT NULL,
+        semantic_representation_fingerprint TEXT NOT NULL,
+        representation_version TEXT NOT NULL,
+        model_signature TEXT NOT NULL,
+        role TEXT NOT NULL,
+        vector_space TEXT NOT NULL,
+        dimensions INTEGER NOT NULL CHECK(dimensions > 0 AND dimensions <= 65536),
+        ontology_version TEXT NOT NULL,
+        prototype_version TEXT NOT NULL,
+        policy_version TEXT NOT NULL,
+        calibration_version TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK(decision IN ('CLASSIFIED','ABSTAIN')),
+        top1_label TEXT,
+        top1_score REAL,
+        top2_label TEXT,
+        top2_score REAL,
+        margin REAL,
+        top_k_json TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        context_provenance_json TEXT NOT NULL,
+        created_ns INTEGER NOT NULL,
+        updated_ns INTEGER NOT NULL,
+        PRIMARY KEY(source_kind,file_key),
+        FOREIGN KEY(source_kind,file_key)
+            REFERENCES documents(source_kind,file_key),
+        CHECK(length(source_binding_json)<=32768),
+        CHECK(length(input_signature)<=4096),
+        CHECK(length(semantic_representation_fingerprint)<=4096),
+        CHECK(length(top_k_json)<=32768),
+        CHECK(length(evidence_json)<=65536),
+        CHECK(length(context_provenance_json)<=32768)
+    ) WITHOUT ROWID""",
+    """CREATE INDEX IF NOT EXISTS curator_decisions_signature_idx
+        ON curator_decisions(
+            model_signature,representation_version,ontology_version,
+            prototype_version,policy_version,calibration_version,
+            decision,source_kind,file_key
+        )""",
+)
+
+_CURRENT_SCHEMA_DDL = (*_V12_SCHEMA_DDL, *_V13_CURATION_DDL)
 
 
 def _create_v7_schema(connection: sqlite3.Connection) -> None:
@@ -514,6 +590,13 @@ def _create_v11_schema(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _create_v12_schema(connection: sqlite3.Connection) -> None:
+    """Build the exact Catalog schema before Fast Curation persistence."""
+
+    for statement in _V12_SCHEMA_DDL:
+        connection.execute(statement)
+
+
 @lru_cache(maxsize=1)
 def _v11_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_create_v11_schema)
@@ -526,6 +609,22 @@ def validate_v11_document_catalog_schema(connection: sqlite3.Connection) -> None
         connection,
         _v11_schema_contract(),
         label="document catalog v10/v11 migration source",
+        exact=True,
+    )
+
+
+@lru_cache(maxsize=1)
+def _v12_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_v12_schema)
+
+
+def validate_v12_document_catalog_schema(connection: sqlite3.Connection) -> None:
+    """Validate the exact v12 source before adding curation tables."""
+
+    validate_sqlite_schema_contract(
+        connection,
+        _v12_schema_contract(),
+        label="document catalog v12 migration source",
         exact=True,
     )
 
@@ -1132,6 +1231,17 @@ def _migrate_to_v12(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _migrate_to_v13(connection: sqlite3.Connection) -> None:
+    """Add current curation state without rewriting Catalog history."""
+
+    validate_v12_document_catalog_schema(connection)
+    for statement in _V13_CURATION_DDL:
+        connection.execute(statement)
+    violation = connection.execute("PRAGMA foreign_key_check").fetchone()
+    if violation is not None:
+        raise RuntimeError("document catalog v12 to v13 migration violated foreign keys")
+
+
 def migrate_document_catalog_schema(
     connection: sqlite3.Connection,
     prior_version: int,
@@ -1157,6 +1267,8 @@ def migrate_document_catalog_schema(
         # Version 11 fences readers that may reactivate a reset historical head.
         11: lambda: _migrate_to_v11(connection),
         12: lambda: _migrate_to_v12(connection),
+        # Version 13 adds Catalog-owned Fast Curation cache and current rows.
+        13: lambda: _migrate_to_v13(connection),
     }
     for target_version in range(prior_version + 1, CATALOG_SCHEMA_VERSION + 1):
         migrations[target_version]()
@@ -1180,4 +1292,5 @@ __all__ = [
     "validate_v8_document_catalog_schema",
     "validate_v9_document_catalog_schema",
     "validate_v11_document_catalog_schema",
+    "validate_v12_document_catalog_schema",
 ]

@@ -1554,7 +1554,7 @@ class FrameworkStateRunsMixin(_FrameworkStateOwner):
                 AND e.message='Lifecycle stage transitioned'
                 AND CASE WHEN json_valid(e.details_json)
                     THEN json_extract(e.details_json,'$.stage') ELSE NULL END
-                    IN ('zip-intake','email-zip-intake')
+                    IN ('zip-intake','email-zip-intake','zip-consumption')
                 AND CASE WHEN json_valid(e.details_json)
                     THEN json_extract(e.details_json,'$.status') ELSE NULL END
                     IN ('completed','partial','failed')
@@ -1571,7 +1571,7 @@ class FrameworkStateRunsMixin(_FrameworkStateOwner):
                 event_id = int(row[1])
                 stages = self.read_run_stages(run_id)
                 stage = next((item for item in stages if item.get("event_id") == event_id), None)
-                if stage is None or stage.get("stage") not in {"zip-intake", "email-zip-intake"}:
+                if stage is None or stage.get("stage") not in {"zip-intake", "email-zip-intake", "zip-consumption"}:
                     continue
                 if stage.get("status") not in {"completed", "partial", "failed"}:
                     continue

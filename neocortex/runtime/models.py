@@ -76,6 +76,9 @@ class FrameworkConfig:
     document_classification_max_chars: int = 64_000
     organization_root: Path | None = None
     organization_min_confidence: float = 0.72
+    curation_model_cache: Path | None = field(default=None, kw_only=True)
+    curation_threads: int | None = field(default=None, kw_only=True)
+    curation_batch_size: int | None = field(default=None, kw_only=True)
     global_memory_budget_bytes: int | None = None
     global_min_free_memory_bytes: int | None = None
     global_min_free_commit_bytes: int | None = None

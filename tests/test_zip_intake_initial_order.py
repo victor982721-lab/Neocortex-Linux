@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-import os
+import json
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +17,8 @@ from neocortex.runtime.orchestration.route_registry import RouteAdapter, RouteEx
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.workflow import mutations, zip_intake_orchestrator
+from neocortex.workflow.mutations import BackendOutcome
+from tests.test_framework_actions import _fixture_trash_receipt
 
 
 def test_all_expands_nested_zip_before_identify_and_routes_and_replays_safely(
@@ -48,16 +50,26 @@ def test_all_expands_nested_zip_before_identify_and_routes_and_replays_safely(
     }
 
     class FixtureTrash:
-        def apply_snapshot(self, snapshot, *, root, source_digest):
+        supports_empty_directories = True
+
+        def apply_snapshot(self, snapshot, *, root, source_digest, object_kind="regular_file", **kwargs):
             path = Path(snapshot.path)
-            assert path == source, "only the selected ZIP may cross this fixture effect"
             assert source_digest and path.is_relative_to(root)
-            for extracted, content in expected.items():
-                assert extracted.read_bytes() == content
-            os.rename(path, trash / path.name)
+            assert path == source or object_kind == "empty_directory"
+            if path == source:
+                for extracted, content in expected.items():
+                    assert extracted.read_bytes() == content
+                order.append("zip-published")
+            receipt = json.loads(_fixture_trash_receipt(snapshot, source_digest, trash / str(len(effects))))
+            receipt["object_kind"] = object_kind
+            receipt["trash"]["object_kind"] = object_kind
             effects.append(path)
-            order.append("zip-published")
-            return SimpleNamespace(status="applied", detail="fixture", receipt_json="{}")
+            return BackendOutcome("applied", "fixture", receipt_json=json.dumps(receipt))
+
+        def apply_many_snapshots(self, items, *, root):
+            return tuple(self.apply_snapshot(item[0], root=root, source_digest=item[1],
+                                            object_kind=item[2] if len(item) > 2 else "regular_file")
+                         for item in items)
 
     monkeypatch.setattr(mutations, "KioTrashBackend", FixtureTrash)
     # This test exercises contained ZIP effects, not host accreditation or
@@ -72,13 +84,19 @@ def test_all_expands_nested_zip_before_identify_and_routes_and_replays_safely(
     )
     identify = FrameworkActions.identify_and_normalize
 
-    def observe_identify(self):
+    final_expected = {
+        root / "Sin_clasificar/_MIME/text/plain" / path.name: content
+        for path, content in expected.items()
+    }
+    final_atomic = root / "Sin_clasificar/_MIME/application/vnd.openxmlformats-officedocument.wordprocessingml.document/atomic.docx"
+
+    def observe_identify(self, **kwargs):
         order.append("identify")
         assert not source.exists()
-        assert atomic.read_bytes() == atomic_original
-        for path, content in expected.items():
+        assert (atomic if not seen else final_atomic).read_bytes() == atomic_original
+        for path, content in (expected if not seen else final_expected).items():
             assert path.read_bytes() == content
-        return identify(self)
+        return identify(self, **kwargs)
 
     monkeypatch.setattr(FrameworkActions, "identify_and_normalize", observe_identify)
     seen: list[set[Path]] = []
@@ -89,7 +107,7 @@ def test_all_expands_nested_zip_before_identify_and_routes_and_replays_safely(
             context.run_id, "text/plain", "text", CandidateSelection(),
         )
         paths = {Path(candidate.path) for candidate in candidates}
-        assert paths == set(expected)
+        assert paths == set(expected if not seen else final_expected)
         seen.append(paths)
         return {"processed": len(paths)}
 
@@ -105,10 +123,11 @@ def test_all_expands_nested_zip_before_identify_and_routes_and_replays_safely(
         ).run()
         summary = result.route_results["text"]
         assert isinstance(summary, dict) and summary["processed"] == 2
+        assert not result.route_failures, result.route_failures
     assert order == ["zip-published", "identify", "route", "identify", "route"]
-    assert len(effects) == 1 and len(seen) == 2
-    assert (trash / source.name).read_bytes() == original
-    assert atomic.read_bytes() == atomic_original
+    assert effects.count(source) == 1 and len(seen) == 2
+    assert (trash / "0/files" / source.name).read_bytes() == original
+    assert final_atomic.read_bytes() == atomic_original
     terminal = [event for event in recording.events
                 if event.key == ("zip-intake", "process") and event.finished]
     assert [(event.completed, event.total) for event in terminal] == [(2, 2), (1, 1)]

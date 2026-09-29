@@ -21,6 +21,7 @@ from neocortex.deduplication import (
 )
 from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.platform.policy import stat_birthtime_ns
+from neocortex.platform.logical_filename import LogicalFilename
 from neocortex.persistence.framework_state_writer import RunBudgetExceeded
 from neocortex.progress import ProgressEvent, ProgressMetric, emit_progress
 from neocortex.runtime.control.cancellation import CancellationRequested
@@ -45,6 +46,10 @@ from neocortex.workflow.actions.action_policy import (
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
 from neocortex.workflow.mutations import BackendOutcome
 from neocortex.safety.kio_trash import metadata_binding, verify_trash_receipt_evidence
+from neocortex.safety.artifact_content_proof import (
+    ArtifactContentProofError,
+    coerce_artifact_content_proof,
+)
 
 
 def _files_equal_exact(*args, **kwargs):
@@ -68,11 +73,23 @@ class EffectsActionsMixin:
 
         path = Path(snapshot.path)
         name = path.name.casefold()
-        if _is_legal_metadata_name(snapshot.path):
+        logical = LogicalFilename.parse(path)
+        if _is_legal_metadata_name(snapshot.path) or _is_legal_metadata_name(
+            logical.normalized_basename
+        ):
             return "legal_metadata"
-        if path.suffix.lower() in {".whl", ".nupkg"}:
+        if logical.logical_extension in {".whl", ".wheel", ".nupkg"}:
             return "retained_package_archive"
-        if name in _PROTECTED_EFFECT_NAMES or path.suffix.casefold() in _PROTECTED_EFFECT_SUFFIXES:
+        if any(
+            part.casefold() in {"binaryfixtures", "license", "licenses", "licence", "licences"}
+            for part in path.parts
+        ):
+            return "retained_fixture_or_license_tree"
+        if (
+            name in _PROTECTED_EFFECT_NAMES
+            or logical.basename.casefold() in _PROTECTED_EFFECT_NAMES
+            or logical.logical_extension in _PROTECTED_EFFECT_SUFFIXES
+        ):
             return "credential_or_private_material"
         if any(part.casefold() in _FIXTURE_COMPONENTS for part in path.parts):
             return "fixture_tree"
@@ -114,6 +131,13 @@ class EffectsActionsMixin:
 
     def _trash_empty_directories(self, plan: DedupPlan, summary: ActionSummary) -> ActionSummary:
         root = self._index.scan_root(plan.scan_id)
+        # Finalization owns three required topology roots.  They are excluded
+        # by exact absolute identity only; descendants remain eligible so an
+        # ordinary empty leaf under a required root can still be retired.
+        structural_directories = frozenset(
+            _path_key(Path(item))
+            for item in getattr(self, "_structural_directories", ())
+        )
         traversal_error_count = [0]
         pending: list[tuple[str, str, FileSnapshot]] = []
         logical_child_counts: dict[str, int] = {}
@@ -168,6 +192,8 @@ class EffectsActionsMixin:
             root, self._exclusion_policy, traversal_error_count
         ):
             self._checkpoint()
+            if _path_key(directory) in structural_directories:
+                continue
             directory_snapshot = self._empty_directory_snapshot(
                 directory,
                 logical_child_counts,
@@ -268,6 +294,7 @@ class EffectsActionsMixin:
         *,
         expected_snapshots: tuple[FileSnapshot | None, ...] | None = None,
         reference_snapshots: tuple[FileSnapshot | None, ...] | None = None,
+        expected_content_proofs: tuple[object | None, ...] | None = None,
         defer_reconciliation: bool = False,
     ) -> tuple[int, int, int]:
         """Apply one bounded batch and isolate partial Recycle Bin failures."""
@@ -280,10 +307,11 @@ class EffectsActionsMixin:
         defer_reconciliation = defer_reconciliation or action_type == "trash_empty_file"
         mutation_guard = self._effective_mutation_guard()
         validated_root = self._validate_apply_root(mutation_guard=mutation_guard)
-        expected, references = self._normalize_trash_snapshots(
+        expected, references, content_proofs = self._normalize_trash_snapshots(
             batch,
             expected_snapshots,
             reference_snapshots,
+            expected_content_proofs,
         )
         if self._max_file_bytes is not None:
             # Effect callers must provide the inventory-bound snapshot.  Do
@@ -293,8 +321,9 @@ class EffectsActionsMixin:
             admitted_batch: list[tuple[str, str]] = []
             admitted_expected: list[FileSnapshot | None] = []
             admitted_references: list[FileSnapshot | None] = []
-            for item, planned, reference in zip(
-                batch, expected, references, strict=True
+            admitted_proofs: list[object | None] = []
+            for item, planned, reference, content_proof in zip(
+                batch, expected, references, content_proofs, strict=True
             ):
                 if (
                     planned is None
@@ -308,9 +337,11 @@ class EffectsActionsMixin:
                 admitted_batch.append(item)
                 admitted_expected.append(planned)
                 admitted_references.append(reference)
+                admitted_proofs.append(content_proof)
             batch = tuple(admitted_batch)
             expected = tuple(admitted_expected)
             references = tuple(admitted_references)
+            content_proofs = tuple(admitted_proofs)
             if not batch:
                 return 0, 0, 0
         # Reserve before preservation-prefix reads and before any digest or
@@ -411,12 +442,24 @@ class EffectsActionsMixin:
                 failed=preflight_failures,
                 protected=protected,
                 apply_batch=batch_apply,
+                content_proofs={
+                    path: proof
+                    for (path, _evidence), proof in zip(
+                        batch, content_proofs, strict=True
+                    )
+                    if proof is not None
+                },
                 defer_reconciliation=defer_reconciliation,
             )
 
         applied = 0
         failed = preflight_failures
         applied_paths: list[str] = []
+        proof_by_path = {
+            path: proof
+            for (path, _evidence), proof in zip(batch, content_proofs, strict=True)
+            if proof is not None
+        }
         for position, (action_id, path, planned, reference, _current_stat) in enumerate(ready):
             try:
                 self._checkpoint()
@@ -443,10 +486,23 @@ class EffectsActionsMixin:
                         "failed_pre_effect", "missing_snapshot", path
                     )
                 continue
+            content_proof = proof_by_path.get(path)
+            if action_type == "trash_artifact" and content_proof is None:
+                self._state.finish_file_action(
+                    action_id,
+                    "skipped",
+                    "artifact content proof is required",
+                )
+                failed += 1
+                continue
             try:
                 source_digest = (
                     metadata_binding(planned)
-                    if action_type in {"trash_redlist", "trash_empty_directory"}
+                    if action_type in {
+                        "trash_redlist",
+                        "trash_empty_directory",
+                        "trash_artifact",
+                    }
                     else f"{FULL_ALGORITHM}:" + self._full_fingerprint(planned).hex()
                 )
                 if reference is not None:
@@ -466,6 +522,8 @@ class EffectsActionsMixin:
                     }
                     if action_type == "trash_empty_directory":
                         snapshot_kwargs["object_kind"] = "empty_directory"
+                    if content_proof is not None:
+                        snapshot_kwargs["content_proof"] = content_proof
                     outcome = apply_snapshot(planned, **snapshot_kwargs)
                 else:
                     # Compatibility seam for older injected backends that
@@ -482,6 +540,7 @@ class EffectsActionsMixin:
                         keeper=None,
                         keeper_digest=None,
                         target_path=None,
+                        content_proof=content_proof,
                     )
                     apply_method = getattr(self._trash_backend, "apply", None)
                     if not callable(apply_method):
@@ -497,6 +556,7 @@ class EffectsActionsMixin:
                             outcome.receipt_json,
                             expected=planned,
                             source_digest=source_digest,
+                            content_proof=content_proof,
                         )
                     except (OSError, RuntimeError, TypeError, ValueError, FileChangedError) as exc:
                         self._best_effort_require_recovery((action_id,), str(exc), exc)
@@ -646,6 +706,7 @@ class EffectsActionsMixin:
         failed: int,
         protected: int,
         apply_batch: Callable[..., object],
+        content_proofs: dict[str, object],
         defer_reconciliation: bool,
     ) -> tuple[int, int, int]:
         """Run one optional backend batch while retaining per-item ledger rows."""
@@ -653,7 +714,7 @@ class EffectsActionsMixin:
         # Compute each digest and exact-keeper check before crossing any
         # ``applying`` frontier.  One stale member is failed independently;
         # unrelated members can still use the same physical batch.
-        prepared: list[tuple[int, str, FileSnapshot, str, str]] = []
+        prepared: list[tuple[int, str, FileSnapshot, str, str, object | None]] = []
         for action_id, path, planned, reference, _current_stat in ready:
             if planned is None:
                 self._state.finish_file_action(
@@ -666,7 +727,11 @@ class EffectsActionsMixin:
             try:
                 source_digest = (
                     metadata_binding(planned)
-                    if action_type in {"trash_redlist", "trash_empty_directory"}
+                    if action_type in {
+                        "trash_redlist",
+                        "trash_empty_directory",
+                        "trash_artifact",
+                    }
                     else f"{FULL_ALGORITHM}:" + self._full_fingerprint(planned).hex()
                 )
                 if reference is not None and not _files_equal_exact(planned, reference):
@@ -680,7 +745,16 @@ class EffectsActionsMixin:
                 self._state.finish_file_action(action_id, "failed", str(exc))
                 failed += 1
                 continue
-            prepared.append((action_id, path, planned, source_digest, expected_json))
+            proof = content_proofs.get(path)
+            if action_type == "trash_artifact" and proof is None:
+                self._state.finish_file_action(
+                    action_id,
+                    "skipped",
+                    "artifact content proof is required",
+                )
+                failed += 1
+                continue
+            prepared.append((action_id, path, planned, source_digest, expected_json, proof))
 
         if not prepared:
             return 0, failed, protected
@@ -688,21 +762,31 @@ class EffectsActionsMixin:
         # The state writer owns this transition.  It is one transaction for the
         # batch, but every action receives its own expected identity and event.
         self._state.mark_file_actions_applying(
-            (action_id, expected_json) for action_id, _path, _snapshot, _digest, expected_json in prepared
+            (action_id, expected_json)
+            for action_id, _path, _snapshot, _digest, expected_json, _proof in prepared
         )
 
-        try:
-            batch_result = apply_batch(
-                tuple(
-                    (
-                        (snapshot, source_digest, "empty_directory")
-                        if action_type == "trash_empty_directory"
-                        else (snapshot, source_digest)
-                    )
-                    for _id, _path, snapshot, source_digest, _expected in prepared
-                ),
-                root=mutation_root,
+        batch_items = tuple(
+            (
+                (snapshot, source_digest, "empty_directory")
+                if action_type == "trash_empty_directory"
+                else (
+                    (snapshot, source_digest, "regular_file", proof)
+                    if proof is not None
+                    else (snapshot, source_digest)
+                )
             )
+            for _id, _path, snapshot, source_digest, _expected, proof in prepared
+        )
+        try:
+            if content_proofs:
+                batch_result = apply_batch(
+                    batch_items,
+                    root=mutation_root,
+                    content_proofs=content_proofs,
+                )
+            else:
+                batch_result = apply_batch(batch_items, root=mutation_root)
             outcomes_value = (
                 batch_result
                 if isinstance(batch_result, (tuple, list))
@@ -716,7 +800,7 @@ class EffectsActionsMixin:
                     "trash backend returned an outcome count different from the batch"
                 )
         except RunBudgetExceeded as exc:
-            for action_id, path, _snapshot, _digest, _expected in prepared:
+            for action_id, path, _snapshot, _digest, _expected, _proof in prepared:
                 self._best_effort_require_recovery((action_id,), str(exc), exc)
                 if action_type == "trash_redlist":
                     self._record_redlist_batch_diagnostic(
@@ -728,7 +812,7 @@ class EffectsActionsMixin:
             # exception reached this owner.  Never retry it as individual work;
             # preserve one recovery row for every member instead.
             detail = str(exc) or "trash backend batch outcome is unavailable"
-            for action_id, path, _snapshot, _digest, _expected in prepared:
+            for action_id, path, _snapshot, _digest, _expected, _proof in prepared:
                 self._best_effort_require_recovery((action_id,), detail, exc)
                 if action_type == "trash_redlist":
                     self._record_redlist_batch_diagnostic(
@@ -741,7 +825,7 @@ class EffectsActionsMixin:
             # applying row before re-raising the control-flow interruption;
             # never retry the batch as individual operations.
             detail = str(exc) or "trash backend batch operation was interrupted"
-            for action_id, path, _snapshot, _digest, _expected in prepared:
+            for action_id, path, _snapshot, _digest, _expected, _proof in prepared:
                 self._best_effort_require_recovery((action_id,), detail, exc)
                 if action_type == "trash_redlist":
                     self._record_redlist_batch_diagnostic(
@@ -758,6 +842,7 @@ class EffectsActionsMixin:
             snapshot,
             source_digest,
             _expected,
+            _proof,
         ), outcome in zip(prepared, outcomes, strict=True):
             if not isinstance(outcome, BackendOutcome):
                 detail = "trash backend returned an unsupported batch outcome"
@@ -785,6 +870,7 @@ class EffectsActionsMixin:
                         outcome.receipt_json,
                         expected=snapshot,
                         source_digest=source_digest,
+                        content_proof=_proof,
                     )
                 except (OSError, RuntimeError, TypeError, ValueError, FileChangedError) as exc:
                     self._best_effort_require_recovery((action_id,), str(exc), exc)
@@ -935,6 +1021,7 @@ class EffectsActionsMixin:
         *,
         expected: FileSnapshot,
         source_digest: str,
+        content_proof: object | None = None,
     ) -> None:
         """Require source-bound physical Trash evidence before ledger success."""
 
@@ -962,15 +1049,44 @@ class EffectsActionsMixin:
             source_digest,
             object_kind=receipt.get("object_kind", "regular_file"),
         )
+        if content_proof is not None:
+            try:
+                expected_proof = coerce_artifact_content_proof(content_proof)
+                trash_payload = receipt.get("trash")
+                observed_proof = coerce_artifact_content_proof(
+                    trash_payload.get("content_proof")
+                    if isinstance(trash_payload, dict)
+                    else None
+                )
+                comparable = (
+                    "family",
+                    "volume_id",
+                    "file_id",
+                    "birthtime_ns",
+                    "size",
+                    "mtime_ns",
+                    "mode",
+                    "nlink",
+                    "segments",
+                )
+                if any(
+                    getattr(expected_proof, field) != getattr(observed_proof, field)
+                    for field in comparable
+                ):
+                    raise ValueError("trash receipt content proof does not bind the artifact")
+            except (ArtifactContentProofError, TypeError, ValueError) as exc:
+                raise ValueError("trash receipt content proof is missing or invalid") from exc
 
     @staticmethod
     def _normalize_trash_snapshots(
         batch: tuple[tuple[str, str], ...],
         expected_snapshots: tuple[FileSnapshot | None, ...] | None,
         reference_snapshots: tuple[FileSnapshot | None, ...] | None,
+        expected_content_proofs: tuple[object | None, ...] | None,
     ) -> tuple[
         tuple[FileSnapshot | None, ...],
         tuple[FileSnapshot | None, ...],
+        tuple[object | None, ...],
     ]:
         expected = (None,) * len(batch) if expected_snapshots is None else expected_snapshots
         if len(expected) != len(batch):
@@ -978,7 +1094,14 @@ class EffectsActionsMixin:
         references = (None,) * len(batch) if reference_snapshots is None else reference_snapshots
         if len(references) != len(batch):
             raise ValueError("reference snapshot count does not match trash batch")
-        return expected, references
+        proofs = (
+            (None,) * len(batch)
+            if expected_content_proofs is None
+            else expected_content_proofs
+        )
+        if len(proofs) != len(batch):
+            raise ValueError("content proof count does not match trash batch")
+        return expected, references, proofs
 
     def _begin_trash_candidates(
         self,

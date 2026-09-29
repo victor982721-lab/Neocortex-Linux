@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -56,34 +56,6 @@ _ZIP_PROGRESS_PHASE = "process"
 _ZIP_PROGRESS_DESCRIPTION = "Procesando ZIPs"
 _ZIP_PROGRESS_MAX_EVENTS = 128
 _ZIP_PROGRESS_INTERVAL_SECONDS = 0.25
-
-
-def _select_new_zip_snapshots(
-    snapshots: Iterable[FileSnapshot],
-    created_paths: Iterable[str],
-    identified_types: Mapping[object, object],
-) -> tuple[FileSnapshot, ...]:
-    """Select only newly materialized ZIP children for fixed-point intake."""
-
-    created = {str(path) for path in created_paths}
-    selected: list[FileSnapshot] = []
-    for candidate in snapshots:
-        if candidate.path not in created:
-            continue
-        detected = getattr(identified_types.get(_snapshot_detection_key(candidate)), "mime", None)
-        if detected in {"application/zip", "application/x-zip-compressed"}:
-            selected.append(candidate)
-    return tuple(selected)
-
-
-def _snapshot_detection_key(snapshot: FileSnapshot) -> tuple[int, int, int, int, int]:
-    return (
-        int(snapshot.volume_id),
-        int(snapshot.file_id),
-        int(snapshot.size),
-        int(snapshot.mtime_ns),
-        int(snapshot.birthtime_ns),
-    )
 
 
 def _bounded_counter(value: object) -> int:
@@ -592,6 +564,12 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 else str(self.config.organization_root)
             ),
             "organization_min_confidence": self.config.organization_min_confidence,
+            "fast_curation": {
+                "model_cache": None if self.config.curation_model_cache is None else str(self.config.curation_model_cache),
+                "threads": self.config.curation_threads,
+                "batch_size": self.config.curation_batch_size,
+                "policy": "calibrated_document_level_local_only",
+            },
             "image_workers": self.config.image_workers,
             "image_max_file_bytes": self.config.image_max_file_bytes,
             "image_max_documents": self.config.image_max_documents,
@@ -977,7 +955,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         boundary: NormalInventoryBoundary,
         inventory: PreparedInventory,
         dedup_index: DedupIndex,
-        snapshots: Iterable[FileSnapshot] | None = None,
+        snapshots: Iterable[FileSnapshot] | Callable[[], Iterable[FileSnapshot]] | None = None,
         stage_name: str = "zip-intake",
         progress_operation: str | None = None,
         reconciliation_operation: str | None = None,
@@ -1042,9 +1020,17 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         # ZIP Intake is a Framework stage, so its only public size ceiling is
         # the global admission already established by Inventory.
         effective_limit = max_file_bytes
+        # The production adapter reads bounded metadata twice, without
+        # retaining the complete corpus as a Python tuple. A supplied delta
+        # factory refers to the Inventory owner's frozen TEMP projection.
+        snapshot_factory = (
+            (lambda: dedup_index.snapshots(inventory.scan.scan_id))
+            if snapshots is None else snapshots if callable(snapshots) else None
+        )
         admission = build_zip_intake_admission(
-            dedup_index.snapshots(inventory.scan.scan_id) if snapshots is None else snapshots,
+            snapshot_factory() if snapshot_factory is not None else snapshots,
             effective_limit,
+            snapshot_factory=snapshot_factory,
         )
         admission_payload = admission.payload()
         state.set_run_phase(run_id, stage_name.replace("-", "_"))
@@ -1072,7 +1058,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                     "effective_max_file_bytes": effective_limit,
                     "apply": bool(self.config.apply_actions),
                 },
-                idempotency_key=f"{stage_name}:running",
+                idempotency_key=f"{stage_name}:{getattr(self, '_curation_wave', 0)}:running",
             )
         zip_progress = _BoundedZipProgress(
             self.progress,
@@ -1126,7 +1112,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                             "detail": str(exc)[:8192],
                             "observed_progress": dict(partial_payload),
                         },
-                        idempotency_key=f"{stage_name}:failed",
+                        idempotency_key=f"{stage_name}:{getattr(self, '_curation_wave', 0)}:failed",
                     )
                 except BaseException:
                     # Preserve the intake exception; Framework termination
@@ -1268,7 +1254,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 stage_name,
                 stage_status,
                 details=payload,
-                idempotency_key=f"{stage_name}:completed",
+                idempotency_key=f"{stage_name}:{getattr(self, '_curation_wave', 0)}:completed",
             )
         return successor, payload
 
@@ -1283,6 +1269,8 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         dedup_index: DedupIndex,
         action_runner: FrameworkActions,
         excluded_paths: tuple[Path, ...],
+        snapshots: Iterable[FileSnapshot] | None = None,
+        content_admission_check: Callable[[FileSnapshot], bool] | None = None,
     ) -> tuple[PreparedInventory, FrameworkActions, dict[str, object]]:
         """Materialize identified EML children before deduplication/routes."""
 
@@ -1304,6 +1292,8 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 apply=bool(self.config.apply_actions),
                 cancellation=self._cancellation,
                 progress=self.progress,
+                snapshots=snapshots,
+                content_admission_check=content_admission_check,
             )
         except BaseException as exc:
             state.record_event(
@@ -1324,12 +1314,13 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         )
         publish_stage = getattr(state, "publish_run_stage", None)
         if callable(publish_stage):
+            round_id = getattr(self, "_curation_wave", 0)
             publish_stage(
                 run_id,
-                "email-intake",
+                "email-intake" if round_id <= 1 else f"email-intake-delta-{round_id}",
                 "failed" if result.status == "recovery_required" else "partial" if result.failed else "completed",
                 details=payload,
-                idempotency_key="email-intake:completed",
+                idempotency_key=f"email-intake:{getattr(self, '_curation_wave', 0)}:completed",
             )
         if not result.reconciliation_required:
             return inventory, action_runner, payload
@@ -1359,19 +1350,14 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 + int(successor.reconciliation_records)
             ),
         )
-        next_runner = self._build_initial_action_runner(
-            state=state,
-            run_id=run_id,
-            dedup_index=dedup_index,
-            scan_id=successor.scan.scan_id,
-            excluded_paths=excluded_paths,
-            inventory_policy=boundary.exclusion_policy,
-        )
-        state.set_run_phase(run_id, "identify_email_reconciliation")
-        next_runner.identify_and_normalize()
+        # The new generation is not permission to bypass cleanup. The shared
+        # admission owner selects its unseen observations and sends that delta
+        # through Archive -> Identify -> Normalize -> Redlist -> ArtifactPolicy.
+        # Reuse the runner so exclusions, Identify evidence and summaries survive.
+        action_runner._scan_id = successor.scan.scan_id
         payload["successor_scan_id"] = successor.scan.scan_id
         payload["source_scan_id"] = inventory.scan.scan_id
-        return successor, next_runner, payload
+        return successor, action_runner, payload
 
     def _plan_initial_dedup(
         self,
@@ -1399,6 +1385,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             max_file_bytes=validate_max_file_bytes(
                 getattr(self.config, "max_file_bytes", None)
             ),
+            admission_check=getattr(self, "_curation_admission_check", None),
         ).plan(
             scan_id,
             progress=self.progress,
@@ -1513,7 +1500,9 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         state.set_run_phase(run_id, "actions")
         actions = runner.execute(
             plan,
-            cleanup_empty_directories=not self.selected_routes,
+            cleanup_empty_directories=(
+                not self.selected_routes and self.config.route.casefold() != "all"
+            ),
         )
         self._reserve_lifecycle_stage_work(
             state,
@@ -1547,6 +1536,46 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         OrganizationPlanSummary | None,
         OrganizationApplySummary | None,
     ]:
+        integrated_curation = self.config.route.casefold() == "all" and not self.config.route_only
+        retirement_result: dict[str, object] = {"status": "skipped_preview"}
+        if integrated_curation and self.config.apply_actions:
+            from neocortex.documents.document_retirement import run_document_retirement
+
+            # The admission/actions Inventory lease is already closed. Retire
+            # only exact, receipted identities before content owners can reuse
+            # CURRENT rows for sources removed by this run.
+            state.set_run_phase(run_id, "document-retirement")
+            retirement_result = run_document_retirement(
+                self.config.state_directory, root=root, framework_state=state,
+                run_id=run_id, framework_lock_held=True,
+                checkpoint=self._cancellation.checkpoint,
+            )
+            state.publish_run_stage(
+                run_id, "document-retirement",
+                "completed" if retirement_result.get("status") == "complete" else "partial",
+                details=retirement_result, idempotency_key="document-retirement:done",
+            )
+            if retirement_result.get("status") != "complete":
+                # An unresolved cross-owner publication must not be followed
+                # by additional source moves. Keep the exact recovery receipt
+                # and leave routes/layout/Semantic unstarted, rather than
+                # accumulating downstream effects that cannot be rebound.
+                blocked = {
+                    "status": "blocked", "reason": "document_retirement_unresolved",
+                    "publication": "not_started",
+                }
+                state.publish_run_stage(
+                    run_id, "residual-mime", "skipped", details=blocked,
+                    idempotency_key="residual-mime:blocked-by-retirement",
+                )
+                return (actions, {
+                    "document_retirement": retirement_result,
+                    "residual_mime": blocked,
+                    "corpus_verification": {
+                        "status": "blocked", "passed": False,
+                        "reason": "document_retirement_unresolved",
+                    },
+                }, None, None, None, None)
         route_results, global_resources = self._run_content_routes(
             root=root,
             state=state,
@@ -1554,12 +1583,26 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
             scan_id=scan_id,
         )
         image_summary = cast("ImageRouteSummary | None", route_results.get("image"))
+        if integrated_curation:
+            from .fast_curation_lifecycle import run_fast_curation_stage
+
+            route_results["document_retirement"] = retirement_result
+            route_results["fast_curation"] = run_fast_curation_stage(
+                self.config, root=root, state=state, run_id=run_id,
+                cancellation=self._cancellation, progress=self.progress,
+            )
         organization_plan, organization_apply = self._run_document_organization(
             root=root,
             state=state,
             run_id=run_id,
         )
-        if self.selected_routes:
+        if integrated_curation:
+            from .final_corpus_layout import run_residual_layout
+
+            route_results["residual_mime"] = run_residual_layout(
+                self, root=root, state=state, run_id=run_id, scan_id=scan_id,
+            )
+        if self.selected_routes or integrated_curation:
             # The inventory owner used by Identify/Dedupe must be closed
             # before PDF/Image route workers open their own connections. A
             # fresh short-lived owner is sufficient for the post-route empty
@@ -1574,7 +1617,24 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                     excluded_paths=excluded_paths,
                     inventory_policy=inventory_policy,
                 )
+                if integrated_curation:
+                    cleanup_runner._structural_directories = frozenset(str(path) for path in (
+                        root / "Corpus_ordenado", root / "Sin_clasificar", root / "Sin_clasificar" / "_MIME",
+                    ))
                 actions = cleanup_runner.cleanup_empty_directories(plan, actions)
+        if integrated_curation and self.config.apply_actions:
+            from .corpus_verification_sources import verify_current_corpus
+
+            verification = verify_current_corpus(
+                self.config, root=root, framework_state=state, run_id=run_id, scan_id=scan_id,
+                admission_result=getattr(self, "_curation_admission_result", {}),
+                checkpoint=self._cancellation.checkpoint,
+            )
+            route_results["corpus_verification"] = verification.to_dict()
+            state.publish_run_stage(
+                run_id, "corpus-presemantic-verification", "completed" if verification.passed else "partial",
+                details=verification.to_dict(), idempotency_key="corpus-presemantic-verification:done",
+            )
         return (
             actions,
             route_results,
@@ -1593,7 +1653,29 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         journal_before: None,
         excluded_paths: tuple[Path, ...],
     ) -> _InitialWork:
-        with DedupIndex(self.config.dedup_database) as dedup_index:
+        from neocortex.deduplication.inventory.curation_admission import CurationAdmission
+        from .curation_pipeline import stabilize_corpus_admission
+
+        self._curation_admission_check = None
+        self._curation_admission_result = {}
+        self._curation_wave = 0
+        self._initial_work_started_ns = time.perf_counter_ns()
+        admission_budget = state.read_run_budget(run_id)
+
+        def admission_checkpoint():
+            self._cancellation.checkpoint()
+            state.check_run_budget(run_id)
+
+        def admission_sql_checkpoint():
+            self._cancellation.checkpoint()
+            if admission_budget is not None:
+                deadline = admission_budget.get("deadline_ns")
+                if type(deadline) is int and time.time_ns() >= deadline:
+                    raise RunBudgetExceeded("time", admission_budget)
+
+        with DedupIndex(self.config.dedup_database) as dedup_index, CurationAdmission(
+            dedup_index, checkpoint=admission_checkpoint, sql_checkpoint=admission_sql_checkpoint,
+        ) as admission:
             inventory = self._prepare_normal_inventory(
                 state=state,
                 run_id=run_id,
@@ -1601,6 +1683,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 dedup_index=dedup_index,
                 journal_before=journal_before,
             )
+            self._initial_inventory_files = int(inventory.scan.files_seen)
             inventory, zip_intake_result = self._run_zip_intake_stage(
                 state=state,
                 run_id=run_id,
@@ -1621,79 +1704,27 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 excluded_paths=excluded_paths,
                 inventory_policy=boundary.exclusion_policy,
             )
-            state.set_run_phase(run_id, "identify")
-            action_runner.identify_and_normalize()
-            if self.config.apply_actions:
-                successor_scan_id = dedup_index.current_scan_id(inventory.scan.scan_id)
-                if successor_scan_id != inventory.scan.scan_id:
-                    inventory = replace(
-                        inventory,
-                        scan=dedup_index.scan_summary(successor_scan_id),
-                    )
             if self.config.route.casefold() == "all" and not self.config.route_only:
-                from neocortex.workflow.actions.redlist import redlist_policy_digest
-
-                state.set_run_phase(run_id, "redlist")
-                action_runner.apply_redlist_prepass(
-                    policy_digest=redlist_policy_digest(),
+                inventory, action_runner, email_intake_result = stabilize_corpus_admission(
+                    self, state=state, run_id=run_id, boundary=boundary,
+                    inventory=inventory, dedup_index=dedup_index, runner=action_runner,
+                    admission=admission, excluded_paths=excluded_paths,
                 )
-                if self.config.apply_actions:
-                    successor_scan_id = dedup_index.current_scan_id(inventory.scan.scan_id)
-                    if successor_scan_id != inventory.scan.scan_id:
-                        inventory = replace(
-                            inventory,
-                            scan=dedup_index.scan_summary(successor_scan_id),
-                        )
-            inventory, action_runner, email_intake_result = self._run_email_intake_stage(
-                state=state,
-                run_id=run_id,
-                root=boundary.access_policy.root,
-                boundary=boundary,
-                inventory=inventory,
-                dedup_index=dedup_index,
-                action_runner=action_runner,
-                excluded_paths=excluded_paths,
-            )
-            created_paths = email_intake_result.get("created_paths", ())
-            if isinstance(created_paths, list) and created_paths:
-                nested_zip_snapshots = _select_new_zip_snapshots(
-                    dedup_index.snapshots(inventory.scan.scan_id),
-                    created_paths,
-                    getattr(action_runner, "_identified_types", {}),
-                )
-                if nested_zip_snapshots:
-                    inventory, nested_zip = self._run_zip_intake_stage(
-                        state=state,
-                        run_id=run_id,
-                        root=boundary.access_policy.root,
-                        boundary=boundary,
-                        inventory=inventory,
-                        dedup_index=dedup_index,
-                        snapshots=nested_zip_snapshots,
-                        stage_name="email-zip-intake",
-                        progress_operation="email-zip-intake",
-                        reconciliation_operation="email-zip-intake-reconciliation",
-                        reconciliation_phase="inventory_email_zip_reconciliation",
-                        preserve_primary_result=False,
-                    )
-                    email_intake_result["nested_zip_intake"] = nested_zip
-                    if bool(nested_zip.get("filesystem_changed")):
-                        action_runner = self._build_initial_action_runner(
-                            state=state,
-                            run_id=run_id,
-                            dedup_index=dedup_index,
-                            scan_id=inventory.scan.scan_id,
-                            excluded_paths=excluded_paths,
-                            inventory_policy=boundary.exclusion_policy,
-                        )
-                        state.set_run_phase(run_id, "identify_email_zip_reconciliation")
-                        action_runner.identify_and_normalize()
+            else:
+                state.set_run_phase(run_id, "identify")
+                action_runner.identify_and_normalize()
+                successor = dedup_index.current_scan_id(inventory.scan.scan_id)
+                if successor != inventory.scan.scan_id:
+                    inventory = replace(inventory, scan=dedup_index.scan_summary(successor))
+                email_intake_result = {"status": "skipped_scope"}
             plan = self._plan_initial_dedup(
                 state,
                 run_id,
                 dedup_index,
                 inventory.scan.scan_id,
             )
+            if self._curation_admission_check is not None:
+                admission.exclude_planned_duplicates(inventory.scan.scan_id)
             action_runner, actions = self._execute_initial_actions(
                 state=state,
                 run_id=run_id,
@@ -1705,6 +1736,7 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 runner=action_runner,
             )
             candidate_rows = state.route_candidate_run_count(run_id)
+            self._initial_route_survivors = int(candidate_rows)
             state.publish_initial_routing_snapshot(
                 run_id,
                 inventory.scan.scan_id,
@@ -1713,6 +1745,13 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
                 inventory.inventory_mode,
                 candidate_rows,
             )
+            if self._curation_admission_check is not None:
+                from .final_corpus_layout import publish_layout_exclusions
+
+                publish_layout_exclusions(state, admission)
+        # No TEMP admission predicate may escape its Inventory lease. The
+        # persisted route candidate snapshot above is now the sole hand-off.
+        self._curation_admission_check = None
         (
             actions,
             route_results,
@@ -1736,7 +1775,15 @@ class InitialPipelineMixin(_FrameworkOrchestratorOwner):
         # archive state is created.
         route_results["zip_intake"] = dict(zip_intake_result)
         route_results["email_intake"] = dict(email_intake_result)
+        admission_result = dict(getattr(self, "_curation_admission_result", {}))
+        route_results["curation_admission"] = admission_result
         route_failures = dict(getattr(self, "_unavailable_routes", {}))
+        for stage_name in ("document_retirement", "residual_mime", "corpus_verification"):
+            stage_result = route_results.get(stage_name)
+            if isinstance(stage_result, Mapping) and stage_result.get("status") in {"partial", "failed", "blocked", "recovery_required"}:
+                route_failures[stage_name] = str(stage_result["status"])
+        if admission_result.get("status") == "partial":
+            route_failures["curation-admission"] = "partial"
         if zip_intake_result.get("status") in {
             "partial", "failed", "blocked", "recovery_required"
         }:

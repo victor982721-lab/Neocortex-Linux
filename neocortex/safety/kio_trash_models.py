@@ -14,6 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from neocortex.deduplication import FileSnapshot
+from .artifact_read_lease import ArtifactReadLease
 
 
 KIO_CLAIM_SCHEMA = "neocortex.kio-claim/v1"
@@ -54,6 +55,9 @@ class KioTrashClaim:
     claim_directory: Path
     snapshot: FileSnapshot
     object_kind: str = KIO_OBJECT_FILE
+    # In-memory only; durable recovery locators intentionally never serialize
+    # a descriptor or pretend to preserve its live lease across processes.
+    lease: ArtifactReadLease | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {

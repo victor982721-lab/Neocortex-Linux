@@ -114,10 +114,11 @@ _CANONICAL_STATE_DATABASE_NAMES = (
 )
 
 # A pre-admission inventory may observe regenerable payloads so the classifier
-# can distinguish useful metadata from generated output.  Keep only VCS
-# directories as broad-name exclusions in that mode; canonical roots and the
-# restricted rules below remain explicit identity-bound fences.
-_OBSERVATION_DIRECTORY_NAMES = (".git", ".hg", ".svn")
+# can distinguish useful metadata from generated output. Nested VCS copies
+# are corpus content too: naming a folder .git is not permission to hide its
+# originals from curation/accounting. Canonical repository/runtime roots and
+# the restricted rules below remain explicit identity-bound fences.
+_OBSERVATION_DIRECTORY_NAMES: tuple[str, ...] = ()
 _OBSERVATION_DIRECTORY_PREFIXES: tuple[str, ...] = ()
 _OBSERVATION_DIRECTORY_FRAGMENTS: tuple[str, ...] = ()
 _OBSERVATION_FILE_SUFFIXES: tuple[str, ...] = ()
@@ -380,8 +381,8 @@ def build_normal_inventory_boundary(
     """Capture the canonical normal boundary after authorized layout setup.
 
     ``observe_regenerable_artifacts`` is an explicit pre-admission mode.  It
-    keeps canonical excluded roots, protected-content restrictions, and VCS
-    directories, but does not discard a nested directory or file merely because
+    keeps canonical excluded roots and protected-content restrictions,
+    but does not discard a nested directory or file merely because
     its name looks generated.  The caller still receives the same metadata
     identity fence and a distinct policy signature for checkpoint binding.
     """

@@ -9,6 +9,7 @@ from typing import Any, Iterator
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.inventory.index import InventoryExclusionPolicy
+from neocortex.platform.logical_filename import LogicalFilename
 # region [01] Snapshot and destination policy
 
 PROFILE_SYSTEM_PREFIXES = ("ntuser.dat", "usrclass.dat")
@@ -28,9 +29,7 @@ def same_snapshot(planned: FileSnapshot, current: FileSnapshot) -> bool:
 
 
 def corrected_path(path: Path, extension: str) -> Path:
-    if path.suffix:
-        return path.with_suffix(extension)
-    return path.with_name(path.name + extension)
+    return path.with_name(LogicalFilename.parse(path).with_extension(extension))
 
 
 def path_key(path: str | Path) -> str:

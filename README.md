@@ -28,11 +28,16 @@ proyectan visibilidad, sin borrar vectores ni diagnósticos.
 
 ## Implementación funcional integrada
 
-La ruta integrada conserva los owners y contratos existentes. `--all` selecciona
-las ocho rutas de contenido (`pdf`, `docx`, `office`, `archive`, `text`, `audio`,
-`video` e `image`) y converge en este orden: `preflight/lock → inventory →
-identify → normalize → policy/redlist → dedupe → routes → organize → semantic
-→ finalize`. Identify compara contenido físico bounded (no la extensión
+La ruta integrada conserva los owners y contratos existentes. `--all` conserva
+ZIP Intake antes de Identify y selecciona las siete rutas de contenido (`pdf`,
+`docx`, `office`, `text`, `audio`, `video` e `image`). Su flujo es:
+
+`preflight/lock → inventory → ZIP Intake → successor inventory →
+Identify/Normalize → Redlist/ArtifactPolicy → admisión de deltas ZIP/EML →
+dedupe → routes/Catalog → Fast Curation → organization/residual MIME →
+rebind/cleanup/verificación → Full Semantic → verificación final`.
+
+Identify compara contenido físico bounded (no la extensión
 observada) y Normalize corrige extensiones demostrables antes de cualquier hash
 completo. `extension != content identity`; la incertidumbre queda
 `UNKNOWN/KEEP`.
@@ -42,6 +47,21 @@ archivos no normalizables permanecen intactos. Redlist, rename y Trash comparten
 la frontera de root, identidad, no-reemplazo y receipt. `recovery_required` sólo
 representa un efecto físico que pudo cruzar la frontera y no puede confirmarse;
 un `blocked/protected` sin syscall es un skip parcial, no recuperación.
+
+La admisión llega a un punto fijo antes del SHA-256: todos los hijos físicos
+nuevos atraviesan el mismo gate, sin repetir Identify sobre los estabilizados.
+`LogicalFilename` separa extensión de decoradores `.~N~`, `__hash` y `~hash`;
+las colisiones usan nombres deterministas, sin sobrescribir ni crear más GNU backups.
+
+Fast Curation consume texto ya extraído, usa representaciones documentales
+acotadas, batching y caché de embeddings; no ejecuta el índice Full Semantic
+para decidir carpetas. Organization sólo consume decisiones calibradas vigentes.
+En una aplicación completa, los supervivientes quedan bajo `Corpus_ordenado`
+o `Sin_clasificar/_MIME/<major>/<subtype>`; un MIME desconocido usa
+`application/octet-stream`. Sin modelo local o evidencia suficiente se abstiene,
+no descarga ni adivina una categoría. Full Semantic publica después de los
+movimientos/rebinding y no sustituye sus vectores de chunks por vectores
+documentales distintos. Un fallo de verificación no se anuncia como corrida completa.
 
 Los documentos y datos útiles dentro de `AppData`, cachés o ZIP mixtos siguen
 procesándose; no se excluye un árbol completo sólo por su nombre. Un miembro
@@ -186,8 +206,9 @@ física, verificar demuestra la postcondición y toda ambigüedad queda para
 
 ## Empieza por una consulta
 
-Estas operaciones consultan el estado publicado sin actualizar los owners ni
-modificar archivos del corpus:
+Las entradas informativas consultan estado. `--dedupe` y `--all` son corridas:
+pueden actualizar owners/cachés aun sin `--apply`, pero no modifican los archivos
+del corpus sin esa bandera. No uses `--all` como una consulta read-only:
 
 ```bash
 Neocortex --version

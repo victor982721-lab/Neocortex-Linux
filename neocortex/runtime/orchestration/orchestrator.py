@@ -380,6 +380,7 @@ class FrameworkOrchestrator(
                     "dedup",
                     *self.selected_routes,
                     "catalog",
+                    "fast-curation",
                     "semantic",
                     "knowledge",
                     "preparation",

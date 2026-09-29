@@ -23,6 +23,7 @@ from neocortex.foundation.file_identity import FileIdentity
 from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.safety.corpus_access import CorpusAccessPolicy, CorpusMutationGuard
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
+from tests.organization_fast_fixture import seed_organization_fast_decisions
 
 
 def _catalog(tmp_path: Path) -> Path:
@@ -104,7 +105,13 @@ def _file(root: Path, name: str) -> Path:
 
 def _plan(catalog: Path, root: Path, destination: Path):
     scope = capture_organization_input_scope(catalog, root)
-    return planning.plan_document_organization(catalog, destination, source_scope=scope)
+    bundle = seed_organization_fast_decisions(catalog)
+    return planning.plan_document_organization(
+        catalog,
+        destination,
+        source_scope=scope,
+        fast_curation_policy_bundle=bundle,
+    )
 
 
 def test_scope_is_required_before_creating_catalog_or_destination(tmp_path: Path) -> None:
@@ -190,9 +197,10 @@ def test_partial_high_confidence_keeps_suggestion_without_eligibility(tmp_path: 
     summary = _plan(catalog, source.parent, tmp_path / "destination")
     assert (summary.planned, summary.review_required) == (0, 1)
     view = list_organization_plans(catalog, limit=1)[0]
-    assert view.destination_path is not None
+    assert view.destination_path is None
+    assert view.reason == "fast_curation_decision_missing"
     assert view.eligibility_status == "blocked"
-    assert "source_classification_requires_review" in view.blockers
+    assert "fast_curation_decision_missing" in view.blockers
 
 
 @pytest.mark.parametrize(
@@ -217,7 +225,7 @@ def test_taxonomy_gap_is_not_an_objective_file_anomaly(
     summary = _plan(catalog, source.parent, tmp_path / "destination")
     assert (summary.planned, summary.review_required) == (0, 1)
     view = list_organization_plans(catalog, limit=1)[0]
-    assert view.reason == reason
+    assert view.reason == "fast_curation_decision_missing"
     assert view.taxonomy_status == taxonomy_status
     assert view.destination_path is None
     assert view.classification_status == "classified"

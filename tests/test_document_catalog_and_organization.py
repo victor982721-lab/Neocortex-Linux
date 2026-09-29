@@ -76,6 +76,7 @@ from neocortex.semantic.semantic_state import (
     upsert_semantic_item,
 )
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
+from tests.organization_fast_fixture import seed_organization_fast_decisions
 
 WINDOWS_MUTATION_ONLY = pytest.mark.skipif(
     os.name != "nt",
@@ -2315,6 +2316,7 @@ def test_planner_blocks_only_protected_source_and_keeps_no_destination(
     )
     update_document_catalog(state_directory)
     catalog_path = state_directory / "document_catalog.sqlite3"
+    bundle = seed_organization_fast_decisions(catalog_path)
     destination_root = tmp_path / "organized"
     guard = _protected_mutation_guard(tmp_path, protected_root)
 
@@ -2323,6 +2325,7 @@ def test_planner_blocks_only_protected_source_and_keeps_no_destination(
         destination_root,
         source_scope=capture_organization_input_scope(catalog_path, tmp_path),
         mutation_guard=guard,
+        fast_curation_policy_bundle=bundle,
     )
     plans = list_organization_plans(catalog_path, limit=10)
     by_source = {Path(plan.source_path): plan for plan in plans}
@@ -2775,6 +2778,7 @@ def test_plan_organizes_standards_and_company_formats_without_moving(
         author="",
     )
     update_document_catalog(state_directory)
+    bundle = seed_organization_fast_decisions(state_directory / "document_catalog.sqlite3")
     destination_root = tmp_path / "organizados"
 
     summary = plan_document_organization(
@@ -2783,6 +2787,7 @@ def test_plan_organizes_standards_and_company_formats_without_moving(
         source_scope=capture_organization_input_scope(
             state_directory / "document_catalog.sqlite3", tmp_path
         ),
+        fast_curation_policy_bundle=bundle,
     )
     plans = list_organization_plans(
         state_directory / "document_catalog.sqlite3",
@@ -2885,6 +2890,7 @@ def test_plan_routes_malpaso_work_to_andritz_while_norms_stay_separate(
 
     update_document_catalog(state_directory)
     catalog_path = state_directory / "document_catalog.sqlite3"
+    bundle = seed_organization_fast_decisions(catalog_path)
     malpaso = list_catalog_documents(catalog_path, limit=10, project="Malpaso")
     pressure = list_catalog_documents(
         catalog_path,
@@ -2909,6 +2915,7 @@ def test_plan_routes_malpaso_work_to_andritz_while_norms_stay_separate(
         catalog_path,
         destination_root,
         source_scope=capture_organization_input_scope(catalog_path, tmp_path),
+        fast_curation_policy_bundle=bundle,
     )
     plans = list_organization_plans(catalog_path, limit=10, status="planned")
     destinations = {
@@ -2964,6 +2971,7 @@ def test_plan_uses_andritz_company_as_account_root_without_changing_client_role(
 
     update_document_catalog(state_directory)
     catalog_path = state_directory / "document_catalog.sqlite3"
+    bundle = seed_organization_fast_decisions(catalog_path)
     documents = list_catalog_documents(
         catalog_path,
         limit=10,
@@ -2974,6 +2982,7 @@ def test_plan_uses_andritz_company_as_account_root_without_changing_client_role(
         catalog_path,
         destination_root,
         source_scope=capture_organization_input_scope(catalog_path, tmp_path),
+        fast_curation_policy_bundle=bundle,
     )
     plans = list_organization_plans(catalog_path, limit=10, status="planned")
 
@@ -3025,6 +3034,7 @@ def test_plan_routes_observed_quality_safety_and_test_records(
             author="",
         )
     update_document_catalog(state_directory)
+    bundle = seed_organization_fast_decisions(state_directory / "document_catalog.sqlite3")
     destination_root = tmp_path / "organizados"
 
     summary = plan_document_organization(
@@ -3033,6 +3043,7 @@ def test_plan_routes_observed_quality_safety_and_test_records(
         source_scope=capture_organization_input_scope(
             state_directory / "document_catalog.sqlite3", tmp_path
         ),
+        fast_curation_policy_bundle=bundle,
     )
     plans = list_organization_plans(
         state_directory / "document_catalog.sqlite3",
@@ -3088,6 +3099,7 @@ def test_plan_routes_second_pass_families_and_reviews_sensitive_artifacts(
             author="",
         )
     update_document_catalog(state_directory)
+    bundle = seed_organization_fast_decisions(state_directory / "document_catalog.sqlite3")
     destination_root = tmp_path / "organizados"
 
     summary = plan_document_organization(
@@ -3096,6 +3108,7 @@ def test_plan_routes_second_pass_families_and_reviews_sensitive_artifacts(
         source_scope=capture_organization_input_scope(
             state_directory / "document_catalog.sqlite3", tmp_path
         ),
+        fast_curation_policy_bundle=bundle,
     )
     planned = list_organization_plans(
         state_directory / "document_catalog.sqlite3",
@@ -3146,6 +3159,7 @@ def test_plan_semantically_renames_low_quality_calibration_certificate(
         author="Grupo de Metrología CLAM",
     )
     update_document_catalog(state_directory)
+    bundle = seed_organization_fast_decisions(state_directory / "document_catalog.sqlite3")
     destination_root = tmp_path / "organizados"
 
     summary = plan_document_organization(
@@ -3154,6 +3168,7 @@ def test_plan_semantically_renames_low_quality_calibration_certificate(
         source_scope=capture_organization_input_scope(
             state_directory / "document_catalog.sqlite3", tmp_path
         ),
+        fast_curation_policy_bundle=bundle,
     )
     plans = list_organization_plans(
         state_directory / "document_catalog.sqlite3",
@@ -4008,14 +4023,14 @@ def test_default_organization_root_uses_latest_completed_analysis(
 
     destination = default_organization_root(framework_database)
 
-    assert destination == analysis_root / "Consulta_Tecnica_Organizada"
+    assert destination == analysis_root / "Corpus_ordenado"
     assert not destination.exists()
     assert (
         default_organization_root(
             tmp_path / "missing.sqlite3",
             analysis_root=other_root,
         )
-        == other_root / "Consulta_Tecnica_Organizada"
+        == other_root / "Corpus_ordenado"
     )
 
 

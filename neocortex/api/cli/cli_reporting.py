@@ -474,8 +474,14 @@ def _print_catalog_reports(result) -> None:
     if maintenance:
         print("MAINTENANCE_OUTCOME " + json.dumps(maintenance, ensure_ascii=True, sort_keys=True))
 
+    stage_names = {
+        "zip_intake", "email_intake", "curation_admission", "residual_mime",
+        "corpus_verification", "fast_curation", "corpus_metrics",
+    }
     for route, summary in getattr(result, "route_results", {}).items():
-        if route == "zip_intake":
+        if route == "corpus_metrics":
+            print("CORPUS_SUMMARY " + json.dumps(summary, ensure_ascii=True, sort_keys=True))
+        if route in stage_names:
             continue
         candidates, cache_hits, new_work, replay_evidence = _route_replay_view(route, summary)
         print(f"ROUTE_REPLAY route={sanitize_untrusted_text(route, limit=32)} "
